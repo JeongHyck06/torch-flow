@@ -22,6 +22,7 @@ from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
 from .engine import Engine
 from .graphstore import GraphStore, OpError
+from .tracker import Tracker
 from .kernels import KernelManager
 
 
@@ -39,7 +40,7 @@ class Hub:
         self.l1 = KernelManager("L1", state_dir)
         self.clients: list[WebSocket] = []
         self.node_states: dict[str, dict[str, Any]] = {}
-        self.scalars: list[dict[str, Any]] = []
+        self.tracker = Tracker(state_dir / "runs.db")
         self.probes: list[dict[str, Any]] = []
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
@@ -422,14 +423,44 @@ def create_app(
 
     @app.post("/api/scalars")
     def ingest_scalars(record: dict[str, Any]) -> JSONResponse:
-        # ponytail: 메모리 링버퍼. SQLite 트래커·manifest는 M4.
-        hub.scalars.append(record)
-        del hub.scalars[:-10_000]
-        return JSONResponse({"ok": True, "count": len(hub.scalars)})
+        run_id = record.pop("run_id", None) or "run-attached"
+        step = int(record.pop("step", 0))
+        record.pop("wall", None)
+        name = record.pop("run_name", None)
+        hub.tracker.ensure_run(run_id, name=name)
+        return JSONResponse({"ok": True, "written": hub.tracker.log(run_id, step, record)})
 
-    @app.get("/api/scalars")
-    def read_scalars(since: int = 0) -> JSONResponse:
-        return JSONResponse({"scalars": [r for r in hub.scalars if r.get("step", 0) >= since]})
+    @app.post("/api/runs")
+    def create_run(request: dict[str, Any]) -> JSONResponse:
+        """manifest와 함께 run을 연다. 관찰 모드의 첫 tf.log가 여기로 온다."""
+        run_id = hub.tracker.ensure_run(
+            request["run_id"], kind=request.get("kind", "exploratory"),
+            name=request.get("name"), parent_run=request.get("parent_run"),
+            manifest=request.get("manifest"))
+        return JSONResponse({"ok": True, "run_id": run_id})
+
+    @app.get("/api/runs")
+    def list_runs() -> JSONResponse:
+        runs = [run.as_dict() for run in hub.tracker.runs()]
+        for run in runs:
+            run["keys"] = hub.tracker.keys(run["id"])
+        return JSONResponse({"runs": runs})
+
+    @app.get("/api/runs/curve")
+    def read_curve(key: str, runs: str = "", aggregate: bool = False) -> JSONResponse:
+        """곡선 하나 또는 시드 그룹의 평균과 표준편차."""
+        ids = [item for item in runs.split(",") if item]
+        if not ids:
+            ids = [run.id for run in hub.tracker.runs(limit=8)]
+        if aggregate:
+            return JSONResponse({"key": key, "aggregate": hub.tracker.aggregate(ids, key)})
+        return JSONResponse({"key": key, "series": [
+            {"run": run_id, "points": hub.tracker.curve(run_id, key)} for run_id in ids
+        ]})
+
+    @app.get("/api/logs")
+    def read_logs(limit: int = 300) -> JSONResponse:
+        return JSONResponse({"logs": hub.tracker.tail(limit)})
 
     @app.post("/api/probes")
     def add_probe(spec: dict[str, Any]) -> JSONResponse:

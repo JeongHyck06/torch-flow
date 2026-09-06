@@ -43,6 +43,9 @@ class Session:
         self.hub = hub
         self.report = trace_report(ir)
         self.scalars: list[dict[str, Any]] = []
+        self.run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}"
+        self.kind = "exploratory"
+        self._run_open = False
         self._example: Any = None
         self._step_handle = None
         # 속성 경로 -> 노드 id. probe 결과를 캔버스 노드에 얹는 열쇠다.
@@ -143,10 +146,37 @@ class Session:
 
     # 트래커
     def log(self, step: int, **scalars: float) -> None:
-        record = {"step": step, "wall": time.time(), **scalars}
+        """스칼라 기록. 첫 호출에서 manifest가 만들어진다(§10.3)."""
+        if not self._run_open:
+            self._open_run()
+        record = {"run_id": self.run_id, "step": step, **scalars}
         self.scalars.append(record)
-        # ponytail: 메모리 버퍼 + hub push. SQLite 트래커와 manifest는 M4.
         self._post("/api/scalars", record)
+
+    def _open_run(self) -> None:
+        self._run_open = True
+        self._post("/api/runs", {
+            "run_id": self.run_id, "kind": self.kind,
+            "name": type(self.model).__name__,
+            "manifest": self.manifest(),
+        })
+
+    def manifest(self, kind: str | None = None) -> dict[str, Any]:
+        """재현에 필요한 것 전부. Attach도 같은 스키마를 쓴다(§10.3)."""
+        from ..runtime.manifest import build
+
+        return build(
+            run_id=self.run_id, kind=kind or self.kind, model=self.model, seed=self.seed,
+            probe={"objective": "user objective" if self.objective else "sum_of_outputs",
+                   "linked_ratio": self.report.get("linked_ratio")},
+            root=self.state_dir.parent,
+        )
+
+    def save_manifest(self, path=None, *, anonymous: bool = False) -> Path:
+        from ..runtime.manifest import save
+
+        target = Path(path) if path else self.state_dir / "runs" / self.run_id / "manifest.json"
+        return save(self.manifest(), target, anonymous=anonymous)
 
     def display(self, height: int = 640):
         """노트북 인라인 iframe (§3.5)."""
