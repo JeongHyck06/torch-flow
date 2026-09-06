@@ -215,6 +215,7 @@ def test_start_endpoint_lists_templates_and_marks_missing_ones(client):
     templates = {entry["id"]: entry for entry in payload["templates"]}
     assert templates["resnet18"]["available"] is True
     assert templates["resnet18"]["metric"] == "≈95.0 % top-1"
+    assert templates["mnist_cnn"]["available"] is True
     # 아직 없는 템플릿을 있는 척하지 않는다.
     assert templates["nanogpt"]["available"] is False
     assert payload["state_dir"] and payload["torch_version"]
