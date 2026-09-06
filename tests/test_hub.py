@@ -353,3 +353,63 @@ def test_close_returns_to_the_start_screen(app, client):
     # 다시 열 수 있어야 한다 - 닫기가 종착역이 아니다.
     assert client.post("/api/new", headers=auth, json={"name": "next"}).status_code == 200
     assert client.get("/api/health", headers=auth).json()["graph_open"] is True
+
+
+def test_code_route_renders_the_model(client):
+    """Code 탭은 디스크에 쓰지 않고 메모리에서 렌더한다(§7.6.2)."""
+    body = client.get("/api/code", headers={"Authorization": f"token {TOKEN}"}).json()
+    assert body["lines"] > 50
+    assert "class MiniViT(nn.Module):" in body["code"]
+    assert body["ir_sha256"]
+
+
+def test_training_starts_and_takes_commands(app, client, tmp_path, monkeypatch):
+    """학습은 hub가 아니라 분리된 워커가 돈다(§5.5.3). hub는 파일로만 말한다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.runs_dir = tmp_path / "runs"
+    started: dict = {}
+
+    def fake_start(*, run_id, root, job, code, python=None):
+        from torchflow.hub.runs import RunHandle
+
+        directory = root / run_id
+        directory.mkdir(parents=True, exist_ok=True)
+        started.update({"job": job, "code": code})
+        # 워커가 남길 법한 이벤트를 그대로 흉내낸다.
+        (directory / "events.jsonl").write_text(
+            '{"kind": "status", "state": "running", "device": "cpu", "steps": 3}\n'
+            '{"kind": "scalar", "step": 1, "loss": 2.5}\n'
+            '{"kind": "scalar", "step": 2, "loss": 1.5}\n', encoding="utf-8")
+        (directory / "control.json").write_text("{}", encoding="utf-8")
+        return RunHandle(run_id=run_id, directory=directory, total=3)
+
+    monkeypatch.setattr("torchflow.hub.runs.start", fake_start)
+
+    body = client.post("/api/train", headers=auth, json={"steps": 3, "batch": 4}).json()
+    assert body["ok"] and body["run_id"]
+    # 학습 대상은 그래프에서 뽑은 생성 코드 그대로다(§7.2).
+    assert "class MiniViT(nn.Module):" in started["code"]
+    assert started["job"]["model_args"]["num_classes"] == 10
+
+    status = client.get("/api/train", headers=auth).json()["runs"][0]
+    assert status["state"] == "running" and status["step"] == 2
+
+    curve = client.get(f"/api/runs/curve?key=loss&runs={body['run_id']}", headers=auth).json()
+    assert curve["series"][0]["points"] == [[1, 2.5], [2, 1.5]]
+
+    # 명령은 control.json에 쌓인다 - 연결을 유지하지 않으므로 hub 재시작에도 살아 있다.
+    client.post(f"/api/train/{body['run_id']}", headers=auth, json={"cmd": "pause"})
+    client.post(f"/api/train/{body['run_id']}", headers=auth,
+                json={"cmd": "set_lr", "value": 0.02})
+    control = json.loads((app.state.hub.runs_dir / body["run_id"] / "control.json")
+                         .read_text(encoding="utf-8"))
+    assert control == {"pause": True, "lr": 0.02}
+
+
+def test_training_refuses_a_graph_without_an_input(app, client):
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.store.ir.graph.nodes = [
+        node for node in app.state.hub.store.ir.graph.nodes if node.type != "torchflow.Input"]
+
+    response = client.post("/api/train", headers=auth, json={})
+    assert response.status_code == 400 and "Input" in response.json()["error"]

@@ -19,6 +19,8 @@ export function TopBar() {
   const probing = useStore((state) => state.probing);
   const probeObjective = useStore((state) => state.probeObjective);
   const gradOverlay = useStore((state) => state.gradOverlay);
+  const tab = useStore((state) => state.tab);
+  const setTab = useStore((state) => state.setTab);
   const toggleGradOverlay = useStore((state) => state.toggleGradOverlay);
   const setProbing = useStore((state) => state.setProbing);
   const token = useStore((state) => state.token);
@@ -110,6 +112,15 @@ export function TopBar() {
             </button>
           </span>
         ))}
+      </nav>
+
+      <nav className="tabs" aria-label="화면">
+        <button className={`tabs__item${tab === "model" ? " tabs__item--on" : ""}`}
+                onClick={() => setTab("model")}>Model</button>
+        <button className={`tabs__item${tab === "code" ? " tabs__item--on" : ""}`}
+                onClick={() => setTab("code")}>Code</button>
+        <button className="tabs__item" disabled title="최소 L2 워커는 M7입니다">Experiment</button>
+        <button className="tabs__item" disabled title="run 비교는 v1입니다">Runs</button>
       </nav>
 
       <div className="probe">

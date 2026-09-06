@@ -82,3 +82,30 @@ def test_logs_are_tailed_in_order(tracker):
     tail = tracker.tail(limit=3)
     assert [item["text"] for item in tail] == ["line 2", "line 3", "line 4"]
     assert tail[0]["node_id"] == "n1"
+
+
+def test_writes_from_many_threads_do_not_collide(tmp_path):
+    """학습 곡선 폴링과 스칼라 적재는 hub 스레드풀에서 겹친다 - 같은 연결이라도 버텨야 한다."""
+    import threading
+
+    tracker = Tracker(tmp_path / "runs.db")
+    tracker.ensure_run("r1")
+    errors: list[Exception] = []
+
+    def hammer(offset: int) -> None:
+        try:
+            for step in range(40):
+                tracker.log("r1", offset * 100 + step, {"loss": 1.0})
+                tracker.curve("r1", "loss")
+                tracker.runs()
+        except Exception as exc:   # noqa: BLE001 - 무엇이 터지든 여기서 잡아야 보인다
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer, args=(index,)) for index in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(tracker.curve("r1", "loss")) == 160

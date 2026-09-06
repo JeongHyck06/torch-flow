@@ -16,12 +16,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, paper, protocol as proto
+from .. import __version__, codegen, paper, protocol as proto
 from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
 from .engine import Engine
 from .graphstore import GraphStore, OpError
+from . import runs as l2
 from .tracker import Tracker
 from .kernels import KernelManager
 
@@ -42,6 +43,9 @@ class Hub:
         self.node_states: dict[str, dict[str, Any]] = {}
         self.tracker = Tracker(state_dir / "runs.db")
         self.probes: list[dict[str, Any]] = []
+        # L2 학습 run들. hub는 워커를 띄우고 파일을 읽을 뿐 학습을 돌리지 않는다(§5.5.3).
+        self.runs_dir = Path.cwd() / "runs"
+        self.l2: dict[str, l2.RunHandle] = {}
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
         self.attached = False
@@ -202,6 +206,11 @@ class Hub:
             states.append(state)
         return states
 
+    def sync_runs(self) -> None:
+        """워커가 남긴 이벤트를 트래커로 옮긴다. 곡선을 물어볼 때마다 부른다."""
+        for handle in self.l2.values():
+            l2.merge(handle, self.tracker)
+
     def absorb_logs(self, replies: list) -> None:
         """커널이 올린 노드별 stdout/stderr를 트래커에 남긴다(§5.6.1).
 
@@ -219,6 +228,12 @@ class Hub:
                 await client.send_text(payload)
             except (WebSocketDisconnect, RuntimeError):
                 self.clients.remove(client)
+
+
+def _class_name(name: str) -> str:
+    from ..codegen import _class_name as convert
+
+    return convert(name)
 
 
 def _graph_name(path: Path) -> str:
@@ -383,6 +398,21 @@ def create_app(
         except Exception as exc:
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
         return JSONResponse({"ok": True, "name": hub.store.ir.graph.name})
+
+    @app.get("/api/code")
+    def read_code() -> JSONResponse:
+        """Code 탭(§7.3 model-only). 디스크에 쓰지 않고 메모리에서 렌더한다(§7.6.2)."""
+        if hub.store is None:
+            return no_graph()
+        try:
+            code = codegen.generate(
+                hub.store.ir, version=__version__,
+                source=str(hub.graph_path) if hub.graph_path else "graph/model.tfg.json",
+                specs=hub.node_states)
+        except codegen.CodegenError as exc:
+            return JSONResponse({"error": str(exc), "node": exc.node_id}, status_code=400)
+        return JSONResponse({"code": code, "ir_sha256": codegen.ir_hash(hub.store.ir),
+                             "lines": len(code.splitlines())})
 
     @app.get("/api/export")
     def export_figure(format: str = "svg", preset: str = paper.DEFAULT_PRESET,
@@ -560,8 +590,94 @@ def create_app(
             manifest=request.get("manifest"))
         return JSONResponse({"ok": True, "run_id": run_id})
 
+    @app.post("/api/train")
+    def start_training(request: dict[str, Any] | None = None) -> JSONResponse:
+        """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
+        if hub.store is None:
+            return no_graph()
+        options = request or {}
+
+        graph = hub.store.ir.graph
+        entry = next((node for node in graph.nodes if node.type == "torchflow.Input"), None)
+        if entry is None or not entry.ports_out:
+            return JSONResponse(
+                {"error": "Input 노드와 입력 규격이 있어야 학습할 수 있습니다"}, status_code=400)
+
+        try:
+            code = codegen.generate(hub.store.ir, version=__version__,
+                                    source=str(hub.graph_path or "graph/model.tfg.json"))
+        except codegen.CodegenError as exc:
+            return JSONResponse({"error": str(exc), "node": exc.node_id}, status_code=400)
+
+        run_id = options.get("run_id") or l2.new_run_id()
+        # 생성 코드가 실제로 받는 인자만 넘긴다 - 그래프가 rt.num_classes를 안 쓰면
+        # 생성자에도 그 인자가 없다.
+        accepted = codegen.model_params(hub.store.ir)
+        model_args = {name: spec["default"] for name, spec in accepted.items()
+                      if spec.get("default") is not None}
+        model_args.update({key: value for key, value in hub.rt.items() if key in accepted})
+        model_args.update({key: value for key, value in (options.get("hparams") or {}).items()
+                           if key in accepted})
+        missing = [name for name in accepted if name not in model_args]
+        if missing:
+            return JSONResponse(
+                {"error": f"값이 없는 인자: {', '.join(missing)} (--rt로 주거나 hparam 기본값을 넣으세요)"},
+                status_code=400)
+        model_args["seed"] = int(options.get("seed", 0))
+
+        job = {
+            "class_name": _class_name(graph.name),
+            "model_args": model_args,
+            "input_shape": list(entry.ports_out[0].shape or []),
+            "num_classes": int(hub.rt.get("num_classes", 10)),
+            "batch": int(options.get("batch", 32)),
+            "steps": int(options.get("steps", 200)),
+            "optimizer": options.get("optimizer", "adamw"),
+            "lr": float(options.get("lr", 1e-3)),
+            "weight_decay": float(options.get("weight_decay", 0.0)),
+            "log_every": int(options.get("log_every", 5)),
+            "nan_policy": options.get("nan_policy", "pause"),
+            "seed": int(options.get("seed", 0)),
+            "device": options.get("device", "auto"),
+        }
+
+        handle = l2.start(run_id=run_id, root=hub.runs_dir, job=job, code=code)
+        hub.l2[run_id] = handle
+        hub.tracker.ensure_run(run_id, kind=options.get("kind", "exploratory"),
+                               name=graph.name,
+                               manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir)})
+        return JSONResponse({"ok": True, **handle.as_dict()})
+
+    @app.post("/api/train/{run_id}")
+    def control_training(run_id: str, request: dict[str, Any] | None = None) -> JSONResponse:
+        """pause · resume · stop · lr 변경(§5.7.1 HOT)."""
+        handle = hub.l2.get(run_id)
+        if handle is None:
+            return JSONResponse({"error": f"unknown run {run_id}"}, status_code=404)
+        options = request or {}
+        cmd = options.get("cmd", "")
+        if cmd == "pause":
+            l2.command(handle, pause=True)
+        elif cmd == "resume":
+            l2.command(handle, pause=False)
+        elif cmd == "stop":
+            l2.command(handle, stop=True)
+        elif cmd == "set_lr":
+            l2.command(handle, lr=float(options["value"]))
+        else:
+            return JSONResponse({"error": f"unknown cmd {cmd!r}"}, status_code=400)
+        l2.merge(handle, hub.tracker)
+        return JSONResponse({"ok": True, **handle.as_dict()})
+
+    @app.get("/api/train")
+    def training_status() -> JSONResponse:
+        """돌고 있는 run들의 상태. 곡선은 /api/runs/curve가 준다."""
+        hub.sync_runs()
+        return JSONResponse({"runs": [handle.as_dict() for handle in hub.l2.values()]})
+
     @app.get("/api/runs")
     def list_runs() -> JSONResponse:
+        hub.sync_runs()
         runs = [run.as_dict() for run in hub.tracker.runs()]
         for run in runs:
             run["keys"] = hub.tracker.keys(run["id"])
@@ -569,6 +685,7 @@ def create_app(
 
     @app.get("/api/runs/curve")
     def read_curve(key: str, runs: str = "", aggregate: bool = False) -> JSONResponse:
+        hub.sync_runs()
         """곡선 하나 또는 시드 그룹의 평균과 표준편차."""
         ids = [item for item in runs.split(",") if item]
         if not ids:

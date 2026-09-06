@@ -127,6 +127,37 @@ def probe(graph: str, batch: int, objective: str, rt: tuple[str, ...]) -> None:
 
 @main.command()
 @click.argument("graph", type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", type=click.Path(dir_okay=False), default=None,
+              help="쓸 파일. 없으면 표준출력으로")
+@click.option("--annotate", is_flag=True, help="L0를 돌려 문장 끝에 shape 주석을 단다 (torch 필요)")
+@click.option("--rt", multiple=True)
+def codegen(graph: str, out: str | None, annotate: bool, rt: tuple[str, ...]) -> None:
+    """그래프를 PyTorch 코드로 옮긴다 (§7.2, model-only)."""
+    from pathlib import Path
+
+    from . import codegen as generator
+    from .ir import load
+
+    ir = load(graph)
+    specs = None
+    if annotate:
+        from .kernel.l0 import run_pass
+
+        result = run_pass(ir, rt=_kv(rt))
+        specs = {report.node_id: {"spec": report.spec} for report in result.nodes}
+
+    code = generator.generate(ir, version=__version__, source=graph, specs=specs)
+    if out is None:
+        click.echo(code)
+        return
+    path = Path(out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(code, encoding="utf-8")
+    click.echo(f"  {len(code.splitlines())} 줄 · ir {generator.ir_hash(ir)[:16]} → {path}")
+
+
+@main.command()
+@click.argument("graph", type=click.Path(exists=True, dir_okay=False))
 @click.option("--out", type=click.Path(dir_okay=False), default="paper/figure.pdf",
               show_default=True)
 @click.option("--preset", type=click.Choice(sorted(PRESETS)), default="neurips",

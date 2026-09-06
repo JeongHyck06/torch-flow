@@ -131,3 +131,31 @@ def test_l1_kernel_reports_the_device_it_chose(tmp_path):
         assert len(devices) == 1 and next(iter(devices))
     finally:
         kernel.stop()
+
+
+def test_concurrent_requests_start_one_kernel(tmp_path):
+    """첫 화면과 첫 shape 요청은 겹친다 - 커널이 둘 뜨면 shape가 비어 돌아온다."""
+    import threading
+
+    from torchflow.hub.kernels import KernelManager
+
+    manager = KernelManager("L0", tmp_path / "state")
+    pids, errors = [], []
+
+    def touch() -> None:
+        try:
+            manager.ensure()
+            pids.append(manager.ready.pid)
+        except Exception as exc:   # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=touch) for _ in range(4)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+        assert len(set(pids)) == 1
+    finally:
+        manager.stop()

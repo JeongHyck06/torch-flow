@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchCurve, fetchLogs, fetchRuns } from "../api";
 import type { CurveSeries, LogLine, RunInfo } from "../api";
 import { Console } from "./Console";
+import { Trainer } from "./Trainer";
 import { useStore } from "../store";
 
 type Tab = "curves" | "manifest" | "logs" | "console";
@@ -30,7 +31,9 @@ export function RunPanel() {
     const found = await fetchRuns();
     setRuns(found);
     const keys = [...new Set(found.flatMap((run) => run.keys))];
-    const chosen = key && keys.includes(key) ? key : keys[0] ?? "";
+    // 기본은 loss다 - 사람이 먼저 보는 곡선이 알파벳 순으로 정해지면 안 된다.
+    const chosen = key && keys.includes(key) ? key
+      : keys.find((name) => name === "loss") ?? keys[0] ?? "";
     setKey(chosen);
     if (chosen) setSeries(await fetchCurve(chosen, found.map((run) => run.id)));
     if (tab === "logs") setLogs(await fetchLogs());
@@ -77,6 +80,7 @@ export function RunPanel() {
       </div>
 
       <div className="runpanel__body">
+        {tab === "curves" && <Trainer onChange={() => void refresh()} />}
         {tab === "curves" && (
           series.length === 0 || series.every((one) => one.points.length === 0) ? (
             <p className="mono muted">

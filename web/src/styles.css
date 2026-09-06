@@ -75,6 +75,25 @@ body {
 .wordmark--home { background: none; border: 0; cursor: pointer; padding: 0; }
 .wordmark--home:hover { color: var(--text-primary); }
 
+.tabs { display: flex; gap: 2px; }
+.tabs__item {
+  background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
+  padding: 4px 10px; font: 500 12px var(--font-sans); color: var(--text-muted);
+}
+.tabs__item--on { color: var(--text-primary); border-bottom-color: var(--text-primary); }
+.tabs__item:disabled { opacity: 0.4; cursor: default; }
+
+.codeview { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--surface-panel); }
+.codeview__bar {
+  display: flex; justify-content: space-between; gap: 16px; padding: 8px 14px;
+  border-bottom: 1px solid var(--border-subtle); font-size: 10.5px; color: var(--text-secondary);
+}
+.codeview__source {
+  flex: 1; margin: 0; padding: 14px; overflow: auto; font-size: 11.5px; line-height: 1.65;
+  color: var(--text-primary); white-space: pre;
+}
+.codeview__error { padding: 14px; color: var(--state-ink-error); }
+
 .savestate { display: flex; align-items: center; gap: 8px; }
 .savestate__button {
   background: none; border: 1px solid var(--border-default); border-radius: 6px;
@@ -453,6 +472,23 @@ body {
   color: var(--text-primary);
 }
 .console__input::placeholder { color: var(--text-muted); }
+
+.trainer { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.trainer__run {
+  background: var(--surface-action); color: var(--text-on-action); border: 0; border-radius: 6px;
+  padding: 4px 14px; cursor: pointer; font: 600 11px var(--font-sans);
+}
+.trainer__stop {
+  background: none; border: 1px solid var(--border-default); border-radius: 6px;
+  padding: 4px 12px; cursor: pointer; font: 500 11px var(--font-sans); color: var(--text-secondary);
+}
+.trainer__field { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--text-muted); }
+.trainer__field input {
+  width: 68px; border: 1px solid var(--border-default); border-radius: 5px; padding: 2px 5px;
+  font: 400 11px var(--font-mono); color: var(--text-primary); background: var(--surface-panel);
+}
+.trainer__progress { font-size: 11px; color: var(--text-secondary); }
+.trainer__note { font-size: 10px; }
 
 .curves__legend { display: flex; align-items: center; gap: 14px; font-size: 10.5px; margin-bottom: 8px; }
 .curves__key { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); }

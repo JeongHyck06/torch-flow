@@ -21,15 +21,28 @@ def derive_seed(seed: int, path: str) -> int:
     return int.from_bytes(digest, "big") & ((1 << 63) - 1)
 
 
+def _reset_of(module: nn.Module):
+    """이 모듈을 다시 초기화하는 함수. 없으면 ``None``.
+
+    ``nn.MultiheadAttention``은 ``reset_parameters``가 아니라 비공개
+    ``_reset_parameters``를 갖는다. 이것까지 부르지 않으면 UI의 모듈 트리와
+    생성 코드가 서로 다른 가중치에서 출발한다(§5.1.3).
+    """
+    for name in ("reset_parameters", "_reset_parameters"):
+        candidate = getattr(module, name, None)
+        if callable(candidate):
+            return candidate
+    return None
+
+
 def seeded_init(module: nn.Module, seed: int, prefix: str = "") -> None:
     """모든 leaf 모듈을 경로별 시드로 다시 초기화한다.
 
-    ``reset_parameters``를 가진 모듈만 재초기화되며, 그렇지 않은 모듈의
-    파라미터는 :func:`init_coverage`가 보고한다.
+    다시 초기화할 방법이 없는 모듈의 파라미터는 :func:`init_coverage`가 보고한다.
     """
     for name, child in module.named_modules():
-        reset = getattr(child, "reset_parameters", None)
-        if not callable(reset):
+        reset = _reset_of(child)
+        if reset is None:
             continue
         path = f"{prefix}.{name}" if prefix and name else (prefix or name)
         with torch.random.fork_rng(devices=[]):
@@ -44,7 +57,7 @@ def init_coverage(module: nn.Module) -> list[str]:
     """
     covered: set[str] = set()
     for name, child in module.named_modules():
-        if callable(getattr(child, "reset_parameters", None)):
+        if _reset_of(child) is not None:
             for param_name, _ in child.named_parameters(recurse=False):
                 covered.add(f"{name}.{param_name}" if name else param_name)
     return [name for name, _ in module.named_parameters() if name not in covered]
