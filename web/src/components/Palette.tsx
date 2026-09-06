@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchRegistry, saveLayout } from "../api";
 import { applyEdit } from "../edit";
+import { layeredLayout } from "../graph/layout";
 import { addBlockOp } from "../graph/ops";
 import type { Block } from "../graph/ops";
 import { currentScope, useStore } from "../store";
@@ -50,8 +51,16 @@ export function Palette() {
     if (failed) { setError(failed); return; }
     // 놓은 자리에 그대로 있어야 한다. 좌표는 그래프가 아니라 layout.json에(§10.1).
     // 키보드로 연달아 열면 같은 자리가 나오므로 이미 찬 자리는 비켜 놓는다.
-    const key = current.callPath ? `${current.callPath}/${nodeId}` : nodeId;
-    const spot = freeSpot(at, Object.values(useStore.getState().positions));
+    const keyOf = (id: string) => (current.callPath ? `${current.callPath}/${id}` : id);
+    const key = keyOf(nodeId);
+    // 점유 판정은 이 스코프에 실제로 그려진 노드만 본다. layout.json 전체를 보면 다른
+    // 그래프와 지워진 노드의 좌표까지 자리를 차지해 새 블록이 화면 밖까지 밀린다.
+    const auto = layeredLayout(scope.nodes ?? [], (scope.edges ?? []) as [string, string][]);
+    const stored = useStore.getState().positions;
+    const taken = (scope.nodes ?? [])
+      .map((node) => stored[keyOf(node.id)] ?? auto[node.id])
+      .filter((position): position is { x: number; y: number } => Boolean(position));
+    const spot = freeSpot(at, taken);
     useStore.getState().setPosition(key, spot);
     void saveLayout(key, spot);
     select(nodeId);

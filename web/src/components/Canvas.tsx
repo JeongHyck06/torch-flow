@@ -89,10 +89,14 @@ export function Canvas() {
     if (!scope) return;
     const composite = enterableComposite(scope, nodeId);
     if (!composite) return;
+    const node = scope.nodes?.find((candidate) => candidate.id === nodeId);
+    const instance = node?.call ? scope.instances?.[node.call] : undefined;
+    // Repeat 본문의 상태 키에는 회차가 붙는다(`blocks#0/…`, l0의 _call_repeat). 첫 회차를 본다.
+    const hop = instance?.type === "torchflow.Repeat" ? `${nodeId}#0` : nodeId;
     enterScope({
       name: composite,
       label: composite,
-      callPath: callPath ? `${callPath}/${nodeId}` : nodeId,
+      callPath: callPath ? `${callPath}/${hop}` : hop,
     });
   }, [scope, callPath, enterScope]);
 
@@ -156,20 +160,23 @@ export function Canvas() {
   // 확대·위치가 블록을 놓을 때마다 날아간다.
   const scopeKey = scopes.map((entry) => entry.callPath).join("/");
   const fitted = useRef(false);
-  useEffect(() => { fitted.current = false; fitView({ duration: 0 }); }, [scopeKey, fitView]);
+  // 확대 상한 1: 노드 하나짜리 그래프를 2배로 키우면 다음 블록이 놓이는 자리가 화면 밖이다.
+  useEffect(() => { fitted.current = false; fitView({ duration: 0, maxZoom: 1 }); }, [scopeKey, fitView]);
   // 노드가 실측되기 전에 맞추면 0x0 기준으로 맞춰져 화면 밖으로 나간다.
   // 노드가 0개일 때도 "초기화됨"이라 노드가 실제로 들어온 뒤라야 의미가 있다.
   const measured = useNodesInitialized() && computed.nodes.length > 0;
   useEffect(() => {
     if (fitted.current || !measured) return;
     fitted.current = true;
-    fitView({ duration: 0 });
+    fitView({ duration: 0, maxZoom: 1 });
   }, [measured, fitView]);
 
   const onNodeClick: NodeMouseHandler = (_event, node) => { select(node.id); focus(node.id); };
   const onNodeDoubleClick: NodeMouseHandler = (_event, node) => enter(node.id);
 
   const onPaneDoubleClick = (event: React.MouseEvent) => {
+    // ReactFlow의 onDoubleClick은 노드 위에서도 발화한다 - 거기서는 컴포지트 진입이 맞다.
+    if ((event.target as HTMLElement).closest(".react-flow__node")) return;
     openPalette(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
   };
 
