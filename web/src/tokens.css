@@ -1,0 +1,70 @@
+/* Figma 변수 컬렉션에서 그대로 옮긴 토큰.
+ * 파일: ypUlQYHhg8XeC7GiLTgCeB · Color(Light) / Layout
+ *
+ * 손으로 고치지 말 것 — 색을 바꾸려면 Figma에서 바꾸고 WCAG 대비를 재검증한 뒤
+ * 여기에 옮긴다(본문 4.5:1 / 비텍스트 마크 3:1).
+ *
+ * 다크 모드는 아직 없다. Dark 컬렉션 값을 Figma에서 읽어 오기 전에는 지어내지
+ * 않는다 — 다크에서 elevation은 그림자가 아니라 더 밝은 표면이어야 하고, 그
+ * 대비는 계산해서 검증한 값이어야 한다.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* 표면 */
+  --surface-canvas: #f9fafb;
+  --surface-panel: #ffffff;
+  --surface-node: #ffffff;
+  --surface-dock: #f2f4f6;
+  --surface-active: #e5e8eb;
+  --surface-action: #191f28;   /* 크롬은 무채색 — 액션 버튼도 잉크색이다 */
+  --text-on-action: #ffffff;
+
+  /* 경계 — 그림자 대신 1px 헤어라인 */
+  --border-default: #d1d6db;
+  --border-subtle: #e5e8eb;
+
+  /* 텍스트 */
+  --text-primary: #191f28;
+  --text-secondary: #4e5968;
+  --text-muted: #6a7481;
+
+  /* 실행 상태 (§17.4) */
+  --state-idle: #d2d6da;
+  --state-stale: #717984;
+  --state-queued: #2473db;
+  --state-running: #1357ae;
+  --state-ok: #2061b6;
+  --state-warn: #c77800;
+  --state-error: #d02b1f;
+  --state-blocked: #545b63;
+  --state-bg-warn: #fff8e6;
+  --state-ink-warn: #8a5200;
+  --state-bg-error: #fff0ee;
+  --state-ink-error: #96190f;
+
+  /* 카테고리 — 214° 단일 계열. 무지개 팔레트로 되돌리지 말 것. */
+  --category-layer: #1e3e66;
+  --category-tensor-op: #1e3e66;
+  --category-norm: #2a558d;
+  --category-attention: #366db5;
+  --category-data: #515f70;
+  --category-code-cell: #7c8898;
+
+  /* dtype — 엣지 색 */
+  --dtype-f32: #2061b6;
+
+  /* 치수 */
+  --radius-node: 10px;
+  --radius-panel: 12px;
+  --radius-badge: 5px;
+  --size-header-strip: 4px;
+  --size-thumb-w: 64px;
+  --size-thumb-h: 40px;
+  --spacing-3: 6px;
+  --grid: 72px;
+
+  --font-sans: "IBM Plex Sans KR", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}

@@ -17,6 +17,12 @@ src/torchflow/hub/static/
 # 로컬 상태 (--state-dir 기본값): 캐시·journal·layout·registry
 .torchflow/
 
+# 빌드 산출물
+web/tsconfig.tsbuildinfo
+
+# 기획 문서 (별도 관리)
+docs/
+
 # 도구 산출물
 graphify-out/
 CLAUDE.md
