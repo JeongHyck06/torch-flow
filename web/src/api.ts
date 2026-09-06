@@ -187,6 +187,12 @@ export async function evalExpression(expr: string, node: string): Promise<EvalRe
   return response.json();
 }
 
+export async function fetchCode():
+    Promise<{ code?: string; lines?: number; ir_sha256?: string; error?: string }> {
+  const response = await fetch("/api/code", { headers: authHeaders() });
+  return response.json();
+}
+
 export async function fetchLayout(): Promise<Record<string, { x: number; y: number }>> {
   const response = await fetch("/api/layout", { headers: authHeaders() });
   if (!response.ok) return {};
@@ -200,6 +206,42 @@ export async function saveLayout(key: string, position: { x: number; y: number }
     headers: { ...authHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ positions: { [key]: position } }),
   });
+}
+
+export interface TrainRun {
+  run_id: string; state: string; step: number; total: number;
+  device: string; alive: boolean; error: { message?: string } | null;
+  reason?: string; nan_step?: number;
+}
+
+export interface TrainOptions {
+  steps: number; batch: number; lr: number; optimizer: string;
+}
+
+/** 학습을 시작한다. 워커는 hub와 분리된 세션에서 돈다(§5.5.3). */
+export async function startTraining(options: TrainOptions):
+    Promise<TrainRun & { error?: string }> {
+  const response = await fetch("/api/train", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(options),
+  });
+  return response.json();
+}
+
+export async function controlTraining(runId: string, cmd: string, value?: number) {
+  const response = await fetch(`/api/train/${runId}`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ cmd, value }),
+  });
+  return response.json();
+}
+
+export async function fetchTraining(): Promise<TrainRun[]> {
+  const response = await fetch("/api/train", { headers: authHeaders() });
+  if (!response.ok) return [];
+  return (await response.json()).runs ?? [];
 }
 
 export async function runProbe(batch = 4) {

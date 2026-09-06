@@ -153,3 +153,13 @@ def test_shared_instance_is_built_once_and_called_twice():
     body = codegen.generate(ir).split("class MLP(nn.Module):")[1].split("class ")[0]
     assert body.count("self.fc1 = nn.Linear") == 1
     assert body.count("self.fc1(") == 2
+
+
+def test_graph_without_an_output_node_returns_its_sink():
+    """Output 노드를 안 붙였어도 끝나는 데는 있다 - 아무도 소비하지 않는 값이 결과다."""
+    ir = load(MINIVIT)
+    ir.graph.nodes = [node for node in ir.graph.nodes if node.label != "logits"]
+    ir.graph.edges = [edge for edge in ir.graph.edges if "01J9Q4B6" not in edge[1]]
+
+    body = codegen.generate(ir).split("class MiniViT(nn.Module):")[1]
+    assert "return head" in body

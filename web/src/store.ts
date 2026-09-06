@@ -34,6 +34,8 @@ interface State {
   /** 노드 키 -> 좌표. layout.json이 정본이고 IR은 좌표를 모른다(§10.1). */
   positions: Record<string, { x: number; y: number }>;
   runPanel: boolean;
+  /** 상단 탭. Experiment와 Runs는 M7 전까지 비어 있다. */
+  tab: "model" | "code";
   /** 역 op 스택. 스택에 든 op를 그대로 보내면 되돌아간다(§8.2.3). */
   undoStack: Op[];
   redoStack: Op[];
@@ -52,6 +54,7 @@ interface State {
   setProbeObjective: (objective: string) => void;
   toggleGradOverlay: () => void;
   toggleRunPanel: () => void;
+  setTab: (tab: State["tab"]) => void;
   setPosition: (key: string, position: { x: number; y: number }) => void;
   setPositions: (positions: Record<string, { x: number; y: number }>) => void;
   setTotals: (totals: Partial<State["totals"]>) => void;
@@ -90,6 +93,7 @@ export const useStore = create<State>((set, get) => ({
   gradOverlay: true,
   positions: {},
   runPanel: false,
+  tab: "model",
   undoStack: [],
   redoStack: [],
   dirty: false,
@@ -137,6 +141,7 @@ export const useStore = create<State>((set, get) => ({
   setProbeObjective: (probeObjective) => set({ probeObjective }),
   toggleGradOverlay: () => set((prev) => ({ gradOverlay: !prev.gradOverlay })),
   toggleRunPanel: () => set((prev) => ({ runPanel: !prev.runPanel })),
+  setTab: (tab) => set({ tab }),
   setPosition: (key, position) =>
     set((prev) => ({ positions: { ...prev.positions, [key]: position } })),
   setPositions: (positions) => set((prev) => ({ positions: { ...prev.positions, ...positions } })),

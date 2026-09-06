@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchCurve, fetchLogs, fetchRuns } from "../api";
 import type { CurveSeries, LogLine, RunInfo } from "../api";
 import { Console } from "./Console";
+import { Trainer } from "./Trainer";
 import { useStore } from "../store";
 
 type Tab = "curves" | "manifest" | "logs" | "console";
@@ -77,6 +78,7 @@ export function RunPanel() {
       </div>
 
       <div className="runpanel__body">
+        {tab === "curves" && <Trainer onChange={() => void refresh()} />}
         {tab === "curves" && (
           series.length === 0 || series.every((one) => one.points.length === 0) ? (
             <p className="mono muted">

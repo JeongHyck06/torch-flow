@@ -49,6 +49,11 @@ def generate(ir: ModuleGraph, *, version: str = "", source: str = "graph/model.t
     return _Writer(ir, version=version, source=source, specs=specs or {}).run()
 
 
+def model_params(ir: ModuleGraph) -> dict[str, Any]:
+    """생성된 최상위 클래스가 받는 인자들. 학습 워커가 무엇을 넘길지 여기서 안다."""
+    return _Writer(ir, version="", source="", specs={})._top_params()
+
+
 class CodegenError(ValueError):
     """코드로 옮길 수 없는 그래프. 노드에 귀속된다."""
 
@@ -248,6 +253,10 @@ class _Writer:
         if isinstance(scope, Composite):
             outputs = [values[src] for src, dst in scope.edges
                        if split_endpoint(dst)[0] == "$out" and src in values]
+        elif not outputs:
+            # Output 노드를 안 붙였어도 끝나는 데는 있다 - 아무도 소비하지 않는 값이 결과다.
+            consumed = {src for src, _ in scope.edges}
+            outputs = [variable for key, variable in values.items() if key not in consumed]
 
         lines = [f"    def forward({', '.join(['self', *inputs])}) -> Tensor:"]
         lines.extend(f"        {line}" for line in statements)

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 
 import { Canvas } from "./components/Canvas";
+import { CodeView } from "./components/CodeView";
 import { Inspector } from "./components/Inspector";
 import { RunPanel } from "./components/RunPanel";
 import { StartScreen } from "./components/StartScreen";
@@ -15,6 +16,7 @@ export function App() {
   const setKernel = useStore((state) => state.setKernel);
   const setTotals = useStore((state) => state.setTotals);
   const graph = useStore((state) => state.graph);
+  const tab = useStore((state) => state.tab);
   const [checked, setChecked] = useState(false);
 
   const load = useCallback(async () => {
@@ -50,12 +52,14 @@ export function App() {
     <div className="app">
       <TopBar />
       <main className="body">
-        <div className="canvas">
-          <ReactFlowProvider>
-            <Canvas />
-          </ReactFlowProvider>
-          <RunPanel />
-        </div>
+        {tab === "code" ? <CodeView /> : (
+          <div className="canvas">
+            <ReactFlowProvider>
+              <Canvas />
+            </ReactFlowProvider>
+            <RunPanel />
+          </div>
+        )}
         <Inspector />
       </main>
     </div>
