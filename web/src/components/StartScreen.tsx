@@ -8,8 +8,14 @@
 // 일이 없는 버튼은 없는 버튼보다 나쁘다.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchStart, importSource, inspectSource, newGraph, openGraph } from "../api";
-import type { Candidate, RecentGraph, StartInfo, Template } from "../api";
+import {
+  addDatasetFolder, fetchDatasets, fetchStart, importSource, inspectSource, newGraph, openGraph,
+} from "../api";
+import type { Candidate, DatasetInfo, RecentGraph, StartInfo, Template } from "../api";
+
+const KIND_LABEL: Record<string, string> = {
+  builtin: "내장", image_folder: "이미지 폴더", csv: "CSV 표", arrays: "npy 배열",
+};
 
 interface Dropped {
   filename: string;
@@ -25,9 +31,36 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
   const [factory, setFactory] = useState("");
   const [example, setExample] = useState("x=B,3,32,32:f32");
   const [hover, setHover] = useState(false);
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  const [folder, setFolder] = useState("");
   const picker = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { fetchStart().then(setInfo).catch(() => undefined); }, []);
+  useEffect(() => {
+    fetchStart().then(setInfo).catch(() => undefined);
+    fetchDatasets().then(setDatasets).catch(() => undefined);
+  }, []);
+
+  // 데이터부터 시작: Input/Output이 그 데이터 규격으로 깔린 새 그래프.
+  const startFromDataset = async (entry: DatasetInfo) => {
+    setBusy(entry.name);
+    setError(null);
+    const result = await newGraph(entry.label, entry.name);
+    setBusy(null);
+    if (result.error) setError(result.error);
+    else onOpened();
+  };
+
+  const addFolder = async () => {
+    const path = folder.trim();
+    if (!path) return;
+    setBusy("folder");
+    setError(null);
+    const result = await addDatasetFolder(path);
+    setBusy(null);
+    if (result.error) { setError(result.error); return; }
+    setFolder("");
+    setDatasets(await fetchDatasets());
+  };
 
   const startEmpty = async () => {
     setBusy("empty");
@@ -222,6 +255,46 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
             ) : (
               <p className="mono muted">아직 저장한 그래프가 없습니다. 저장하면 graph/ 에 쌓입니다</p>
             )}
+          </section>
+
+          <section>
+            <h3>내 데이터로 시작</h3>
+            <ul className="templates">
+              {datasets.map((entry) => (
+                <li key={entry.name}>
+                  <button className="templates__row" disabled={busy !== null}
+                          onClick={() => void startFromDataset(entry)}
+                          title={`Input [B, ${entry.shape.join(", ")}] · 출력 ${entry.classes} 클래스로 새 그래프`}>
+                    <span className="templates__left">
+                      <span className="templates__name">{entry.label}</span>
+                      <span className="templates__recipe mono">
+                        {KIND_LABEL[entry.kind] ?? entry.kind}
+                        {entry.count ? ` · ${entry.count.toLocaleString()}개` : ""}
+                        {` · [${entry.shape.join(", ")}]`}
+                        {entry.source === "builtin" && !entry.available ? " · 내려받기는 Run 패널에서" : ""}
+                      </span>
+                    </span>
+                    <span className="templates__metric mono">
+                      {busy === entry.name ? "여는 중" : `${entry.classes} 클래스`}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="datafolder">
+              <input
+                className="mono" value={folder} spellCheck={false}
+                placeholder="폴더 경로 (클래스별 하위 폴더 · CSV · x.npy+y.npy)"
+                aria-label="데이터 폴더 경로"
+                onChange={(event) => setFolder(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") void addFolder(); }}
+              />
+              <button className="ghost" onClick={() => void addFolder()}
+                      disabled={busy !== null || !folder.trim()}>
+                {busy === "folder" ? "확인 중" : "추가"}
+              </button>
+            </div>
+            <p className="mono muted scratch__hint">data/ 아래 폴더는 자동으로 뜹니다. 학습은 8:2로 나눠 검증합니다</p>
           </section>
 
           <section>

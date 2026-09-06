@@ -66,11 +66,13 @@ export async function fetchRegistry(): Promise<Block[]> {
 }
 
 /** 빈 그래프에서 시작한다. 첫 화면의 진입점 하나(§2.2). */
-export async function newGraph(name = "untitled"): Promise<{ ok?: boolean; error?: string }> {
+/** ``dataset``을 주면 Input/Output이 그 데이터 규격으로 깔린 채 열린다. */
+export async function newGraph(name = "untitled", dataset?: string):
+    Promise<{ ok?: boolean; error?: string }> {
   const response = await fetch("/api/new", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(dataset ? { name, dataset } : { name }),
   });
   return response.json();
 }
@@ -220,7 +222,20 @@ export interface TrainRun {
 }
 
 export interface DatasetInfo {
-  name: string; label: string; shape: number[]; classes: number; size_mb: number; available: boolean;
+  name: string; label: string; shape: number[]; classes: number; available: boolean;
+  /** builtin은 내려받는 것, user는 data/ 아래 폴더(이미지 폴더·CSV·npy). */
+  source: "builtin" | "user"; kind: string; size_mb?: number; count?: number;
+  class_names?: string[];
+}
+
+/** 다른 곳의 폴더를 data/ 에 링크로 등록한다. */
+export async function addDatasetFolder(path: string): Promise<DatasetInfo & { error?: string }> {
+  const response = await fetch("/api/datasets", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return response.json();
 }
 
 export async function fetchDatasets(): Promise<DatasetInfo[]> {
@@ -244,8 +259,10 @@ export interface TrainOptions {
 }
 
 /** 학습을 시작한다. 워커는 hub와 분리된 세션에서 돈다(§5.5.3). */
+export interface PortSpec { name: string; type: string; shape: (string | number)[]; dtype: string }
+
 export async function startTraining(options: TrainOptions):
-    Promise<TrainRun & { error?: string }> {
+    Promise<TrainRun & { error?: string; fix?: { node: string; ports_out: PortSpec[] } }> {
   const response = await fetch("/api/train", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },

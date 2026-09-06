@@ -354,6 +354,13 @@ body {
 .snippet__notes p { margin: 0; font-size: 12px; color: var(--text-muted); }
 .snippet__notes .mono { font-size: 12px; color: var(--text-secondary); }
 
+.datafolder { display: flex; gap: 8px; margin-top: 10px; }
+.datafolder input {
+  flex: 1; padding: 6px 10px; font-size: 12px;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-default); border-radius: 6px; color: var(--text-primary);
+}
+
 .scratch { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border-subtle); }
 .scratch__row { display: flex; align-items: center; gap: 16px; }
 .scratch__row > div { flex: 1 0 0; min-width: 0; }

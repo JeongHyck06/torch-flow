@@ -10,7 +10,9 @@
 import { useEffect, useState } from "react";
 
 import { controlTraining, downloadDataset, fetchDatasets, fetchTraining, startTraining } from "../api";
-import type { DatasetInfo, TrainRun } from "../api";
+import type { DatasetInfo, PortSpec, TrainRun } from "../api";
+import { applyEdit } from "../edit";
+import { op } from "../graph/ops";
 
 const RUNNING = new Set(["running", "starting"]);
 
@@ -26,11 +28,13 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   const [warmup, setWarmup] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // hub가 규격 불일치와 함께 준 고칠 op 재료. 버튼 하나로 Input을 데이터에 맞춘다.
+  const [fix, setFix] = useState<{ node: string; ports_out: PortSpec[] } | null>(null);
 
   const active = runs.find((run) => RUNNING.has(run.state) || run.state === "paused");
   const last = runs[runs.length - 1];
   const chosen = datasets.find((entry) => entry.name === dataset);
-  const needsDownload = chosen !== undefined && !chosen.available;
+  const needsDownload = chosen !== undefined && chosen.source === "builtin" && !chosen.available;
 
   useEffect(() => { fetchDatasets().then(setDatasets).catch(() => undefined); }, []);
 
@@ -50,12 +54,22 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   const start = async (smoke = false) => {
     setError(null);
     setNote(null);
+    setFix(null);
     const result = await startTraining(
       smoke ? { smoke: true, dataset }
         : { dataset, steps, batch, lr, optimizer: "adamw", scheduler: schedule,
             warmup_steps: warmup });
-    if (result.error) setError(result.error);
+    if (result.error) { setError(result.error); setFix(result.fix ?? null); }
     else setRuns((previous) => [...previous, result]);
+  };
+
+  const applyFix = async () => {
+    if (!fix) return;
+    const failed = await applyEdit(op("set_ports", { node: fix.node, ports_out: fix.ports_out }));
+    if (failed) { setError(failed); return; }
+    setFix(null);
+    setError(null);
+    onChange();
   };
 
   const download = async () => {
@@ -112,7 +126,8 @@ export function Trainer({ onChange }: { onChange: () => void }) {
               <option value="teacher">합성</option>
               {datasets.map((entry) => (
                 <option key={entry.name} value={entry.name}>
-                  {entry.label}{entry.available ? "" : " (내려받기 필요)"}
+                  {entry.label}
+                  {entry.source === "builtin" && !entry.available ? " (내려받기 필요)" : ""}
                 </option>
               ))}
             </select>
@@ -149,7 +164,9 @@ export function Trainer({ onChange }: { onChange: () => void }) {
           )}
           <span className="muted trainer__note">
             {chosen
-              ? `${chosen.label} · Input 규격 [B, ${chosen.shape.join(", ")}] · 검증은 test 분할`
+              ? `${chosen.label}${chosen.count ? ` ${chosen.count.toLocaleString()}개` : ""}`
+                + ` · Input 규격 [B, ${chosen.shape.join(", ")}] · 출력 ${chosen.classes} 클래스`
+                + (chosen.source === "user" ? " · 8:2로 나눠 검증" : " · 검증은 test 분할")
               : "합성 과제 · 무작위 입력에 고정 teacher 라벨"}
           </span>
         </>
@@ -200,6 +217,11 @@ export function Trainer({ onChange }: { onChange: () => void }) {
       )}
       {note && <span className="mono trainer__note">{note}</span>}
       {error && <span className="warn mono">{error}</span>}
+      {fix && (
+        <button className="trainer__stop" onClick={() => void applyFix()}>
+          Input을 [{fix.ports_out[0].shape.join(", ")}]로 맞추기
+        </button>
+      )}
       {active?.error && <span className="warn mono">{active.error.message}</span>}
     </div>
   );

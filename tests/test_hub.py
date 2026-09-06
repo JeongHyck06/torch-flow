@@ -690,3 +690,34 @@ def test_training_on_a_dataset_checks_the_input_spec(app, client, tmp_path):
     response = client.post("/api/train", headers=auth, json={"dataset": "mnist", "steps": 2})
     assert response.status_code == 400 and "1, 28, 28" in response.json()["error"]
     assert client.post("/api/datasets/nope/download", headers=auth).status_code == 404
+
+
+def test_a_new_graph_can_start_from_a_dataset(tmp_path):
+    """데이터부터 시작하면 Input이 그 규격으로 깔리고, 규격이 어긋난 학습 요청은 고칠 op를 준다."""
+    from test_datasets import write_image_folder
+
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        app.state.hub.data_dir = tmp_path / "data"
+        write_image_folder(tmp_path / "data")
+        names = [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]]
+        assert names == ["mnist", "shapes"]
+
+        assert client.post("/api/new", headers=auth, json={"dataset": "shapes"}).json()["name"] == "shapes"
+        graph = client.get("/api/graph", headers=auth).json()["graph"]["graph"]
+        assert {node["type"] for node in graph["nodes"]} == {"torchflow.Input", "torchflow.Output"}
+        entry = next(node for node in graph["nodes"] if node["type"] == "torchflow.Input")
+        assert entry["ports_out"][0]["shape"] == ["B", 3, 20, 20]
+
+        client.post("/api/ops", headers=auth, json={
+            "client_id": "c", "tmp_seq": 1, "kind": "set_ports",
+            "payload": {"node": "IN", "ports_out": [{"name": "x", "type": "Tensor",
+                                                     "shape": ["B", 1, 28, 28], "dtype": "float32"}]}})
+        response = client.post("/api/train", headers=auth, json={"dataset": "shapes", "steps": 1})
+        assert response.status_code == 400
+        assert response.json()["fix"]["ports_out"][0]["shape"] == ["B", 3, 20, 20]
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()

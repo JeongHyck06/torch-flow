@@ -568,11 +568,23 @@ def create_app(
         """빈 그래프에서 시작한다(§2.2의 진입점 다섯 중 하나)."""
         from ..ir import Graph
 
-        name = ((request or {}).get("name") or "untitled").strip() or "untitled"
+        request = request or {}
+        # 데이터부터 시작하면 Input과 Output을 그 규격으로 깔아 준다 - 모양을 손으로 옮겨 적지 않는다.
+        spec = datasets.describe(request["dataset"], hub.data_dir) if request.get("dataset") else None
+        if request.get("dataset") and spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {request['dataset']}"},
+                                status_code=400)
+        name = (request.get("name") or (spec["label"] if spec else "untitled")).strip() or "untitled"
+        nodes = []
+        if spec is not None:
+            nodes = [{"id": "IN", "label": "x", "type": "torchflow.Input",
+                      "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", *spec["shape"]],
+                                     "dtype": "float32"}]},
+                     {"id": "OUT", "label": "logits", "type": "torchflow.Output"}]
         # id를 여기서 박아 둔다. 없으면 새 프로젝트마다 run이 섞인다.
         meta = {"app_version": __version__, "id": uuid4().hex[:8].upper()}
-        hub.open(ModuleGraph(meta=meta, graph=Graph(name=name)))
-        return JSONResponse({"ok": True, "name": name})
+        hub.open(ModuleGraph(meta=meta, graph=Graph.model_validate({"name": name, "nodes": nodes})))
+        return JSONResponse({"ok": True, "name": name, "dataset": spec and spec["name"]})
 
     @app.post("/api/close")
     def close_graph() -> JSONResponse:
@@ -741,12 +753,24 @@ def create_app(
 
     @app.get("/api/datasets")
     def list_datasets() -> JSONResponse:
-        """내장 데이터셋과 내려받았는지 여부. 다운로드는 명시 버튼으로만(§3.1)."""
-        return JSONResponse({"datasets": [
-            {"name": name, "label": entry["label"], "shape": entry["shape"],
-             "classes": entry["classes"], "size_mb": entry["size_mb"],
-             "available": datasets.available(name, hub.data_dir)}
-            for name, entry in datasets.CATALOGUE.items()]})
+        """내장 데이터셋과 data/ 아래 사용자 데이터. 다운로드는 명시 버튼으로만(§3.1)."""
+        return JSONResponse({"datasets": datasets.scan(hub.data_dir)})
+
+    @app.post("/api/datasets")
+    def add_dataset_folder(request: dict[str, Any]) -> JSONResponse:
+        """다른 곳의 폴더를 data/ 에 링크로 등록한다. 복사하지 않는다."""
+        source = Path(request.get("path") or "").expanduser()
+        if not source.is_dir():
+            return JSONResponse({"error": f"폴더가 아닙니다: {source}"}, status_code=400)
+        spec = datasets.inspect(source)
+        if spec is None:
+            return JSONResponse({"error": "이미지 폴더(클래스별 하위 폴더), CSV, x.npy+y.npy 중 "
+                                          "무엇도 찾지 못했습니다"}, status_code=400)
+        hub.data_dir.mkdir(parents=True, exist_ok=True)
+        link = hub.data_dir / source.name
+        if not link.exists():
+            link.symlink_to(source.resolve(), target_is_directory=True)
+        return JSONResponse({"ok": True, **datasets.describe(source.name, hub.data_dir)})
 
     @app.post("/api/datasets/{name}/download")
     def download_dataset(name: str) -> JSONResponse:
@@ -776,13 +800,22 @@ def create_app(
         # 실제 데이터셋이면 워커를 띄우기 전에 규격을 맞춰 본다. 워커 안에서 터지면 사람은
         # stdout을 뒤져야 하고, 여기서 말하면 Input 노드를 고치면 된다.
         dataset = options.get("dataset", "teacher")
-        spec = datasets.CATALOGUE.get(dataset)
+        spec = datasets.describe(dataset, hub.data_dir) if dataset not in ("teacher", "noise") else None
+        if dataset not in ("teacher", "noise") and spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {dataset}"}, status_code=400)
         if spec is not None:
             given = list(entry.ports_out[0].shape or [])
             wanted = ", ".join(str(dim) for dim in ["B", *spec["shape"]])
             if given[1:] != spec["shape"]:
+                port = entry.ports_out[0]
                 return JSONResponse({"error": f"{spec['label']}의 입력은 [{wanted}]입니다. "
-                                              f"Input 노드의 규격을 {wanted}로 바꾸세요 (지금 {given})"},
+                                              f"Input 노드의 규격을 {wanted}로 바꾸세요 "
+                                              f"(지금 [{', '.join(map(str, given))}])",
+                                     # 화면이 버튼 하나로 고칠 수 있게 op 재료를 같이 준다.
+                                     "fix": {"node": entry.id,
+                                             "ports_out": [{"name": port.name, "type": port.type,
+                                                            "shape": ["B", *spec["shape"]],
+                                                            "dtype": port.dtype or "float32"}]}},
                                     status_code=400)
             sink = next((node for node in graph.nodes if node.type == "torchflow.Output"), None)
             logits = ((hub.node_states.get(sink.id) or {}).get("spec") or {}).get("shape") if sink else None
@@ -790,7 +823,7 @@ def create_app(
                 return JSONResponse({"error": f"{spec['label']}는 {spec['classes']}개 클래스입니다. "
                                               f"출력이 [B, {spec['classes']}]여야 합니다 (지금 {logits})"},
                                     status_code=400)
-            if not datasets.available(dataset, hub.data_dir):
+            if not spec["available"]:
                 return JSONResponse({"error": f"{spec['label']} 파일이 없습니다. 먼저 내려받으세요",
                                      "download": dataset}, status_code=400)
 
