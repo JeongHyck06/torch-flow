@@ -291,3 +291,19 @@ def test_node_stdout_reaches_the_log_routes(app, client):
     assert len(client.get("/api/logs", headers=auth).json()["logs"]) == 2
     only = client.get("/api/logs?node=01J9Q4B4", headers=auth).json()["logs"]
     assert [line["text"] for line in only] == ["forward one"]
+
+
+def test_export_returns_a_downloadable_figure(client):
+    """논문용 그림은 hub에서 바로 받는다(§6.4)."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    svg = client.get("/api/export?format=svg", headers=auth)
+    assert svg.status_code == 200
+    assert svg.headers["content-type"].startswith("image/svg+xml")
+    assert "attachment" in svg.headers["content-disposition"]
+    assert svg.text.startswith("<svg")
+
+    pdf = client.get("/api/export?format=pdf&preset=cvpr&anonymous=true", headers=auth)
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF")
+    assert b"TorchFlow" not in pdf.content
+
+    assert client.get("/api/export?format=png", headers=auth).status_code == 400

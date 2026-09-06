@@ -13,10 +13,10 @@ from typing import Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import protocol as proto
+from .. import __version__, paper, protocol as proto
 from ..ir import ModuleGraph, canonical_json, load
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
@@ -346,6 +346,30 @@ def create_app(
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
         return JSONResponse({"ok": True, "name": hub.store.ir.graph.name})
 
+    @app.get("/api/export")
+    def export_figure(format: str = "svg", preset: str = paper.DEFAULT_PRESET,
+                      anonymous: bool = False) -> Response:
+        """논문용 아키텍처 다이어그램(§6.4). 흑백 안전, IR 해시가 메타데이터에 박힌다."""
+        if hub.store is None:
+            return no_graph()
+        if format not in ("svg", "pdf"):
+            return JSONResponse({"error": f"unknown format: {format}"}, status_code=400)
+
+        figure = paper.build(
+            hub.store.ir,
+            node_states=hub.node_states,
+            preset=preset,
+            anonymous=anonymous,
+            version=__version__,
+        )
+        name = (hub.store.ir.graph.name or "figure").replace(" ", "-")
+        body = paper.to_svg(figure).encode("utf-8") if format == "svg" else paper.to_pdf(figure)
+        return Response(
+            content=body,
+            media_type="image/svg+xml" if format == "svg" else "application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{name}.{format}"'},
+        )
+
     @app.get("/api/layout")
     def read_layout() -> JSONResponse:
         return JSONResponse(hub.layout)
@@ -382,15 +406,20 @@ def create_app(
             grad = reply.grad or {}
             key = f"{reply.path}/{reply.node_id}" if reply.path else reply.node_id
             numeric = reply.numeric or {}
+            # L0(심볼 shape)와 L1(실측 B)은 다른 축이다(§5.3). L1이 도착해도 노드의
+            # shape는 L0의 것을 남기고 실측치는 배지로만 둔다 - 아니면 재접속
+            # 스냅샷과 논문용 그림에서 [B, 3, 32, 32]가 [4, 3, 32, 32]로 굳는다.
+            known = (hub.node_states.get(key) or {}).get("spec")
             state = proto.NodeState(
                 seq=hub.seq, node=reply.node_id, path=reply.path, axis="L1bwd",
                 state="ok.warn" if (grad.get("warn") or numeric.get("nan") or numeric.get("inf"))
                 else "ok",
-                spec=reply.spec,
+                spec=known or reply.spec,
                 badges={key: value for key, value in {
                     "grad_norm": grad.get("norm"), "grad_ratio": grad.get("ratio"),
                     "grad_warn": grad.get("warn"), "probe_objective": grad.get("objective"),
                     "histogram": reply.histogram, "device": grad.get("device"),
+                    "measured": reply.spec,
                 }.items() if value is not None},
             )
             hub.node_states[key] = {**(hub.node_states.get(key) or {}),

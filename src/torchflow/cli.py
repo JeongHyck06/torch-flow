@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 
 from . import __version__
+from .paper import PRESETS
 
 
 def _kv(pairs: tuple[str, ...]) -> dict:
@@ -122,6 +123,33 @@ def probe(graph: str, batch: int, objective: str, rt: tuple[str, ...]) -> None:
             f"  {node.label:<14} ‖g‖={node.grad_norm:.3e}  ‖g‖/‖w‖={node.grad_ratio:.2e}"
             f"  {node.warn or ''}", fg=colour)
     click.echo(f"\n  {result.objective} · loss={result.loss:.4f} · {result.elapsed_ms:.0f} ms")
+
+
+@main.command()
+@click.argument("graph", type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", type=click.Path(dir_okay=False), default="paper/figure.pdf",
+              show_default=True)
+@click.option("--preset", type=click.Choice(sorted(PRESETS)), default="neurips",
+              show_default=True, help="본문 단 폭 프리셋")
+@click.option("--anonymous", is_flag=True, help="도구 이름과 버전을 지운다 (이중 블라인드)")
+def export(graph: str, out: str, preset: str, anonymous: bool) -> None:
+    """아키텍처 다이어그램을 SVG 또는 PDF로 내보낸다 (§6.4)."""
+    from pathlib import Path
+
+    from . import paper
+    from .ir import load
+
+    figure = paper.build(load(graph), preset=preset, anonymous=anonymous,
+                         version=__version__)
+    path = Path(out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix == ".svg":
+        path.write_text(paper.to_svg(figure), encoding="utf-8")
+    else:
+        path.write_bytes(paper.to_pdf(figure))
+    width, height = figure.page
+    click.echo(f"  {len(figure.boxes)} nodes · {width:.0f}×{height:.0f} pt · "
+               f"ir {figure.ir_hash} → {path}")
 
 
 @main.group()

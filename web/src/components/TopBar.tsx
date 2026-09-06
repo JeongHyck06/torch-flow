@@ -19,6 +19,7 @@ export function TopBar() {
   const gradOverlay = useStore((state) => state.gradOverlay);
   const toggleGradOverlay = useStore((state) => state.toggleGradOverlay);
   const setProbing = useStore((state) => state.setProbing);
+  const token = useStore((state) => state.token);
 
   const probe = async () => {
     setProbing(true);
@@ -80,6 +81,21 @@ export function TopBar() {
           Grad-Flow
         </label>
         {attached && <span className="badge badge--attach">attached</span>}
+      </div>
+
+      {/* 논문용 그림(§6.4). 토큰이 쿼리로 지나가므로 링크 하나면 받아진다. */}
+      <div className="export">
+        <span className="export__label">그림</span>
+        {(["svg", "pdf"] as const).map((format) => (
+          <a
+            key={format}
+            className="export__link"
+            href={`/api/export?format=${format}&token=${encodeURIComponent(token)}`}
+            title="흑백 안전 · IR 해시 포함 (NeurIPS 5.5 in)"
+          >
+            {format.toUpperCase()}
+          </a>
+        ))}
       </div>
 
       <div className="totals">

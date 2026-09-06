@@ -64,6 +64,14 @@ body {
 
 .totals { display: flex; align-items: center; gap: 14px; margin-left: auto; color: var(--text-secondary); }
 .totals__item { font-family: var(--font-mono); font-size: 11px; }
+
+.export { display: flex; align-items: center; gap: 8px; }
+.export__label { font-size: 11px; color: var(--text-muted); }
+.export__link {
+  font: 500 11px var(--font-mono); color: var(--text-secondary); text-decoration: none;
+  border-bottom: 1px solid var(--border-default); padding-bottom: 1px;
+}
+.export__link:hover { color: var(--text-primary); border-bottom-color: var(--text-primary); }
 .totals__batch { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
 .totals__batch input { width: 96px; accent-color: var(--text-secondary); }
 
