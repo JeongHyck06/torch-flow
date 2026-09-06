@@ -3,6 +3,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 
 import { Canvas } from "./components/Canvas";
 import { Inspector } from "./components/Inspector";
+import { RunPanel } from "./components/RunPanel";
 import { StartScreen } from "./components/StartScreen";
 import { TopBar } from "./components/TopBar";
 import { connect, fetchGraph, fetchHealth, fetchLayout, runShapes } from "./api";
@@ -51,6 +52,7 @@ export function App() {
           <ReactFlowProvider>
             <Canvas />
           </ReactFlowProvider>
+          <RunPanel />
         </div>
         <Inspector />
       </main>

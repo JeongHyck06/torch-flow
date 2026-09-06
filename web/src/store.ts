@@ -32,6 +32,7 @@ interface State {
   gradOverlay: boolean;
   /** 노드 키 -> 좌표. layout.json이 정본이고 IR은 좌표를 모른다(§10.1). */
   positions: Record<string, { x: number; y: number }>;
+  runPanel: boolean;
 
   setGraph: (graph: ModuleGraph, seq: number) => void;
   applyNodeState: (state: NodeState) => void;
@@ -42,6 +43,7 @@ interface State {
   setProbing: (probing: boolean) => void;
   setProbeObjective: (objective: string) => void;
   toggleGradOverlay: () => void;
+  toggleRunPanel: () => void;
   setPosition: (key: string, position: { x: number; y: number }) => void;
   setPositions: (positions: Record<string, { x: number; y: number }>) => void;
   setTotals: (totals: Partial<State["totals"]>) => void;
@@ -72,6 +74,7 @@ export const useStore = create<State>((set) => ({
   probeObjective: "",
   gradOverlay: true,
   positions: {},
+  runPanel: false,
 
   setGraph: (graph, seq) =>
     // 브레드크럼의 뿌리는 그래프 이름이다.
@@ -108,6 +111,7 @@ export const useStore = create<State>((set) => ({
   setProbing: (probing) => set({ probing }),
   setProbeObjective: (probeObjective) => set({ probeObjective }),
   toggleGradOverlay: () => set((prev) => ({ gradOverlay: !prev.gradOverlay })),
+  toggleRunPanel: () => set((prev) => ({ runPanel: !prev.runPanel })),
   setPosition: (key, position) =>
     set((prev) => ({ positions: { ...prev.positions, [key]: position } })),
   setPositions: (positions) => set((prev) => ({ positions: { ...prev.positions, ...positions } })),

@@ -84,6 +84,32 @@ export async function importSource(request: {
   return response.json();
 }
 
+export interface RunInfo {
+  id: string; kind: string; name: string | null; status: string;
+  created: number; updated: number; keys: string[]; manifest: Record<string, unknown>;
+}
+
+export interface CurveSeries { run: string; points: [number, number][] }
+
+export async function fetchRuns(): Promise<RunInfo[]> {
+  const response = await fetch("/api/runs", { headers: authHeaders() });
+  if (!response.ok) return [];
+  return (await response.json()).runs ?? [];
+}
+
+export async function fetchCurve(key: string, runs: string[]): Promise<CurveSeries[]> {
+  const query = new URLSearchParams({ key, runs: runs.join(",") });
+  const response = await fetch(`/api/runs/curve?${query}`, { headers: authHeaders() });
+  if (!response.ok) return [];
+  return (await response.json()).series ?? [];
+}
+
+export async function fetchLogs() {
+  const response = await fetch("/api/logs", { headers: authHeaders() });
+  if (!response.ok) return [];
+  return (await response.json()).logs ?? [];
+}
+
 export async function fetchLayout(): Promise<Record<string, { x: number; y: number }>> {
   const response = await fetch("/api/layout", { headers: authHeaders() });
   if (!response.ok) return {};
