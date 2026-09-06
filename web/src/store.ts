@@ -73,7 +73,13 @@ export const useStore = create<State>((set) => ({
   gradOverlay: true,
   positions: {},
 
-  setGraph: (graph, seq) => set({ graph, seq }),
+  setGraph: (graph, seq) =>
+    // 브레드크럼의 뿌리는 그래프 이름이다.
+    set((prev) => ({
+      graph, seq,
+      scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" },
+               ...prev.scopes.slice(1)],
+    })),
   applyNodeState: (state) =>
     // L1은 L0가 채운 spec 위에 grad 배지를 얹는다 - 축이 다르므로 덮어쓰지 않고 합친다.
     set((prev) => {

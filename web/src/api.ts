@@ -33,11 +33,16 @@ export interface Template {
   path: string; available: boolean;
 }
 
+export interface Candidate {
+  name: string; bases: string[]; suggestion: string; doc: string;
+  params: { name: string; annotation: string | null; default: unknown }[];
+}
+
 export interface StartInfo {
   graph_open: boolean;
   state_dir: string;
   torch_version: string | null;
-  devices: { name: string; note: string | null }[];
+  devices: { name: string; label: string }[];
   templates: Template[];
 }
 
@@ -52,6 +57,29 @@ export async function openGraph(path: string): Promise<{ ok?: boolean; error?: s
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
+  });
+  return response.json();
+}
+
+/** 드롭된 소스를 hub가 ast로 읽는다. 실행하지 않는다. */
+export async function inspectSource(source: string):
+    Promise<{ candidates?: Candidate[]; error?: string }> {
+  const response = await fetch("/api/inspect", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+  return response.json();
+}
+
+/** 커널이 모델을 만들고 한 번 돌려 그래프로 편다. */
+export async function importSource(request: {
+  filename: string; source: string; factory: string; example: string;
+}): Promise<{ ok?: boolean; error?: string; stage?: string }> {
+  const response = await fetch("/api/import", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(request),
   });
   return response.json();
 }
