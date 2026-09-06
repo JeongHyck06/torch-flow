@@ -16,9 +16,11 @@ early cutoff이 L0에서 취하는 형태다.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import time
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -91,6 +93,8 @@ class CacheEntry:
 @dataclass
 class PassResult:
     nodes: list[NodeReport] = field(default_factory=list)
+    # 노드별 stdout/stderr(§5.6.1). 실행 중 찍힌 것만, 캐시 히트에는 없다.
+    captured: list[dict[str, Any]] = field(default_factory=list)
     total_params: int = 0
     error: dict[str, Any] | None = None
     elapsed_ms: float = 0.0
@@ -188,6 +192,7 @@ class L0Pass:
 
         self._symbols: dict[str, int] = {}
         self._reports: list[NodeReport] = []
+        self.captured: list[dict[str, Any]] = []
         self._used_modules: set[str] = set()
         self._misses = 0
         self._composite_hashes: dict[str, str] = {}
@@ -321,6 +326,7 @@ class L0Pass:
             }
         return PassResult(
             nodes=self._reports,
+            captured=self.captured,
             total_params=self._count_params(),
             error=error,
             elapsed_ms=(time.perf_counter() - started) * 1000,
@@ -362,7 +368,7 @@ class L0Pass:
                 kwargs[port] = values[src]
             started = time.perf_counter()
             before = self._misses
-            outputs = self._exec_node(node, scope, env, kwargs, path, call_path)
+            outputs = self._exec_capture(node, scope, env, kwargs, path, call_path)
             elapsed = (time.perf_counter() - started) * 1000
             self._on_node(node, call_path, outputs)
             for name, value in outputs.items():
@@ -383,6 +389,24 @@ class L0Pass:
             if node_id == "$out":
                 results[port] = values[src]
         return results
+
+    def _exec_capture(self, node: Node, scope, env, kwargs, path, call_path="") -> dict[str, Any]:
+        """노드가 찍은 stdout/stderr를 그 노드에 귀속시킨다(§5.6.1 stdout 라우팅).
+
+        리다이렉트는 중첩되므로 컴포지트 안쪽에서 찍힌 줄은 바깥 호출 노드가 아니라
+        실제로 찍은 리프 노드에 붙는다. 예외로 끝나도 그때까지 나온 출력은 남긴다 -
+        디버깅에서 보고 싶은 것이 대개 그것이다.
+        """
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                return self._exec_node(node, scope, env, kwargs, path, call_path)
+        finally:
+            for stream, buffer in (("stdout", out), ("stderr", err)):
+                text = buffer.getvalue().rstrip()
+                if text:
+                    self.captured.append({"node_id": node.id, "path": call_path,
+                                          "stream": stream, "text": text})
 
     def _exec_node(self, node: Node, scope, env, kwargs, path, call_path="") -> dict[str, Any]:
         if node.enabled is not None and not self._resolve(node.id, node.enabled, env):

@@ -92,6 +92,7 @@ class L1Result:
     forward_only: bool = False
     error: dict[str, Any] | None = None
     first_nonfinite: str | None = None
+    captured: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -113,6 +114,9 @@ class L1Pass(L0Pass):
         # B를 구체값으로 묶는다 - 실제 텐서를 만들어야 하므로 심볼로 둘 수 없다.
         self.forced.setdefault("B", self.probe.batch)
         self.activations: dict[str, Any] = {}
+        # Debug Console(§5.6.1)이 ``x``와 ``batch``로 내보이는 것들.
+        self.node_inputs: dict[str, dict[str, Any]] = {}
+        self.graph_inputs: dict[str, Any] = {}
         self.node_order: list[tuple[str, Node, str]] = []
         self.outputs: dict[str, Any] = {}
         self._backward_error: dict[str, Any] | None = None
@@ -175,6 +179,16 @@ class L1Pass(L0Pass):
                     module.eval()
         return module
 
+    def _exec_node(self, node, scope, env, kwargs, path, call_path=""):
+        key = f"{call_path}/{node.id}" if call_path else node.id
+        self.node_inputs[key] = {port: value for port, value in kwargs.items()
+                                 if self.torch.is_tensor(value)}
+        outputs = super()._exec_node(node, scope, env, kwargs, path, call_path)
+        if node.type == "torchflow.Input" and not call_path:
+            self.graph_inputs.update({port: value for port, value in outputs.items()
+                                      if self.torch.is_tensor(value)})
+        return outputs
+
     def _on_node(self, node, call_path, outputs):
         key = f"{call_path}/{node.id}" if call_path else node.id
         first = next(iter(outputs.values()), None)
@@ -218,6 +232,7 @@ class L1Pass(L0Pass):
                 device=str(self.device),
                 error=_error_of(exc),
                 elapsed_ms=(time.perf_counter() - started) * 1000,
+                captured=self.captured,
             )
 
         modules = self._probe_modules()
@@ -255,6 +270,7 @@ class L1Pass(L0Pass):
             forward_only=forward_only,
             first_nonfinite=first_nonfinite,
             error=self._backward_error,
+            captured=self.captured,
         )
 
     def _synchronize(self) -> None:

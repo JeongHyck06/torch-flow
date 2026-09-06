@@ -1,6 +1,10 @@
 // Inspector - 박스 없는 `라벨 …… 값` 조밀한 행 (Figma Screens).
 // 파라미터 편집 폼은 M5(IR 편집 op). 지금은 읽기 전용이다.
 
+import { useEffect, useState } from "react";
+
+import { fetchLogs } from "../api";
+import type { LogLine } from "../api";
 import { currentScope, useStore } from "../store";
 import { formatRatio, formatShape } from "../theme";
 
@@ -10,6 +14,20 @@ export function Inspector() {
   const selected = useStore((state) => state.selected);
   const states = useStore((state) => state.nodeStates);
   const scope = currentScope({ graph, scopes });
+  const stateKey = selected
+    ? (scopes[scopes.length - 1].callPath
+        ? `${scopes[scopes.length - 1].callPath}/${selected}` : selected)
+    : "";
+  const [logs, setLogs] = useState<LogLine[]>([]);
+
+  // 이 노드가 찍은 stdout/stderr(§5.6.1). 하단 로그 탭과 같은 테이블을 읽는다.
+  useEffect(() => {
+    if (!stateKey) return setLogs([]);
+    let cancelled = false;
+    fetchLogs(stateKey).then((lines) => { if (!cancelled) setLogs(lines); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [stateKey, states[stateKey]?.seq]);
 
   if (!scope || !selected) {
     return (
@@ -27,10 +45,9 @@ export function Inspector() {
     );
   }
 
-  const callPath = scopes[scopes.length - 1].callPath;
   const node = scope.nodes?.find((candidate) => candidate.id === selected);
   const instance = node?.call ? scope.instances?.[node.call] : undefined;
-  const state = states[callPath ? `${callPath}/${selected}` : selected];
+  const state = states[stateKey];
   const args = { ...(instance?.args ?? {}), ...(node?.args ?? {}) };
   const badges = state?.badges ?? {};
 
@@ -96,6 +113,15 @@ export function Inspector() {
         <>
           <h3>활성값 분포</h3>
           <Histogram bins={badges.histogram as number[]} />
+        </>
+      )}
+
+      {logs.length > 0 && (
+        <>
+          <h3>출력</h3>
+          <pre className="mono inspector__stdout">
+            {logs.map((line) => line.text).join("\n")}
+          </pre>
         </>
       )}
 

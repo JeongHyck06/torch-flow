@@ -100,6 +100,16 @@ class EstimateMemory(_Msg):
     amp: bool = False
 
 
+class Eval(_Msg):
+    """Debug Console (§5.6.1). 선택 노드의 마지막 probe 값을 표현식으로 조회한다."""
+
+    type: Literal["Eval"] = "Eval"
+    req_id: str
+    expr: str
+    node_id: str = ""
+    path: str = ""
+
+
 class Shutdown(_Msg):
     type: Literal["Shutdown"] = "Shutdown"
     req_id: str = "shutdown"
@@ -107,7 +117,7 @@ class Shutdown(_Msg):
 
 ToKernel = Annotated[
     Union[Ping, RunNodes, RunClosure, Cancel, ReloadBlocks, ImportTrace, EstimateMemory,
-          Shutdown],
+          Eval, Shutdown],
     Field(discriminator="type"),
 ]
 
@@ -208,6 +218,15 @@ class MemoryEstimate(_Msg):
     error: dict[str, Any] | None = None
 
 
+class EvalResult(_Msg):
+    type: Literal["EvalResult"] = "EvalResult"
+    req_id: str
+    ok: bool = True
+    text: str = ""
+    spec: dict[str, Any] | None = None
+    error: str | None = None
+
+
 class Progress(_Msg):
     """요청 하나의 종결 메시지. 패스 총계도 여기 실린다."""
 
@@ -220,7 +239,7 @@ class Progress(_Msg):
 
 
 FromKernel = Annotated[
-    Union[Ready, Pong, Done, Error, Busy, Log, Progress, MemoryEstimate, Imported],
+    Union[Ready, Pong, Done, Error, Busy, Log, Progress, MemoryEstimate, Imported, EvalResult],
     Field(discriminator="type"),
 ]
 
