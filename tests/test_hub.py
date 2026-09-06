@@ -608,3 +608,23 @@ def test_training_refuses_a_graph_without_an_input(app, client):
 
     response = client.post("/api/train", headers=auth, json={})
     assert response.status_code == 400 and "Input" in response.json()["error"]
+
+
+def test_save_refuses_to_overwrite_another_graph(tmp_path):
+    """같은 이름의 새 그래프가 기존 파일을 말없이 지우면 안 된다."""
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    target = tmp_path / "graph" / "scratch.tfg.json"
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        client.post("/api/new", headers=auth, json={"name": "scratch"})
+        assert client.post("/api/save", headers=auth, json={"path": str(target)}).status_code == 200
+        # 열려 있는 파일에 다시 저장하는 것은 된다.
+        assert client.post("/api/save", headers=auth, json={"path": str(target)}).status_code == 200
+
+        client.post("/api/new", headers=auth, json={"name": "scratch"})
+        response = client.post("/api/save", headers=auth, json={"path": str(target)})
+        assert response.status_code == 409 and "이미 있습니다" in response.json()["error"]
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()

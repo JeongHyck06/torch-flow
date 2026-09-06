@@ -596,6 +596,11 @@ def create_app(
                                   and hub.graph_path.name == f"{name}.tfg.json") else None
         path = Path(given).expanduser() if given else (
             keep or Path.cwd() / "graph" / f"{name}.tfg.json")
+        # 열려 있는 파일이 아닌데 이미 있으면 덮어쓰지 않는다 - 다른 그래프가 지워진다.
+        if path.is_file() and (hub.graph_path is None
+                               or path.resolve() != hub.graph_path.resolve()):
+            return JSONResponse({"error": f"{path.name}이 이미 있습니다. 이름을 바꿔 저장하세요"},
+                                status_code=409)
         problems = ir_problems(hub.store.ir)
         path.parent.mkdir(parents=True, exist_ok=True)
         hub.store.save(path)
