@@ -4,12 +4,53 @@
 // 상태 링이 카드 테두리가 아닌 이유: 테두리를 물들이면 카테고리 스트립과
 // 경쟁하고, 6px 바깥의 분리된 링이라야 색을 못 봐도 형태로 읽힌다.
 
+import { useEffect, useRef } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { LOD_WIDTH, STATUS, categoryColor, formatCount, formatRatio, formatShape } from "../theme";
 import type { NodeStateName } from "../theme";
 
 export type Lod = "far" | "mid" | "near" | "focus";
+
+/** Conv 출력의 채널 격자(§6.3 Feature Map). 커널이 보낸 회색조 바이트를 그대로 찍는다. */
+export function FeatureMap({ map }: { map: { size: number; pixels: string; channels: number; shown: number } }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const context = canvas.current?.getContext("2d");
+    if (!context) return;
+    const bytes = Uint8Array.from(atob(map.pixels), (character) => character.charCodeAt(0));
+    const image = context.createImageData(map.size, map.size);
+    for (let index = 0; index < bytes.length; index += 1) {
+      // 회색조 한 바이트를 RGBA로 편다. 색은 쓰지 않는다 - 크롬은 무채색이다.
+      const value = bytes[index];
+      image.data.set([value, value, value, 255], index * 4);
+    }
+    context.putImageData(image, 0, 0);
+  }, [map]);
+
+  return (
+    <canvas ref={canvas} width={map.size} height={map.size}
+            className="node__thumb node__thumb--map"
+            title={`채널 ${map.shown} / ${map.channels}`} />
+  );
+}
+
+/** 64x40 썸네일에 들어가는 활성값 히스토그램. 축도 눈금도 없다 - 모양만 본다. */
+export function Thumbnail({ bins, color }: { bins: number[]; color?: string }) {
+  const peak = Math.max(...bins, 1);
+  const step = 64 / bins.length;
+  return (
+    <svg className="node__thumb node__thumb--chart" viewBox="0 0 64 40"
+         role="img" aria-label="활성값 분포">
+      {bins.map((count, index) => (
+        <rect key={index} x={index * step} y={40 - (count / peak) * 40}
+              width={Math.max(step - 0.2, 0.3)} height={(count / peak) * 40}
+              fill={color ?? "var(--dtype-f32)"} />
+      ))}
+    </svg>
+  );
+}
 
 export interface NodeCardData extends Record<string, unknown> {
   label: string;
@@ -27,6 +68,8 @@ export interface NodeCardData extends Record<string, unknown> {
   gradRatio?: number;
   gradWarn?: string;
   gradColor?: string;
+  histogram?: number[];
+  feature?: { size: number; pixels: string; channels: number; shown: number };
   folded?: boolean;
   enterable: boolean;
   lod: Lod;
@@ -83,10 +126,16 @@ export function NodeCard({ data }: NodeProps) {
             <div className="node__mid">
               {/* 썸네일은 채울 것이 있을 때만 - 빈 회색 박스는 확대할 때마다 눈에 걸린다.
                   프로브 결과(Grad-Flow 색, Feature Map)가 들어오면 나타난다(§6.1). */}
-              {node.gradColor && (
+              {node.feature ? (
+                <FeatureMap map={node.feature} />
+              ) : node.histogram?.length ? (
+                // 활성값 분포 썸네일(§6.3 Histogram). 막대 색은 Grad-Flow 색을 따른다 -
+                // 한 칸에 "얼마나 큰 기울기"와 "값이 어떻게 퍼져 있나"가 같이 담긴다.
+                <Thumbnail bins={node.histogram} color={node.gradColor} />
+              ) : node.gradColor ? (
                 <div className="node__thumb"
                      style={{ background: node.gradColor, borderColor: "transparent" }} />
-              )}
+              ) : null}
               <span className="node__shape">{formatShape(node.shape)}</span>
             </div>
           ) : showBody ? (

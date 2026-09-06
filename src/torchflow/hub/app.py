@@ -6,11 +6,12 @@ L0 커널 프로세스에서 돈다. ``tests/test_hub.py``가 이 불변식을 �
 
 from __future__ import annotations
 
+import hashlib
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-
-from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -30,7 +31,8 @@ from .kernels import KernelManager
 class Hub:
     """그래프 상태 · 커널 · 접속 클라이언트를 한 곳에서 소유한다."""
 
-    def __init__(self, ir: ModuleGraph | None, state_dir: Path, rt: dict[str, Any] | None = None):
+    def __init__(self, ir: ModuleGraph | None, state_dir: Path, rt: dict[str, Any] | None = None,
+                 path: Path | None = None):
         self.state_dir = state_dir
         # 그래프 없이도 뜬다 - 첫 화면에서 무엇으로 시작할지 고르게 하기 위해(§2.2).
         self.store: GraphStore | None = None
@@ -49,15 +51,19 @@ class Hub:
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
         self.attached = False
+        self._graph_id: str | None = None
         self.total_params = 0
         self.rerun_ratio = 0.0
         self.layout_path = state_dir / "layout.json"
         self.layout = self._load_layout()
         if ir is not None:
-            self.open(ir)
+            # 경로를 같이 넘긴다. 안 넘기면 CLI로 연 그래프가 저장된 파일이 아닌 것처럼
+            # 보여서, 같은 파일을 다시 열 때 identity가 달라진다.
+            self.open(ir, path)
 
     def open(self, ir: ModuleGraph, path: Path | None = None) -> None:
         """그래프를 연다. 첫 화면에서 템플릿을 고르면 이 경로로 들어온다."""
+        self._graph_id = (ir.meta or {}).get("id") or _graph_id_for(path)
         self.store = GraphStore(ir, self.state_dir / "journal.jsonl")
         self.engine = Engine(ir)
         self.graph_path = path
@@ -210,6 +216,51 @@ class Hub:
         """워커가 남긴 이벤트를 트래커로 옮긴다. 곡선을 물어볼 때마다 부른다."""
         for handle in self.l2.values():
             l2.merge(handle, self.tracker)
+            # 워커가 "적용했다"고 말한 것만 적는다. hub가 명령을 낸 step이 아니라
+            # 실제로 반영된 step이 재현에 쓸 수 있는 숫자다.
+            if handle.overrides_dirty:
+                handle.overrides_dirty = False
+                l2.write_overrides(handle.run_id, handle.extra["overrides"],
+                                   self.runs_dir.parent)
+
+    @property
+    def graph_id(self) -> str | None:
+        """지금 열린 그래프의 identity. run이 어느 그래프 것인지 가르는 값이다.
+
+        IR 해시가 아니라 identity인 이유: 해시는 편집할 때마다 바뀌므로 그것으로
+        묶으면 노드 하나 고친 순간 이전 run이 남이 된다. 비교하려고 남기는 것이
+        곡선인데 그러면 쓸모가 없다.
+        """
+        return None if self.store is None else self._graph_id
+
+    def occupied_devices(self) -> list[str]:
+        """L2 워커가 잡고 있는 가속기. L1은 여기를 피해 배정한다(§5.1.5)."""
+        return sorted({handle.device for handle in self.l2.values()
+                       if handle.alive and handle.device and handle.device != "cpu"})
+
+    def recover(self) -> list[str]:
+        """hub가 다시 떴을 때 ``runs/``를 훑어 run을 다시 집는다(§5.5.3).
+
+        워커는 hub와 분리된 세션이라 hub가 죽는 동안에도 계속 돌았다.
+        ``events.jsonl``이 정본이므로 스칼라를 지우고 파일을 처음부터 다시 읽는다 -
+        hub가 죽은 뒤에 쌓인 부분이 그래야 들어온다.
+        """
+        found = []
+        for job in sorted(self.runs_dir.glob("*/job.json")):
+            run_id = job.parent.name
+            if run_id in self.l2:
+                continue
+            handle = l2.RunHandle(run_id=run_id, directory=job.parent)
+            try:
+                handle.extra["graph_id"] = json.loads(job.read_text(encoding="utf-8")).get("graph_id")
+            except (OSError, json.JSONDecodeError):
+                pass
+            self.tracker.ensure_run(run_id, graph_id=handle.extra.get("graph_id"))
+            self.tracker.clear_scalars(run_id)
+            self.l2[run_id] = handle
+            l2.merge(handle, self.tracker)
+            found.append(run_id)
+        return found
 
     def absorb_logs(self, replies: list) -> None:
         """커널이 올린 노드별 stdout/stderr를 트래커에 남긴다(§5.6.1).
@@ -228,6 +279,67 @@ class Hub:
                 await client.send_text(payload)
             except (WebSocketDisconnect, RuntimeError):
                 self.clients.remove(client)
+
+
+# 재시작이 필요한 변경을 사람 말로 옮긴 것. Phase B는 **표시만** 한다 - 자동
+# 재시작은 신뢰를 깨므로 사람이 Stop하고 다시 누른다(ADR-05).
+RESTART_REASON = {
+    "scheduler": "스케줄러 변경은 재생성이 필요합니다. Stop 후 다시 Run하세요",
+    "restart": "가중치는 유지되지만 재시작이 필요합니다. Stop 후 다시 Run하세요",
+    "cold": "데이터·시드 변경은 step 0부터 다시 돌려야 합니다",
+}
+
+
+def _apply_hparam(hub: "Hub", handle, options: dict[str, Any]) -> JSONResponse:
+    """학습 중 hparam 변경(§5.7.1, §5.7.2).
+
+    HOT이 아니면 재시작 필요를 알리고 아무것도 하지 않는다. HOT이어도 run이
+    ``reported``면 in-place로 못 바꾼다 - 갈라진 run을 새로 만든다.
+    """
+    path = options.get("path") or "optim.lr"
+    value = options["value"]
+    change = l2.classify(path)
+    if change != "hot":
+        return JSONResponse({"ok": False, "restart_required": change, "path": path,
+                             "message": RESTART_REASON[change]})
+
+    run = hub.tracker.run(handle.run_id)
+    entry = {"step": handle.step, "path": path, "value": value}
+    if run is not None and run.kind == "reported":
+        child = l2.fork(handle, root=hub.runs_dir, changes=l2.hot_command(path, value))
+        child.extra["kind"] = "reported"
+        child.extra["graph_id"] = handle.extra.get("graph_id")
+        hub.l2[child.run_id] = child
+        hub.tracker.ensure_run(child.run_id, kind="reported", parent_run=handle.run_id,
+                               name=run.name, graph_id=run.graph_id,
+                               manifest={**run.manifest, "parent_run": handle.run_id,
+                                         "forked_at_step": handle.step})
+        # 갈라진 run의 lr은 job.json에 박혀 있어 워커가 따로 알려 주지 않는다.
+        # 갈라진 지점의 변경은 여기서만 기록할 수 있다.
+        child.extra["overrides"] = [*handle.extra.get("overrides", []), entry]
+        l2.write_overrides(child.run_id, child.extra["overrides"], hub.runs_dir.parent)
+        l2.merge(handle, hub.tracker)
+        return JSONResponse({"ok": True, "forked_from": handle.run_id, **child.as_dict()})
+
+    # in-place 적용. overrides 파일은 워커가 반영을 알려 오면 sync_runs가 쓴다.
+    l2.command(handle, **l2.hot_command(path, value))
+    l2.merge(handle, hub.tracker)
+    return JSONResponse({"ok": True, **handle.as_dict()})
+
+
+def _graph_id_for(path: Path | None) -> str:
+    """``meta.id``가 없는 그래프의 identity.
+
+    id 없이 저장된 그래프가 이미 있다. 그때 "가르지 않는다"로 떨어지면 그 그래프를
+    열 때마다 남의 run이 전부 딸려 온다 - 이 함수가 없을 때 그랬다.
+
+    파일 경로에서 만든다. hub를 다시 띄워도 같은 값이라 곡선이 그 그래프에 계속
+    붙어 있는다. 저장 전 그래프는 경로가 없으므로 이 세션 동안만 유효한 값을 준다.
+    """
+    if path is None:
+        return f"session-{uuid4().hex[:8].upper()}"
+    digest = hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()
+    return f"path-{digest[:12]}"
 
 
 def _class_name(name: str) -> str:
@@ -255,9 +367,8 @@ def create_app(
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     # 그래프 없이 뜨면 첫 화면이 뜬다(§2.2의 5개 진입점).
-    hub = Hub(load(graph_path) if graph_path else None, state_dir, rt)
-    if graph_path:
-        hub.graph_path = Path(graph_path)
+    hub = Hub(load(graph_path) if graph_path else None, state_dir, rt,
+              path=Path(graph_path) if graph_path else None)
     token = token or new_token()
 
     @asynccontextmanager
@@ -444,7 +555,9 @@ def create_app(
         from ..ir import Graph
 
         name = ((request or {}).get("name") or "untitled").strip() or "untitled"
-        hub.open(ModuleGraph(graph=Graph(name=name)))
+        # id를 여기서 박아 둔다. 없으면 새 프로젝트마다 run이 섞인다.
+        meta = {"app_version": __version__, "id": uuid4().hex[:8].upper()}
+        hub.open(ModuleGraph(meta=meta, graph=Graph(name=name)))
         return JSONResponse({"ok": True, "name": name})
 
     @app.post("/api/close")
@@ -503,8 +616,10 @@ def create_app(
             return JSONResponse({"ok": False, "error": "attached session drives L1"},
                                 status_code=409)
         hub.l1.ensure()
+        hub.sync_runs()
         replies = hub.l1.request(proto.RunClosure(
-            req_id=f"p-{hub.seq}", graph=hub.snapshot_for_kernel(), probe_cfg=cfg or {}))
+            req_id=f"p-{hub.seq}", graph=hub.snapshot_for_kernel(), probe_cfg=cfg or {},
+            occupied=hub.occupied_devices()))
 
         hub.absorb_logs(replies)
         busy = next((r for r in replies if r.type == "Busy"), None)
@@ -528,7 +643,8 @@ def create_app(
                 badges={key: value for key, value in {
                     "grad_norm": grad.get("norm"), "grad_ratio": grad.get("ratio"),
                     "grad_warn": grad.get("warn"), "probe_objective": grad.get("objective"),
-                    "histogram": reply.histogram, "device": grad.get("device"),
+                    "histogram": reply.histogram, "feature": reply.feature,
+                    "device": grad.get("device"),
                     "measured": reply.spec,
                 }.items() if value is not None},
             )
@@ -538,7 +654,14 @@ def create_app(
 
         for state in states:
             await hub.broadcast(state)
-        return JSONResponse({"ok": True, "nodes": len(states)})
+        # 어느 디바이스에서 돌았는지 돌려준다. 학습이 GPU를 잡고 있으면 L1은 CPU
+        # forward-only로 내려가는데(§5.1.5), 그 사실이 화면에 안 보이면 사람은
+        # 배지가 사라진 것을 버그로 읽는다.
+        last = next((r for r in reversed(replies) if r.type == "Done"), None)
+        badge = (last.grad or {}) if last is not None else {}
+        return JSONResponse({"ok": True, "nodes": len(states),
+                             "device": badge.get("device"),
+                             "forward_only": badge.get("forward_only")})
 
     @app.post("/api/l1")
     async def ingest_l1(payload: dict[str, Any]) -> JSONResponse:
@@ -578,7 +701,7 @@ def create_app(
         step = int(record.pop("step", 0))
         record.pop("wall", None)
         name = record.pop("run_name", None)
-        hub.tracker.ensure_run(run_id, name=name)
+        hub.tracker.ensure_run(run_id, name=name, graph_id=hub.graph_id)
         return JSONResponse({"ok": True, "written": hub.tracker.log(run_id, step, record)})
 
     @app.post("/api/runs")
@@ -587,6 +710,7 @@ def create_app(
         run_id = hub.tracker.ensure_run(
             request["run_id"], kind=request.get("kind", "exploratory"),
             name=request.get("name"), parent_run=request.get("parent_run"),
+            graph_id=hub.graph_id,
             manifest=request.get("manifest"))
         return JSONResponse({"ok": True, "run_id": run_id})
 
@@ -608,6 +732,12 @@ def create_app(
                                     source=str(hub.graph_path or "graph/model.tfg.json"))
         except codegen.CodegenError as exc:
             return JSONResponse({"error": str(exc), "node": exc.node_id}, status_code=400)
+
+        # Smoke는 "지금 이 그래프가 학습이 되긴 하는가"를 30초 안에 답하는 것이다
+        # (§13.1 M7). 짧고 결정적이라 두 번 돌리면 loss가 bitwise로 같아야 한다.
+        smoke = bool(options.get("smoke"))
+        if smoke:
+            options = {**options, "steps": 20, "batch": 8, "log_every": 1}
 
         run_id = options.get("run_id") or l2.new_run_id()
         # 생성 코드가 실제로 받는 인자만 넘긴다 - 그래프가 rt.num_classes를 안 쓰면
@@ -633,18 +763,25 @@ def create_app(
             "batch": int(options.get("batch", 32)),
             "steps": int(options.get("steps", 200)),
             "optimizer": options.get("optimizer", "adamw"),
+            # 스케줄러가 있으면 lr은 base다 - 실제 lr은 base x schedule(§5.7.1).
+            "scheduler": options.get("scheduler", "none"),
+            "warmup_steps": int(options.get("warmup_steps", 0)),
             "lr": float(options.get("lr", 1e-3)),
             "weight_decay": float(options.get("weight_decay", 0.0)),
             "log_every": int(options.get("log_every", 5)),
             "nan_policy": options.get("nan_policy", "pause"),
             "seed": int(options.get("seed", 0)),
             "device": options.get("device", "auto"),
+            "smoke": smoke,
+            # 복구가 이 파일만 보고 run의 소속을 알 수 있어야 한다.
+            "graph_id": hub.graph_id,
         }
 
+        kind = options.get("kind", "exploratory")
         handle = l2.start(run_id=run_id, root=hub.runs_dir, job=job, code=code)
+        handle.extra.update({"kind": kind, "smoke": smoke, "graph_id": hub.graph_id})
         hub.l2[run_id] = handle
-        hub.tracker.ensure_run(run_id, kind=options.get("kind", "exploratory"),
-                               name=graph.name,
+        hub.tracker.ensure_run(run_id, kind=kind, name=graph.name, graph_id=hub.graph_id,
                                manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir)})
         return JSONResponse({"ok": True, **handle.as_dict()})
 
@@ -659,26 +796,61 @@ def create_app(
         if cmd == "pause":
             l2.command(handle, pause=True)
         elif cmd == "resume":
-            l2.command(handle, pause=False)
+            if handle.alive:
+                l2.command(handle, pause=False)
+            else:
+                # 워커가 이미 끝났거나 hub와 함께 죽었다 - 체크포인트에서 다시 띄운다.
+                l2.resume(handle, steps=options.get("steps"))
+                hub.tracker.ensure_run(run_id)
         elif cmd == "stop":
             l2.command(handle, stop=True)
-        elif cmd == "set_lr":
-            l2.command(handle, lr=float(options["value"]))
+        elif cmd == "promote":
+            # exploratory -> reported. 이 뒤로는 in-place 변경이 fork가 된다(§5.7.2).
+            hub.tracker.set_kind(run_id, "reported")
+            handle.extra["kind"] = "reported"
+        elif cmd in ("set_lr", "set_hparam"):
+            return _apply_hparam(hub, handle, options)
         else:
             return JSONResponse({"error": f"unknown cmd {cmd!r}"}, status_code=400)
         l2.merge(handle, hub.tracker)
         return JSONResponse({"ok": True, **handle.as_dict()})
 
+    @app.get("/api/train/{run_id}/stdout")
+    def training_stdout(run_id: str, offset: int = 0, tail: int = 40_000) -> JSONResponse:
+        """워커 프로세스가 찍은 것 그대로. 파이썬이 낸 출력이 정본이다.
+
+        커서를 돌려주므로 클라이언트는 새로 늘어난 부분만 받아 이어 붙인다.
+        """
+        handle = hub.l2.get(run_id)
+        if handle is None:
+            return JSONResponse({"error": f"unknown run {run_id}"}, status_code=404)
+        path = handle.directory / "stdout.log"
+        if not path.exists():
+            return JSONResponse({"text": "", "offset": 0})
+        size = path.stat().st_size
+        # 처음 열 때 수십 MB를 통째로 보내지 않는다 - 사람이 보는 것은 꼬리다.
+        start = max(size - tail, 0) if offset <= 0 else min(offset, size)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            chunk = stream.read()
+        return JSONResponse({"text": chunk.decode("utf-8", "replace"),
+                             "offset": start + len(chunk)})
+
     @app.get("/api/train")
     def training_status() -> JSONResponse:
-        """돌고 있는 run들의 상태. 곡선은 /api/runs/curve가 준다."""
+        """돌고 있는 run들의 상태. 곡선은 /api/runs/curve가 준다.
+
+        다른 그래프의 run은 빼고 준다 - 워커는 계속 돌지만 이 화면의 것이 아니다.
+        """
         hub.sync_runs()
-        return JSONResponse({"runs": [handle.as_dict() for handle in hub.l2.values()]})
+        return JSONResponse({"runs": [
+            handle.as_dict() for handle in hub.l2.values()
+            if hub.graph_id is None or handle.extra.get("graph_id") == hub.graph_id]})
 
     @app.get("/api/runs")
     def list_runs() -> JSONResponse:
         hub.sync_runs()
-        runs = [run.as_dict() for run in hub.tracker.runs()]
+        runs = [run.as_dict() for run in hub.tracker.runs(graph_id=hub.graph_id)]
         for run in runs:
             run["keys"] = hub.tracker.keys(run["id"])
         return JSONResponse({"runs": runs})
@@ -689,7 +861,7 @@ def create_app(
         """곡선 하나 또는 시드 그룹의 평균과 표준편차."""
         ids = [item for item in runs.split(",") if item]
         if not ids:
-            ids = [run.id for run in hub.tracker.runs(limit=8)]
+            ids = [run.id for run in hub.tracker.runs(limit=8, graph_id=hub.graph_id)]
         if aggregate:
             return JSONResponse({"key": key, "aggregate": hub.tracker.aggregate(ids, key)})
         return JSONResponse({"key": key, "series": [

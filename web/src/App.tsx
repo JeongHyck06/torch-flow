@@ -4,6 +4,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { Canvas } from "./components/Canvas";
 import { CodeView } from "./components/CodeView";
 import { Inspector } from "./components/Inspector";
+import { LayerStrip } from "./components/LayerStrip";
 import { RunPanel } from "./components/RunPanel";
 import { StartScreen } from "./components/StartScreen";
 import { TopBar } from "./components/TopBar";
@@ -11,7 +12,7 @@ import { connect, fetchGraph, fetchHealth, fetchLayout, runShapes } from "./api"
 import { useStore } from "./store";
 
 export function App() {
-  const setGraph = useStore((state) => state.setGraph);
+  const openGraph = useStore((state) => state.openGraph);
   const applyNodeState = useStore((state) => state.applyNodeState);
   const setKernel = useStore((state) => state.setKernel);
   const setTotals = useStore((state) => state.setTotals);
@@ -30,13 +31,13 @@ export function App() {
     // 그려졌다가 layout.json 자리로 튀고, 그 사이에 맞춘 뷰가 어긋난 채 남는다.
     const [{ graph: ir, seq }, positions] = await Promise.all([fetchGraph(), fetchLayout()]);
     useStore.getState().setPositions(positions);
-    setGraph(ir, seq);
+    openGraph(ir, seq);
     const shapes = await runShapes();
     for (const state of shapes.node_states) applyNodeState(state);
     // 파라미터 총계는 L0 패스가 센 값이 정본이다(§2.2 상단 바).
     setTotals({ params: shapes.total_params });
     setKernel(true);
-  }, [setGraph, applyNodeState, setKernel, setTotals]);
+  }, [openGraph, applyNodeState, setKernel, setTotals]);
 
   useEffect(() => {
     const disconnect = connect();
@@ -53,12 +54,15 @@ export function App() {
       <TopBar />
       <main className="body">
         {tab === "code" ? <CodeView /> : (
-          <div className="canvas">
-            <ReactFlowProvider>
-              <Canvas />
-            </ReactFlowProvider>
-            <RunPanel />
-          </div>
+          <>
+            <LayerStrip />
+            <div className="canvas">
+              <ReactFlowProvider>
+                <Canvas />
+              </ReactFlowProvider>
+              <RunPanel />
+            </div>
+          </>
         )}
         <Inspector />
       </main>

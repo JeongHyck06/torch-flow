@@ -75,6 +75,7 @@ class L1NodeResult:
     warn: str | None = None
     histogram: list[int] | None = None
     hist_range: tuple[float, float] | None = None
+    feature: dict[str, Any] | None = None
     numeric: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -342,6 +343,8 @@ def node_stats(torch, key: str, label: str, activation, module, probe: ProbeConf
         wanted = not subscribed or key in subscribed or (node_id or key) in subscribed
         if wanted and "hist" in probe.collect:
             result.histogram, result.hist_range = _histogram(torch, activation, probe.hist_bins)
+        if wanted and "feature" in probe.collect:
+            result.feature = _feature_map(torch, activation)
 
     if module is not None:
         grads = weights = 0.0
@@ -382,6 +385,41 @@ def _label_index(ir: ModuleGraph) -> dict[str, str]:
     for composite in ir.composites.values():
         walk(composite)
     return labels
+
+
+# 4x4 채널 격자, 타일 하나가 8x8 (§6.3 Feature Map). 32x32 회색조 1 KB면
+# 노드 카드의 64x40 썸네일에 충분하고 JSON으로 실어 보내도 부담이 없다.
+FEATURE_TILES, TILE = 4, 8
+
+
+def _feature_map(torch, tensor) -> dict[str, Any] | None:
+    """Conv 출력 같은 [B, C, H, W]를 채널 격자 썸네일로.
+
+    타일마다 따로 정규화한다 - 채널 간 스케일 차가 크면 하나만 밝고 나머지는
+    까맣게 뭉개져서 "무엇이 켜졌나"가 안 보인다.
+    """
+    import base64
+
+    if tensor.dim() != 4:
+        return None
+    sample = tensor.detach()[0].float()
+    count = min(sample.shape[0], FEATURE_TILES * FEATURE_TILES)
+    tiles = torch.nn.functional.adaptive_avg_pool2d(sample[:count], TILE).cpu()
+
+    lows = tiles.amin(dim=(1, 2), keepdim=True)
+    highs = tiles.amax(dim=(1, 2), keepdim=True)
+    scaled = (tiles - lows) / (highs - lows).clamp_min(1e-8)
+    scaled = torch.nan_to_num(scaled, nan=0.0)
+
+    side = FEATURE_TILES * TILE
+    grid = torch.zeros(side, side)
+    for index in range(count):
+        row, column = divmod(index, FEATURE_TILES)
+        grid[row * TILE:(row + 1) * TILE, column * TILE:(column + 1) * TILE] = scaled[index]
+
+    pixels = (grid * 255).to(torch.uint8).numpy().tobytes()
+    return {"size": side, "channels": int(sample.shape[0]), "shown": count,
+            "pixels": base64.b64encode(pixels).decode()}
 
 
 def _histogram(torch, tensor, bins: int) -> tuple[list[int], tuple[float, float]]:

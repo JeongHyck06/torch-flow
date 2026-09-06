@@ -96,7 +96,7 @@ export function categoryOf(type: string | undefined, call: boolean): string {
 }
 
 /** LOD 단계별 노드 폭 (Figma Node 컴포넌트). */
-export const LOD_WIDTH = { far: 120, mid: 176, near: 216, focus: 216 } as const;
+export const LOD_WIDTH = { far: 136, mid: 200, near: 244, focus: 244 } as const;
 
 /** 엣지 굵기 = log(원소 수). 텐서 크기가 굵기로 보인다(§6.1). */
 export function edgeWidth(shape: (string | number)[] | undefined): number {

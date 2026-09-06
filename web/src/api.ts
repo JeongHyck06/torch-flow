@@ -212,10 +212,16 @@ export interface TrainRun {
   run_id: string; state: string; step: number; total: number;
   device: string; alive: boolean; error: { message?: string } | null;
   reason?: string; nan_step?: number;
+  // reported run은 hparam이 동결이라 학습 중 편집이 fork가 된다(§5.7.2).
+  kind?: string; smoke?: boolean; parent_run?: string; forked_from?: string;
+  // 스케줄러가 있으면 lr은 base이고 실제 lr은 base x schedule(§5.7.1).
+  scheduler?: string | null; lr?: number; base_lr?: number;
+  restart_required?: string; message?: string; ok?: boolean;
 }
 
 export interface TrainOptions {
-  steps: number; batch: number; lr: number; optimizer: string;
+  steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
+  scheduler?: string; warmup_steps?: number;
 }
 
 /** 학습을 시작한다. 워커는 hub와 분리된 세션에서 돈다(§5.5.3). */
@@ -229,12 +235,23 @@ export async function startTraining(options: TrainOptions):
   return response.json();
 }
 
-export async function controlTraining(runId: string, cmd: string, value?: number) {
+export async function controlTraining(
+  runId: string, cmd: string, extra: Record<string, unknown> = {},
+): Promise<TrainRun> {
   const response = await fetch(`/api/train/${runId}`, {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ cmd, value }),
+    body: JSON.stringify({ cmd, ...extra }),
   });
+  return response.json();
+}
+
+/** 워커 프로세스의 표준출력. 커서를 돌려주므로 늘어난 만큼만 이어 붙인다. */
+export async function fetchTrainStdout(runId: string, offset: number):
+    Promise<{ text: string; offset: number }> {
+  const response = await fetch(`/api/train/${runId}/stdout?offset=${offset}`,
+                               { headers: authHeaders() });
+  if (!response.ok) return { text: "", offset };
   return response.json();
 }
 

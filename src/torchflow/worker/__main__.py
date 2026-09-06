@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 import traceback
 from pathlib import Path
@@ -72,7 +73,7 @@ def build_model(job: dict[str, Any]):
     return factory(**job.get("model_args", {}))
 
 
-def build_data(job: dict[str, Any], device):
+def build_data(job: dict[str, Any], device, generator, rng_state=None):
     """(입력, 타깃) 배치를 무한히 내놓는 것.
 
     기본은 **배울 것이 있는 합성 과제**다: 고정된 무작위 teacher 사영의 argmax를
@@ -86,12 +87,15 @@ def build_data(job: dict[str, Any], device):
     classes = int(job.get("num_classes") or 10)
     batch = int(job.get("batch", 32))
     learnable = job.get("dataset", "teacher") != "noise"
-    generator = torch.Generator().manual_seed(int(job.get("seed", 0)))
 
     features = 1
     for dim in shape[1:]:
         features *= int(dim)
+    # teacher는 시드에서만 나온다. 재개할 때도 같은 과제여야 하므로 상태 복원은
+    # teacher를 뽑은 **다음**이다 - 순서를 바꾸면 재개한 run이 다른 문제를 푼다.
     teacher = torch.randn(features, classes, generator=generator) if learnable else None
+    if rng_state is not None:
+        generator.set_state(rng_state)
 
     while True:
         inputs = torch.randn([batch, *[int(dim) for dim in shape[1:]]], generator=generator)
@@ -114,14 +118,75 @@ def make_optimizer(torch, model, job: dict[str, Any]):
     return torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
 
+def make_scheduler(torch, optimizer, job: dict[str, Any]):
+    """warmup + cosine 하나. 없으면 ``None``이고 lr은 param_groups에 직접 쓴다.
+
+    타입 하나만 두는 이유는 스케줄러 **변경**이 HOT이 아니라 SCHEDULER 분류(재생성 +
+    ``last_epoch`` 복원)이고 그것은 v1이기 때문이다(§5.7.1). 여기서 필요한 것은
+    "스케줄러가 도는 중에도 lr을 바꿀 수 있는가"뿐이다.
+
+    ``LambdaLR`` 하나로 쓴다. ``SequentialLR``로 조합하면 ``base_lrs``가 중첩되어
+    ScaleBaseLR이 안쪽 스케줄러까지 따라 들어가야 한다.
+    """
+    if str(job.get("scheduler", "none")).lower() != "cosine":
+        return None
+    total = max(int(job.get("steps", 1)), 1)
+    warmup = max(int(job.get("warmup_steps", 0)), 0)
+
+    def factor(step: int) -> float:
+        if step < warmup:
+            return (step + 1) / (warmup + 1)
+        progress = (step - warmup) / max(total - warmup, 1)
+        return 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
+
+def scale_base_lr(scheduler, optimizer, factor: float) -> None:
+    """ScaleBaseLR (§5.7.1). 스케줄러가 있을 때 lr을 바꾸는 유일한 올바른 방법.
+
+    ``param_groups["lr"]``에 직접 쓰면 다음 ``scheduler.step()``이 ``base_lrs``에서
+    다시 계산해 덮어쓴다 - 한 스텝만 반영되고 사라진다. 절대값이 아니라 비율인
+    이유는 그룹마다 base가 다를 수 있기 때문이다(LLRD). 비율은 그 관계를 지킨다.
+
+    현재 lr도 같이 옮긴다. 안 그러면 다음 스케줄러 스텝까지 한 스텝이 옛 lr로 돈다.
+    """
+    scheduler.base_lrs = [base * factor for base in scheduler.base_lrs]
+    for group in optimizer.param_groups:
+        group["initial_lr"] = group.get("initial_lr", group["lr"]) * factor
+        group["lr"] = group["lr"] * factor
+
+
+def base_lr_of(scheduler, optimizer) -> float:
+    """UI가 "현재 lr = base x schedule"을 쓸 수 있게 base를 알려 준다."""
+    if scheduler is not None:
+        return float(scheduler.base_lrs[0])
+    return float(optimizer.param_groups[0]["lr"])
+
+
 def pick_device(torch, requested: str | None):
     if requested and requested != "auto":
         return torch.device(requested)
     if torch.cuda.is_available():
-        return torch.device("cuda")
+        # 인덱스를 박아 둔다 - hub가 "이 GPU는 L2가 쓴다"고 L1에 알릴 때 쓰는 이름이다.
+        return torch.device("cuda", torch.cuda.current_device())
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def deterministic(torch) -> None:
+    """Smoke의 전제(§10.4 CI 3단계). 여기서 재는 loss는 bitwise로 같아야 한다.
+
+    ``warn_only``인 이유는 결정적 구현이 없는 op가 학습을 죽이면 안 되기 때문이다 -
+    §10.4의 "비지원 op 경고·배지"가 이 자리다.
+    """
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        # SDPA는 flash/mem-efficient가 비결정적이다. math만 남긴다.
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
 
 
 def train(job: dict[str, Any], run_dir: Path) -> None:
@@ -132,13 +197,51 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
     control = Control(run_dir / "control.json")
     heartbeat = run_dir / "heartbeat"
 
+    seed = int(job.get("seed", 0))
+    resumed = 0
     try:
+        if job.get("smoke") or job.get("deterministic"):
+            deterministic(torch)
+        torch.manual_seed(seed)
         model = build_model(job)
         device = pick_device(torch, job.get("device"))
         model.to(device).train()
         optimizer = make_optimizer(torch, model, job)
+        scheduler = make_scheduler(torch, optimizer, job)
         loss_fn = nn.CrossEntropyLoss()
-        data = build_data(job, device)
+        generator = torch.Generator().manual_seed(seed)
+        # 체크포인트에서 재개(§5.7.2). 가중치·옵티마이저·RNG 세 가지가 다 돌아와야
+        # 이어 붙인 곡선이 끊긴 자리에서 계속된다.
+        # CPU로 읽는다. RNG 상태는 CPU ByteTensor여야 하고, 가중치와 옵티마이저
+        # 상태는 load_state_dict가 알아서 파라미터가 있는 디바이스로 옮긴다.
+        state = torch.load(job["resume"], map_location="cpu") if job.get("resume") else None
+        if state is not None:
+            model.load_state_dict(state["model"])
+            optimizer.load_state_dict(state["optimizer"])
+            if scheduler is not None and state.get("scheduler"):
+                scheduler.load_state_dict(state["scheduler"])
+                # 재개하며 총 스텝이 늘면 스케줄의 모양이 달라진다. ckpt에 박힌 lr은
+                # 옛 스케줄의 값이므로, 새 스케줄이 지금 자리에서 말하는 값으로 맞춘다.
+                # 안 하면 재개 첫 스텝이 옛 스케줄의 마지막 lr(대개 0)로 돈다.
+                for group, base, shape in zip(optimizer.param_groups, scheduler.base_lrs,
+                                              scheduler.lr_lambdas):
+                    group["lr"] = base * shape(scheduler.last_epoch)
+            # ckpt는 저장 시점의 lr·wd를 들고 온다. 갈라진 run은 바로 그 값을 바꾸려고
+            # 갈라진 것이므로 job의 값이 이겨야 한다. 스케줄러가 있으면 job의 lr은
+            # 실제 lr이 아니라 base다.
+            wanted = job.get("lr")
+            if scheduler is not None:
+                if wanted is not None and scheduler.base_lrs[0] > 0:
+                    scale_base_lr(scheduler, optimizer, float(wanted) / scheduler.base_lrs[0])
+            elif wanted is not None:
+                for group in optimizer.param_groups:
+                    group["lr"] = float(wanted)
+            for group in optimizer.param_groups:
+                group["weight_decay"] = float(job.get("weight_decay", group["weight_decay"]))
+            torch.set_rng_state(state["rng"])
+            resumed = int(state["step"])
+        data = build_data(job, device, generator,
+                          rng_state=state["data_rng"] if state else None)
     except Exception as exc:
         events.write("error", stage="setup", message=f"{type(exc).__name__}: {exc}",
                      traceback=traceback.format_exc())
@@ -146,18 +249,25 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
         return
 
     total = int(job.get("steps", 200))
-    log_every = max(1, int(job.get("log_every", 1)))
     nan_policy = job.get("nan_policy", "pause")
+    # events.jsonl은 기계가 읽고 stdout은 사람이 읽는다. 학습 스크립트를 직접
+    # 돌릴 때 보던 그 출력이 UI의 "학습 출력" 탭에 그대로 나온다.
+    print(f"{'재개' if resumed else '시작'} · {device} · "
+          f"{sum(p.numel() for p in model.parameters()):,} params · "
+          f"step {resumed} / {total}" + (" · smoke" if job.get("smoke") else ""))
     events.write("status", state="running", device=str(device), steps=total,
+                 step=resumed, resumed=resumed or None, smoke=bool(job.get("smoke")) or None,
+                 scheduler=job.get("scheduler") if scheduler is not None else None,
                  params=sum(p.numel() for p in model.parameters()))
 
     last_beat = 0.0
-    step = 0
+    step = resumed
     while step < total:
         command = control.poll()
         if command.get("stop"):
+            print(f"stop · step {step} · 체크포인트 저장")
             events.write("status", state="stopped", step=step)
-            _checkpoint(torch, model, optimizer, run_dir, step)
+            _checkpoint(torch, model, optimizer, scheduler, generator, run_dir, step)
             return
         if command.get("pause"):
             events.write("status", state="paused", step=step)
@@ -166,15 +276,29 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
                 time.sleep(0.2)
             if control.poll().get("stop"):
                 events.write("status", state="stopped", step=step)
-                _checkpoint(torch, model, optimizer, run_dir, step)
+                _checkpoint(torch, model, optimizer, scheduler, generator, run_dir, step)
                 return
             events.write("status", state="running", step=step)
-        # lr은 HOT이다 - 재시작 없이 param_groups에 바로 반영한다(§5.7.1).
-        if (lr := command.get("lr")) is not None:
-            for group in optimizer.param_groups:
-                if group["lr"] != float(lr):
-                    group["lr"] = float(lr)
-                    events.write("hparam", step=step, path="optim.lr", value=float(lr))
+        # HOT hparam은 재시작 없이 바로 반영한다(§5.7.1). 매 스텝 control에서 읽으므로
+        # "지금 도는 값"이 곧 control.json의 값이다 - 워커가 따로 기억하지 않는다.
+        if (wanted := command.get("lr")) is not None:
+            wanted = float(wanted)
+            current = base_lr_of(scheduler, optimizer)
+            if current != wanted:
+                if scheduler is not None and current > 0:
+                    scale_base_lr(scheduler, optimizer, wanted / current)
+                else:
+                    for group in optimizer.param_groups:
+                        group["lr"] = wanted
+                events.write("hparam", step=step, path="optim.lr", value=wanted)
+        if (wanted := command.get("weight_decay")) is not None:
+            wanted = float(wanted)
+            if optimizer.param_groups[0].get("weight_decay") != wanted:
+                for group in optimizer.param_groups:
+                    group["weight_decay"] = wanted
+                events.write("hparam", step=step, path="optim.weight_decay", value=wanted)
+        log_every = max(1, int(command.get("log_every", job.get("log_every", 1))))
+        clip = float(command.get("grad_clip", job.get("grad_clip", 1e9)))
 
         inputs, targets = next(data)
         optimizer.zero_grad(set_to_none=True)
@@ -182,9 +306,10 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
         loss = loss_fn(output, targets)
 
         if not torch.isfinite(loss):
+            print(f"loss가 유한하지 않다 · step {step} · nan_policy={nan_policy}")
             events.write("numeric", step=step, nan=True)
             if nan_policy != "continue":
-                _checkpoint(torch, model, optimizer, run_dir, step)
+                _checkpoint(torch, model, optimizer, scheduler, generator, run_dir, step)
                 events.write("status", state="paused" if nan_policy == "pause" else "stopped",
                              step=step, reason="nan")
                 if nan_policy == "stop":
@@ -194,20 +319,29 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
                     time.sleep(0.2)
 
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                                   float(job.get("grad_clip", 1e9)))
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
         step += 1
 
         if step % log_every == 0 or step == total:
-            events.write("scalar", step=step, loss=float(loss.detach()),
-                         lr=optimizer.param_groups[0]["lr"], grad_norm=float(grad_norm))
+            value = float(loss.detach())
+            lr = float(optimizer.param_groups[0]["lr"])
+            base = base_lr_of(scheduler, optimizer)
+            events.write("scalar", step=step, loss=value, lr=lr, grad_norm=float(grad_norm),
+                         **({"base_lr": base} if scheduler is not None else {}))
+            print(f"step {step:>6} / {total}   loss {value:.4f}   lr {lr:.3g}"
+                  + (f" = {base:.3g} x {lr / base if base else 0:.3f}"
+                     if scheduler is not None else "")
+                  + f"   |g| {float(grad_norm):.3f}")
         now = time.monotonic()
         if now - last_beat > HEARTBEAT_EVERY:
             last_beat = now
             _beat(heartbeat)
 
-    _checkpoint(torch, model, optimizer, run_dir, step)
+    _checkpoint(torch, model, optimizer, scheduler, generator, run_dir, step)
+    print(f"done · step {step}")
     events.write("status", state="done", step=step)
 
 
@@ -215,11 +349,22 @@ def _beat(path: Path) -> None:
     path.write_text(str(time.time()), encoding="utf-8")
 
 
-def _checkpoint(torch, model, optimizer, run_dir: Path, step: int) -> None:
-    """모델·옵티마이저·RNG. 재개는 M7 후반이고 지금은 잃지 않는 것이 목적이다."""
+def _checkpoint(torch, model, optimizer, scheduler, generator, run_dir: Path,
+                step: int) -> None:
+    """모델·옵티마이저·RNG 둘. 재개가 여기서 읽는다(§5.7.2).
+
+    데이터 generator를 같이 저장하는 이유는 합성 과제가 이 스트림에서 나오기
+    때문이다 - 빠뜨리면 재개한 run이 이미 본 배치를 다시 본다.
+    """
+    # 임시 파일에 쓰고 원자적으로 갈아 끼운다. 제자리에 쓰면 fork나 재개가
+    # 쓰다 만 파일을 읽는다 - torch.load가 "zip archive" 오류로 죽는다.
+    staging = run_dir / "ckpt.pt.writing"
     torch.save({"step": step, "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "rng": torch.get_rng_state()}, run_dir / "ckpt.pt")
+                "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                "rng": torch.get_rng_state(),
+                "data_rng": generator.get_state()}, staging)
+    staging.replace(run_dir / "ckpt.pt")
 
 
 def main() -> None:
