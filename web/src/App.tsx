@@ -4,6 +4,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { Canvas } from "./components/Canvas";
 import { CodeView } from "./components/CodeView";
 import { Inspector } from "./components/Inspector";
+import { LayerStrip } from "./components/LayerStrip";
 import { RunPanel } from "./components/RunPanel";
 import { StartScreen } from "./components/StartScreen";
 import { TopBar } from "./components/TopBar";
@@ -53,12 +54,15 @@ export function App() {
       <TopBar />
       <main className="body">
         {tab === "code" ? <CodeView /> : (
-          <div className="canvas">
-            <ReactFlowProvider>
-              <Canvas />
-            </ReactFlowProvider>
-            <RunPanel />
-          </div>
+          <>
+            <LayerStrip />
+            <div className="canvas">
+              <ReactFlowProvider>
+                <Canvas />
+              </ReactFlowProvider>
+              <RunPanel />
+            </div>
+          </>
         )}
         <Inspector />
       </main>

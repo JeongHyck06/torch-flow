@@ -187,6 +187,11 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
 
     total = int(job.get("steps", 200))
     nan_policy = job.get("nan_policy", "pause")
+    # events.jsonl은 기계가 읽고 stdout은 사람이 읽는다. 학습 스크립트를 직접
+    # 돌릴 때 보던 그 출력이 UI의 "학습 출력" 탭에 그대로 나온다.
+    print(f"{'재개' if resumed else '시작'} · {device} · "
+          f"{sum(p.numel() for p in model.parameters()):,} params · "
+          f"step {resumed} / {total}" + (" · smoke" if job.get("smoke") else ""))
     events.write("status", state="running", device=str(device), steps=total,
                  step=resumed, resumed=resumed or None, smoke=bool(job.get("smoke")) or None,
                  params=sum(p.numel() for p in model.parameters()))
@@ -196,6 +201,7 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
     while step < total:
         command = control.poll()
         if command.get("stop"):
+            print(f"stop · step {step} · 체크포인트 저장")
             events.write("status", state="stopped", step=step)
             _checkpoint(torch, model, optimizer, generator, run_dir, step)
             return
@@ -227,6 +233,7 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
         loss = loss_fn(output, targets)
 
         if not torch.isfinite(loss):
+            print(f"loss가 유한하지 않다 · step {step} · nan_policy={nan_policy}")
             events.write("numeric", step=step, nan=True)
             if nan_policy != "continue":
                 _checkpoint(torch, model, optimizer, generator, run_dir, step)
@@ -244,14 +251,18 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
         step += 1
 
         if step % log_every == 0 or step == total:
-            events.write("scalar", step=step, loss=float(loss.detach()),
+            value = float(loss.detach())
+            events.write("scalar", step=step, loss=value,
                          lr=optimizer.param_groups[0]["lr"], grad_norm=float(grad_norm))
+            print(f"step {step:>6} / {total}   loss {value:.4f}   "
+                  f"lr {optimizer.param_groups[0]['lr']:.3g}   |g| {float(grad_norm):.3f}")
         now = time.monotonic()
         if now - last_beat > HEARTBEAT_EVERY:
             last_beat = now
             _beat(heartbeat)
 
     _checkpoint(torch, model, optimizer, generator, run_dir, step)
+    print(f"done · step {step}")
     events.write("status", state="done", step=step)
 
 

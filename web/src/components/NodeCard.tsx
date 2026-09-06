@@ -13,7 +13,7 @@ import type { NodeStateName } from "../theme";
 export type Lod = "far" | "mid" | "near" | "focus";
 
 /** Conv 출력의 채널 격자(§6.3 Feature Map). 커널이 보낸 회색조 바이트를 그대로 찍는다. */
-function FeatureMap({ map }: { map: { size: number; pixels: string; channels: number; shown: number } }) {
+export function FeatureMap({ map }: { map: { size: number; pixels: string; channels: number; shown: number } }) {
   const canvas = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -37,7 +37,7 @@ function FeatureMap({ map }: { map: { size: number; pixels: string; channels: nu
 }
 
 /** 64x40 썸네일에 들어가는 활성값 히스토그램. 축도 눈금도 없다 - 모양만 본다. */
-function Thumbnail({ bins, color }: { bins: number[]; color?: string }) {
+export function Thumbnail({ bins, color }: { bins: number[]; color?: string }) {
   const peak = Math.max(...bins, 1);
   const step = 64 / bins.length;
   return (

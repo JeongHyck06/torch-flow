@@ -617,7 +617,14 @@ def create_app(
 
         for state in states:
             await hub.broadcast(state)
-        return JSONResponse({"ok": True, "nodes": len(states)})
+        # 어느 디바이스에서 돌았는지 돌려준다. 학습이 GPU를 잡고 있으면 L1은 CPU
+        # forward-only로 내려가는데(§5.1.5), 그 사실이 화면에 안 보이면 사람은
+        # 배지가 사라진 것을 버그로 읽는다.
+        last = next((r for r in reversed(replies) if r.type == "Done"), None)
+        badge = (last.grad or {}) if last is not None else {}
+        return JSONResponse({"ok": True, "nodes": len(states),
+                             "device": badge.get("device"),
+                             "forward_only": badge.get("forward_only")})
 
     @app.post("/api/l1")
     async def ingest_l1(payload: dict[str, Any]) -> JSONResponse:
@@ -764,6 +771,27 @@ def create_app(
             return JSONResponse({"error": f"unknown cmd {cmd!r}"}, status_code=400)
         l2.merge(handle, hub.tracker)
         return JSONResponse({"ok": True, **handle.as_dict()})
+
+    @app.get("/api/train/{run_id}/stdout")
+    def training_stdout(run_id: str, offset: int = 0, tail: int = 40_000) -> JSONResponse:
+        """워커 프로세스가 찍은 것 그대로. 파이썬이 낸 출력이 정본이다.
+
+        커서를 돌려주므로 클라이언트는 새로 늘어난 부분만 받아 이어 붙인다.
+        """
+        handle = hub.l2.get(run_id)
+        if handle is None:
+            return JSONResponse({"error": f"unknown run {run_id}"}, status_code=404)
+        path = handle.directory / "stdout.log"
+        if not path.exists():
+            return JSONResponse({"text": "", "offset": 0})
+        size = path.stat().st_size
+        # 처음 열 때 수십 MB를 통째로 보내지 않는다 - 사람이 보는 것은 꼬리다.
+        start = max(size - tail, 0) if offset <= 0 else min(offset, size)
+        with path.open("rb") as stream:
+            stream.seek(start)
+            chunk = stream.read()
+        return JSONResponse({"text": chunk.decode("utf-8", "replace"),
+                             "offset": start + len(chunk)})
 
     @app.get("/api/train")
     def training_status() -> JSONResponse:

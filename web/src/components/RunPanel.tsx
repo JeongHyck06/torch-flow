@@ -7,13 +7,15 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchCurve, fetchLogs, fetchRuns } from "../api";
 import type { CurveSeries, LogLine, RunInfo } from "../api";
 import { Console } from "./Console";
+import { TrainLog } from "./TrainLog";
 import { Trainer } from "./Trainer";
 import { useStore } from "../store";
 
-type Tab = "curves" | "manifest" | "logs" | "console";
+type Tab = "curves" | "stdout" | "manifest" | "logs" | "console";
 
 const TAB_LABELS: Record<Tab, string> = {
-  curves: "Run 곡선", manifest: "run manifest", logs: "로그", console: "콘솔",
+  curves: "Run 곡선", stdout: "학습 출력", manifest: "run manifest",
+  logs: "로그", console: "콘솔",
 };
 
 const COLORS = ["var(--dtype-f32)", "#4a86c9", "#7c8898", "#2a558d", "#5e93d1"];
@@ -90,6 +92,8 @@ export function RunPanel() {
             <Curves series={series} label={key} />
           )
         )}
+
+        {tab === "stdout" && <TrainLog />}
 
         {tab === "manifest" && (
           active?.manifest && Object.keys(active.manifest).length ? (

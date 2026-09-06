@@ -243,6 +243,15 @@ export async function controlTraining(
   return response.json();
 }
 
+/** 워커 프로세스의 표준출력. 커서를 돌려주므로 늘어난 만큼만 이어 붙인다. */
+export async function fetchTrainStdout(runId: string, offset: number):
+    Promise<{ text: string; offset: number }> {
+  const response = await fetch(`/api/train/${runId}/stdout?offset=${offset}`,
+                               { headers: authHeaders() });
+  if (!response.ok) return { text: "", offset };
+  return response.json();
+}
+
 export async function fetchTraining(): Promise<TrainRun[]> {
   const response = await fetch("/api/train", { headers: authHeaders() });
   if (!response.ok) return [];

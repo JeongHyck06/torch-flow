@@ -109,7 +109,10 @@ def start(*, run_id: str, root: Path, job: dict[str, Any], code: str,
 
 def _spawn(directory: Path, python: str | None = None) -> subprocess.Popen:
     return subprocess.Popen(
-        [python or sys.executable, "-m", "torchflow.worker", "--job", str(directory / "job.json")],
+        # -u: 파이썬이 파이프로 나갈 때 stdout을 버퍼링한다. UI의 "학습 출력"이
+        # 몇십 KB씩 뭉텅이로 늦게 도착하지 않으려면 꺼야 한다.
+        [python or sys.executable, "-u", "-m", "torchflow.worker",
+         "--job", str(directory / "job.json")],
         stdout=(directory / "stdout.log").open("a"),
         stderr=subprocess.STDOUT,
         start_new_session=True,
