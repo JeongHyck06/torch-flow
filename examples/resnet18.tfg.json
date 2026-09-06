@@ -1,0 +1,775 @@
+{
+  "schema_version": "1.0.0",
+  "meta": {
+    "app_version": "0.0.1",
+    "template": "resnet18",
+    "reference": "kuangliu/pytorch-cifar · torchvision.models.resnet18"
+  },
+  "hparams": {
+    "init_std": {
+      "type": "float",
+      "default": 0.02
+    }
+  },
+  "composites": {
+    "BasicBlock": {
+      "doc": "ResNet BasicBlock with a switchable shortcut (identity / 1x1 conv).",
+      "params": {
+        "in_ch": {
+          "type": "int"
+        },
+        "out_ch": {
+          "type": "int"
+        },
+        "stride": {
+          "type": "int"
+        },
+        "shortcut": {
+          "type": "enum",
+          "choices": [
+            "identity",
+            "conv"
+          ]
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "in_ch",
+              "H",
+              "W"
+            ]
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "out_ch",
+              "H",
+              "W"
+            ]
+          }
+        ]
+      },
+      "instances": {
+        "01RB0001": {
+          "label": "conv1",
+          "type": "torch.nn.Conv2d",
+          "args": {
+            "in_channels": {
+              "$p": "in_ch"
+            },
+            "out_channels": {
+              "$p": "out_ch"
+            },
+            "kernel_size": 3,
+            "stride": {
+              "$p": "stride"
+            },
+            "padding": 1,
+            "bias": false
+          }
+        },
+        "01RB0002": {
+          "label": "bn1",
+          "type": "torch.nn.BatchNorm2d",
+          "args": {
+            "num_features": {
+              "$p": "out_ch"
+            }
+          }
+        },
+        "01RB0003": {
+          "label": "relu1",
+          "type": "torch.nn.ReLU",
+          "args": {
+            "inplace": false
+          }
+        },
+        "01RB0004": {
+          "label": "conv2",
+          "type": "torch.nn.Conv2d",
+          "args": {
+            "in_channels": {
+              "$p": "out_ch"
+            },
+            "out_channels": {
+              "$p": "out_ch"
+            },
+            "kernel_size": 3,
+            "stride": 1,
+            "padding": 1,
+            "bias": false
+          }
+        },
+        "01RB0005": {
+          "label": "bn2",
+          "type": "torch.nn.BatchNorm2d",
+          "args": {
+            "num_features": {
+              "$p": "out_ch"
+            }
+          }
+        },
+        "01RB0006": {
+          "label": "shortcut",
+          "type": "torchflow.Switch",
+          "active": {
+            "$p": "shortcut"
+          },
+          "variants": {
+            "identity": {
+              "type": "composite:IdentityShortcut",
+              "label": "identity",
+              "args": {
+                "in_ch": {
+                  "$p": "in_ch"
+                },
+                "out_ch": {
+                  "$p": "out_ch"
+                },
+                "stride": {
+                  "$p": "stride"
+                }
+              }
+            },
+            "conv": {
+              "type": "composite:ConvShortcut",
+              "label": "1x1 conv",
+              "args": {
+                "in_ch": {
+                  "$p": "in_ch"
+                },
+                "out_ch": {
+                  "$p": "out_ch"
+                },
+                "stride": {
+                  "$p": "stride"
+                }
+              }
+            }
+          }
+        },
+        "01RB0007": {
+          "label": "relu2",
+          "type": "torch.nn.ReLU",
+          "args": {
+            "inplace": false
+          }
+        }
+      },
+      "nodes": [
+        {
+          "label": "conv1",
+          "id": "01RN0001",
+          "call": "01RB0001",
+          "method": "forward"
+        },
+        {
+          "label": "bn1",
+          "id": "01RN0002",
+          "call": "01RB0002",
+          "method": "forward"
+        },
+        {
+          "label": "relu1",
+          "id": "01RN0003",
+          "call": "01RB0003",
+          "method": "forward"
+        },
+        {
+          "label": "conv2",
+          "id": "01RN0004",
+          "call": "01RB0004",
+          "method": "forward"
+        },
+        {
+          "label": "bn2",
+          "id": "01RN0005",
+          "call": "01RB0005",
+          "method": "forward"
+        },
+        {
+          "label": "shortcut",
+          "id": "01RN0006",
+          "call": "01RB0006",
+          "method": "forward",
+          "ports_out": [
+            {
+              "name": "y",
+              "type": "Tensor"
+            }
+          ]
+        },
+        {
+          "label": "add",
+          "id": "01RN0007",
+          "type": "torch.add"
+        },
+        {
+          "label": "relu2",
+          "id": "01RN0008",
+          "call": "01RB0007",
+          "method": "forward"
+        }
+      ],
+      "edges": [
+        [
+          "$in.x",
+          "01RN0001.input"
+        ],
+        [
+          "01RN0001.output",
+          "01RN0002.input"
+        ],
+        [
+          "01RN0002.output",
+          "01RN0003.input"
+        ],
+        [
+          "01RN0003.output",
+          "01RN0004.input"
+        ],
+        [
+          "01RN0004.output",
+          "01RN0005.input"
+        ],
+        [
+          "$in.x",
+          "01RN0006.x"
+        ],
+        [
+          "01RN0005.output",
+          "01RN0007.input"
+        ],
+        [
+          "01RN0006.y",
+          "01RN0007.other"
+        ],
+        [
+          "01RN0007.output",
+          "01RN0008.input"
+        ],
+        [
+          "01RN0008.output",
+          "$out.y"
+        ]
+      ]
+    },
+    "IdentityShortcut": {
+      "doc": "Shortcut variant that passes the input through unchanged.",
+      "params": {
+        "in_ch": {
+          "type": "int"
+        },
+        "out_ch": {
+          "type": "int"
+        },
+        "stride": {
+          "type": "int"
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor"
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      "instances": {
+        "01RS0001": {
+          "label": "id",
+          "type": "torch.nn.Identity"
+        }
+      },
+      "nodes": [
+        {
+          "label": "id",
+          "id": "01RS1001",
+          "call": "01RS0001",
+          "method": "forward"
+        }
+      ],
+      "edges": [
+        [
+          "$in.x",
+          "01RS1001.input"
+        ],
+        [
+          "01RS1001.output",
+          "$out.y"
+        ]
+      ]
+    },
+    "ConvShortcut": {
+      "doc": "Shortcut variant that projects with a strided 1x1 conv + BN.",
+      "params": {
+        "in_ch": {
+          "type": "int"
+        },
+        "out_ch": {
+          "type": "int"
+        },
+        "stride": {
+          "type": "int"
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor"
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      "instances": {
+        "01RS0002": {
+          "label": "proj",
+          "type": "torch.nn.Conv2d",
+          "args": {
+            "in_channels": {
+              "$p": "in_ch"
+            },
+            "out_channels": {
+              "$p": "out_ch"
+            },
+            "kernel_size": 1,
+            "stride": {
+              "$p": "stride"
+            },
+            "bias": false
+          }
+        },
+        "01RS0003": {
+          "label": "bn",
+          "type": "torch.nn.BatchNorm2d",
+          "args": {
+            "num_features": {
+              "$p": "out_ch"
+            }
+          }
+        }
+      },
+      "nodes": [
+        {
+          "label": "proj",
+          "id": "01RS1002",
+          "call": "01RS0002",
+          "method": "forward"
+        },
+        {
+          "label": "bn",
+          "id": "01RS1003",
+          "call": "01RS0003",
+          "method": "forward"
+        }
+      ],
+      "edges": [
+        [
+          "$in.x",
+          "01RS1002.input"
+        ],
+        [
+          "01RS1002.output",
+          "01RS1003.input"
+        ],
+        [
+          "01RS1003.output",
+          "$out.y"
+        ]
+      ]
+    }
+  },
+  "graph": {
+    "name": "ResNet18",
+    "instances": {
+      "01RG0001": {
+        "label": "conv1",
+        "type": "torch.nn.Conv2d",
+        "args": {
+          "in_channels": 3,
+          "out_channels": 64,
+          "kernel_size": 7,
+          "stride": 2,
+          "padding": 3,
+          "bias": false
+        }
+      },
+      "01RG0002": {
+        "label": "bn1",
+        "type": "torch.nn.BatchNorm2d",
+        "args": {
+          "num_features": 64
+        }
+      },
+      "01RG0003": {
+        "label": "relu",
+        "type": "torch.nn.ReLU",
+        "args": {
+          "inplace": false
+        }
+      },
+      "01RG0004": {
+        "label": "maxpool",
+        "type": "torch.nn.MaxPool2d",
+        "args": {
+          "kernel_size": 3,
+          "stride": 2,
+          "padding": 1
+        }
+      },
+      "01RG0005": {
+        "label": "avgpool",
+        "type": "torch.nn.AdaptiveAvgPool2d",
+        "args": {
+          "output_size": 1
+        }
+      },
+      "01RG0006": {
+        "label": "fc",
+        "type": "torch.nn.Linear",
+        "args": {
+          "in_features": 512,
+          "out_features": {
+            "$expr": "rt.num_classes"
+          }
+        }
+      },
+      "01RG0100": {
+        "label": "layer1.0",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 64,
+          "out_ch": 64,
+          "stride": 1,
+          "shortcut": "identity"
+        }
+      },
+      "01RG0101": {
+        "label": "layer1.1",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 64,
+          "out_ch": 64,
+          "stride": 1,
+          "shortcut": "identity"
+        }
+      },
+      "01RG0102": {
+        "label": "layer2.0",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 64,
+          "out_ch": 128,
+          "stride": 2,
+          "shortcut": "conv"
+        }
+      },
+      "01RG0103": {
+        "label": "layer2.1",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 128,
+          "out_ch": 128,
+          "stride": 1,
+          "shortcut": "identity"
+        }
+      },
+      "01RG0104": {
+        "label": "layer3.0",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 128,
+          "out_ch": 256,
+          "stride": 2,
+          "shortcut": "conv"
+        }
+      },
+      "01RG0105": {
+        "label": "layer3.1",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 256,
+          "out_ch": 256,
+          "stride": 1,
+          "shortcut": "identity"
+        }
+      },
+      "01RG0106": {
+        "label": "layer4.0",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 256,
+          "out_ch": 512,
+          "stride": 2,
+          "shortcut": "conv"
+        }
+      },
+      "01RG0107": {
+        "label": "layer4.1",
+        "type": "composite:BasicBlock",
+        "args": {
+          "in_ch": 512,
+          "out_ch": 512,
+          "stride": 1,
+          "shortcut": "identity"
+        }
+      }
+    },
+    "nodes": [
+      {
+        "label": "x",
+        "id": "01RG1000",
+        "type": "torchflow.Input",
+        "ports_out": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              3,
+              224,
+              224
+            ],
+            "dtype": "float32"
+          }
+        ]
+      },
+      {
+        "label": "conv1",
+        "id": "01RG1001",
+        "call": "01RG0001",
+        "method": "forward"
+      },
+      {
+        "label": "bn1",
+        "id": "01RG1002",
+        "call": "01RG0002",
+        "method": "forward"
+      },
+      {
+        "label": "relu",
+        "id": "01RG1003",
+        "call": "01RG0003",
+        "method": "forward"
+      },
+      {
+        "label": "maxpool",
+        "id": "01RG1004",
+        "call": "01RG0004",
+        "method": "forward"
+      },
+      {
+        "label": "block1",
+        "id": "01RG1100",
+        "call": "01RG0100",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "block2",
+        "id": "01RG1101",
+        "call": "01RG0101",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "block3",
+        "id": "01RG1102",
+        "call": "01RG0102",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "block4",
+        "id": "01RG1103",
+        "call": "01RG0103",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "block5",
+        "id": "01RG1104",
+        "call": "01RG0104",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "block6",
+        "id": "01RG1105",
+        "call": "01RG0105",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "block7",
+        "id": "01RG1106",
+        "call": "01RG0106",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "block8",
+        "id": "01RG1107",
+        "call": "01RG0107",
+        "method": "forward",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "avgpool",
+        "id": "01RG1200",
+        "call": "01RG0005",
+        "method": "forward"
+      },
+      {
+        "label": "flatten",
+        "id": "01RG1201",
+        "type": "torch.flatten",
+        "args": {
+          "start_dim": 1
+        }
+      },
+      {
+        "label": "fc",
+        "id": "01RG1202",
+        "call": "01RG0006",
+        "method": "forward"
+      },
+      {
+        "label": "logits",
+        "id": "01RG1203",
+        "type": "torchflow.Output"
+      }
+    ],
+    "edges": [
+      [
+        "01RG1000.x",
+        "01RG1001.input"
+      ],
+      [
+        "01RG1001.output",
+        "01RG1002.input"
+      ],
+      [
+        "01RG1002.output",
+        "01RG1003.input"
+      ],
+      [
+        "01RG1003.output",
+        "01RG1004.input"
+      ],
+      [
+        "01RG1004.output",
+        "01RG1100.x"
+      ],
+      [
+        "01RG1100.y",
+        "01RG1101.x"
+      ],
+      [
+        "01RG1101.y",
+        "01RG1102.x"
+      ],
+      [
+        "01RG1102.y",
+        "01RG1103.x"
+      ],
+      [
+        "01RG1103.y",
+        "01RG1104.x"
+      ],
+      [
+        "01RG1104.y",
+        "01RG1105.x"
+      ],
+      [
+        "01RG1105.y",
+        "01RG1106.x"
+      ],
+      [
+        "01RG1106.y",
+        "01RG1107.x"
+      ],
+      [
+        "01RG1107.y",
+        "01RG1200.input"
+      ],
+      [
+        "01RG1200.output",
+        "01RG1201.input"
+      ],
+      [
+        "01RG1201.output",
+        "01RG1202.input"
+      ],
+      [
+        "01RG1202.output",
+        "01RG1203.input"
+      ]
+    ],
+    "init": {
+      "policy": "kaiming_normal"
+    },
+    "probe_objective": "auto"
+  }
+}
