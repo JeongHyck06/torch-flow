@@ -207,6 +207,23 @@ def cache_gc(state_dir: str, quota_gb: float, dry_run: bool) -> None:
 
 
 @main.command()
+@click.option("--state-dir", default=".torchflow", show_default=True)
+@click.option("--out", default="runs/tb", show_default=True)
+@click.option("--run", "run_ids", multiple=True, help="특정 run만 (기본: 전부)")
+def tb(state_dir: str, out: str, run_ids: tuple[str, ...]) -> None:
+    """트래커의 곡선을 TensorBoard가 읽는 tfevents로 내보낸다 (§11)."""
+    from .hub.tensorboard import export
+    from .hub.tracker import Tracker
+
+    tracker = Tracker(Path(state_dir) / "runs.db")
+    written = export(tracker, out, list(run_ids) or None)
+    tracker.close()
+    for path in written:
+        click.echo(f"  {path}")
+    click.secho(f"\n  {len(written)}개 run → tensorboard --logdir {out}\n", fg="green")
+
+
+@main.command()
 @click.argument("graph", type=click.Path(exists=True, dir_okay=False), required=False)
 @click.option("--port", default=8765, show_default=True)
 @click.option("--host", default="127.0.0.1", show_default=True)
@@ -224,6 +241,9 @@ def view(graph: str | None, port: int, host: str, state_dir: str, rt: tuple[str,
 
     token = token or new_token()
     app = create_app(graph, state_dir=state_dir, token=token, rt=_kv(rt))
+    # 지난번 hub가 죽는 동안에도 워커는 돌았다. runs/를 훑어 다시 집는다(§5.5.3).
+    if recovered := app.state.hub.recover():
+        click.echo(f"  이어받은 run {len(recovered)}개")
     url = f"http://{host}:{port}/?token={token}"
     click.secho(f"\n  TorchFlow hub → {url}\n", fg="green")
     click.echo(f"  원격이면: ssh -L {port}:127.0.0.1:{port} <host>\n")

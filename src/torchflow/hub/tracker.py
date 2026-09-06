@@ -105,6 +105,15 @@ class Tracker:
         )
         return run_id
 
+    def set_kind(self, run_id: str, kind: str) -> None:
+        """exploratory <-> reported (§5.7.2). reported는 hparam이 동결이다."""
+        self._execute("UPDATE runs SET kind = ?, updated = ? WHERE id = ?",
+                      (kind, time.time(), run_id))
+
+    def clear_scalars(self, run_id: str) -> None:
+        """곡선을 지운다. hub 복구가 events.jsonl에서 처음부터 다시 읽을 때 쓴다."""
+        self._execute("DELETE FROM scalars WHERE run_id = ?", (run_id,))
+
     def finish_run(self, run_id: str, status: str = "done") -> None:
         self._execute("UPDATE runs SET status = ?, updated = ? WHERE id = ?",
                       (status, time.time(), run_id))

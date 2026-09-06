@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from conftest import MINIVIT
+from torchflow.hub import runs as l2
 from torchflow.hub.app import create_app
 
 TOKEN = "test-token"
@@ -404,6 +405,148 @@ def test_training_starts_and_takes_commands(app, client, tmp_path, monkeypatch):
     control = json.loads((app.state.hub.runs_dir / body["run_id"] / "control.json")
                          .read_text(encoding="utf-8"))
     assert control == {"pause": True, "lr": 0.02}
+
+
+@pytest.fixture
+def trained(app, client, tmp_path, monkeypatch):
+    """워커를 띄우지 않고 run 하나를 연다.
+
+    ``start``를 통째로 가짜로 바꾸지 않고 프로세스 기동만 막는다 - fork와 재개가
+    실제로 파일을 어떻게 다루는지가 이 테스트들의 요점이다.
+    """
+    app.state.hub.runs_dir = tmp_path / "runs"
+    monkeypatch.setattr("torchflow.hub.runs._spawn", lambda directory, python=None: None)
+    auth = {"Authorization": f"token {TOKEN}"}
+    body = client.post("/api/train", headers=auth, json={"steps": 10}).json()
+    assert body["ok"]
+    handle = app.state.hub.l2[body["run_id"]]
+    handle.step = 7
+    (handle.directory / "ckpt.pt").write_bytes(b"fake-checkpoint")
+    return body["run_id"], handle, auth
+
+
+def test_smoke_runs_short_and_deterministic(app, client, trained):
+    """Smoke는 20 step · batch 8 · 결정적이다 - 두 번 돌리면 loss가 같아야 한다."""
+    run_id, _handle, auth = trained
+    body = client.post("/api/train", headers=auth, json={"smoke": True}).json()
+
+    job = json.loads((app.state.hub.runs_dir / body["run_id"] / "job.json")
+                     .read_text(encoding="utf-8"))
+    assert (job["steps"], job["batch"], job["smoke"]) == (20, 8, True)
+
+
+def test_an_exploratory_run_takes_the_change_in_place(app, client, trained, tmp_path):
+    """exploratory는 in-place 변경이 허용되고, 변경은 파일로 물질화된다(§5.7.2)."""
+    run_id, handle, auth = trained
+    body = client.post(f"/api/train/{run_id}", headers=auth,
+                       json={"cmd": "set_hparam", "path": "optim.lr", "value": 3e-4}).json()
+
+    assert body["ok"] and "forked_from" not in body
+    control = json.loads((handle.directory / "control.json").read_text(encoding="utf-8"))
+    assert control == {"lr": 3e-4}
+    # 파일은 아직 없다 - 워커가 "적용했다"고 말하기 전에는 적을 사실이 없다.
+    assert not (tmp_path / "conf" / "overrides" / f"{run_id}.yaml").exists()
+
+    (handle.directory / "events.jsonl").write_text(
+        '{"kind": "hparam", "step": 9, "path": "optim.lr", "value": 0.0003}\n', encoding="utf-8")
+    app.state.hub.sync_runs()
+
+    # 학습 중에 바꾼 값은 코드 어디에도 안 남는다 - 이 파일이 재현의 유일한 근거다.
+    overrides = (tmp_path / "conf" / "overrides" / f"{run_id}.yaml").read_text(encoding="utf-8")
+    assert "path: optim.lr" in overrides and "step: 9" in overrides
+    # 같은 이벤트를 다시 읽어도 두 줄이 되지 않는다.
+    app.state.hub.sync_runs()
+    assert overrides.count("optim.lr") == 1
+
+
+def test_a_reported_run_forks_instead_of_changing_in_place(app, client, trained):
+    """reported run은 hparam이 동결이다. 편집하면 갈라진 run이 생긴다(§5.7.2)."""
+    run_id, handle, auth = trained
+    client.post(f"/api/train/{run_id}", headers=auth, json={"cmd": "promote"})
+    assert app.state.hub.tracker.run(run_id).kind == "reported"
+
+    body = client.post(f"/api/train/{run_id}", headers=auth,
+                       json={"cmd": "set_hparam", "path": "optim.lr", "value": 3e-4}).json()
+
+    assert body["forked_from"] == run_id and body["run_id"] != run_id
+    child = app.state.hub.tracker.run(body["run_id"])
+    assert child.parent_run == run_id and child.kind == "reported"
+    # 원 run은 멈추고, 새 run은 복사된 ckpt에서 이어 간다.
+    assert json.loads((handle.directory / "control.json").read_text())["stop"] is True
+    child_dir = app.state.hub.runs_dir / body["run_id"]
+    assert (child_dir / "ckpt.pt").read_bytes() == b"fake-checkpoint"
+    child_job = json.loads((child_dir / "job.json").read_text(encoding="utf-8"))
+    assert child_job["resume"] == str(child_dir / "ckpt.pt") and child_job["lr"] == 3e-4
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("optim.lr", "hot"), ("optim.weight_decay", "hot"),
+    ("scheduler.type", "scheduler"), ("data.batch", "restart"),
+    ("optim.optimizer", "restart"), ("data.seed", "cold"),
+])
+def test_hparam_paths_are_classified(path, expected):
+    from torchflow.hub import runs as l2
+
+    assert l2.classify(path) == expected
+
+
+def test_a_change_needing_a_restart_is_reported_not_applied(app, client, trained):
+    """재시작이 필요한 변경은 알리기만 한다 - 자동 재시작은 하지 않는다(ADR-05)."""
+    run_id, handle, auth = trained
+    body = client.post(f"/api/train/{run_id}", headers=auth,
+                       json={"cmd": "set_hparam", "path": "data.batch", "value": 64}).json()
+
+    assert body["ok"] is False and body["restart_required"] == "restart"
+    assert json.loads((handle.directory / "control.json").read_text()) == {}
+
+
+def test_resume_relaunches_a_dead_run_from_its_checkpoint(app, client, trained):
+    """끝났거나 hub와 함께 죽은 run은 ckpt에서 다시 띄운다. run id는 그대로다."""
+    run_id, handle, auth = trained
+    l2.command(handle, stop=True)
+    assert not handle.alive
+
+    body = client.post(f"/api/train/{run_id}", headers=auth,
+                       json={"cmd": "resume", "steps": 40}).json()
+
+    assert body["ok"] and body["run_id"] == run_id
+    job = json.loads((handle.directory / "job.json").read_text(encoding="utf-8"))
+    assert job["resume"] == str(handle.directory / "ckpt.pt") and job["steps"] == 40
+    # 남아 있던 stop 명령이 지워져야 새 워커가 첫 스텝에 다시 멈추지 않는다.
+    assert json.loads((handle.directory / "control.json").read_text()) == {}
+
+
+def test_hub_recovers_runs_it_did_not_start(app, tmp_path):
+    """hub가 죽는 동안에도 워커는 돌았다. events.jsonl이 정본이다(§5.5.3)."""
+    hub = app.state.hub
+    hub.runs_dir = tmp_path / "runs"
+    directory = hub.runs_dir / "run-orphan"
+    directory.mkdir(parents=True)
+    (directory / "job.json").write_text('{"steps": 3}', encoding="utf-8")
+    (directory / "events.jsonl").write_text(
+        '{"kind": "status", "state": "running", "steps": 3}\n'
+        '{"kind": "scalar", "step": 1, "loss": 2.0}\n'
+        '{"kind": "scalar", "step": 2, "loss": 1.0}\n', encoding="utf-8")
+
+    assert hub.recover() == ["run-orphan"]
+    assert hub.tracker.curve("run-orphan", "loss") == [(1, 2.0), (2, 1.0)]
+    # 두 번 복구해도 곡선이 두 배가 되지 않는다.
+    hub.l2.clear()
+    hub.recover()
+    assert hub.tracker.curve("run-orphan", "loss") == [(1, 2.0), (2, 1.0)]
+
+
+def test_l1_probe_tells_the_kernel_which_gpus_l2_holds(app, monkeypatch):
+    """학습 중 L1은 L2가 잡은 GPU를 피한다(§5.1.5). 그 사실이 커널까지 가야 한다."""
+    from torchflow.hub.runs import RunHandle
+
+    hub = app.state.hub
+    handle = RunHandle(run_id="r", directory=app.state.hub.state_dir, device="cuda:0")
+    handle.state = "running"
+    monkeypatch.setattr(type(handle), "alive", property(lambda self: True))
+    hub.l2["r"] = handle
+
+    assert hub.occupied_devices() == ["cuda:0"]
 
 
 def test_training_refuses_a_graph_without_an_input(app, client):

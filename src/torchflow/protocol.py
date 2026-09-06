@@ -77,6 +77,8 @@ class RunClosure(_Msg):
     graph: dict[str, Any] | None = None
     node_ids: list[str] = Field(default_factory=list)
     probe_cfg: dict[str, Any] = Field(default_factory=dict)
+    # L2 학습 워커가 잡고 있는 디바이스. L1은 여기를 피해 배정한다(§5.1.5).
+    occupied: list[str] = Field(default_factory=list)
 
 
 class ImportTrace(_Msg):

@@ -210,6 +210,37 @@ class Hub:
         """워커가 남긴 이벤트를 트래커로 옮긴다. 곡선을 물어볼 때마다 부른다."""
         for handle in self.l2.values():
             l2.merge(handle, self.tracker)
+            # 워커가 "적용했다"고 말한 것만 적는다. hub가 명령을 낸 step이 아니라
+            # 실제로 반영된 step이 재현에 쓸 수 있는 숫자다.
+            if handle.overrides_dirty:
+                handle.overrides_dirty = False
+                l2.write_overrides(handle.run_id, handle.extra["overrides"],
+                                   self.runs_dir.parent)
+
+    def occupied_devices(self) -> list[str]:
+        """L2 워커가 잡고 있는 가속기. L1은 여기를 피해 배정한다(§5.1.5)."""
+        return sorted({handle.device for handle in self.l2.values()
+                       if handle.alive and handle.device and handle.device != "cpu"})
+
+    def recover(self) -> list[str]:
+        """hub가 다시 떴을 때 ``runs/``를 훑어 run을 다시 집는다(§5.5.3).
+
+        워커는 hub와 분리된 세션이라 hub가 죽는 동안에도 계속 돌았다.
+        ``events.jsonl``이 정본이므로 스칼라를 지우고 파일을 처음부터 다시 읽는다 -
+        hub가 죽은 뒤에 쌓인 부분이 그래야 들어온다.
+        """
+        found = []
+        for job in sorted(self.runs_dir.glob("*/job.json")):
+            run_id = job.parent.name
+            if run_id in self.l2:
+                continue
+            handle = l2.RunHandle(run_id=run_id, directory=job.parent)
+            self.tracker.ensure_run(run_id)
+            self.tracker.clear_scalars(run_id)
+            self.l2[run_id] = handle
+            l2.merge(handle, self.tracker)
+            found.append(run_id)
+        return found
 
     def absorb_logs(self, replies: list) -> None:
         """커널이 올린 노드별 stdout/stderr를 트래커에 남긴다(§5.6.1).
@@ -228,6 +259,51 @@ class Hub:
                 await client.send_text(payload)
             except (WebSocketDisconnect, RuntimeError):
                 self.clients.remove(client)
+
+
+# 재시작이 필요한 변경을 사람 말로 옮긴 것. Phase B는 **표시만** 한다 - 자동
+# 재시작은 신뢰를 깨므로 사람이 Stop하고 다시 누른다(ADR-05).
+RESTART_REASON = {
+    "scheduler": "스케줄러 변경은 재생성이 필요합니다. Stop 후 다시 Run하세요",
+    "restart": "가중치는 유지되지만 재시작이 필요합니다. Stop 후 다시 Run하세요",
+    "cold": "데이터·시드 변경은 step 0부터 다시 돌려야 합니다",
+}
+
+
+def _apply_hparam(hub: "Hub", handle, options: dict[str, Any]) -> JSONResponse:
+    """학습 중 hparam 변경(§5.7.1, §5.7.2).
+
+    HOT이 아니면 재시작 필요를 알리고 아무것도 하지 않는다. HOT이어도 run이
+    ``reported``면 in-place로 못 바꾼다 - 갈라진 run을 새로 만든다.
+    """
+    path = options.get("path") or "optim.lr"
+    value = options["value"]
+    change = l2.classify(path)
+    if change != "hot":
+        return JSONResponse({"ok": False, "restart_required": change, "path": path,
+                             "message": RESTART_REASON[change]})
+
+    run = hub.tracker.run(handle.run_id)
+    entry = {"step": handle.step, "path": path, "value": value}
+    if run is not None and run.kind == "reported":
+        child = l2.fork(handle, root=hub.runs_dir, changes=l2.hot_command(path, value))
+        child.extra["kind"] = "reported"
+        hub.l2[child.run_id] = child
+        hub.tracker.ensure_run(child.run_id, kind="reported", parent_run=handle.run_id,
+                               name=run.name,
+                               manifest={**run.manifest, "parent_run": handle.run_id,
+                                         "forked_at_step": handle.step})
+        # 갈라진 run의 lr은 job.json에 박혀 있어 워커가 따로 알려 주지 않는다.
+        # 갈라진 지점의 변경은 여기서만 기록할 수 있다.
+        child.extra["overrides"] = [*handle.extra.get("overrides", []), entry]
+        l2.write_overrides(child.run_id, child.extra["overrides"], hub.runs_dir.parent)
+        l2.merge(handle, hub.tracker)
+        return JSONResponse({"ok": True, "forked_from": handle.run_id, **child.as_dict()})
+
+    # in-place 적용. overrides 파일은 워커가 반영을 알려 오면 sync_runs가 쓴다.
+    l2.command(handle, **l2.hot_command(path, value))
+    l2.merge(handle, hub.tracker)
+    return JSONResponse({"ok": True, **handle.as_dict()})
 
 
 def _class_name(name: str) -> str:
@@ -503,8 +579,10 @@ def create_app(
             return JSONResponse({"ok": False, "error": "attached session drives L1"},
                                 status_code=409)
         hub.l1.ensure()
+        hub.sync_runs()
         replies = hub.l1.request(proto.RunClosure(
-            req_id=f"p-{hub.seq}", graph=hub.snapshot_for_kernel(), probe_cfg=cfg or {}))
+            req_id=f"p-{hub.seq}", graph=hub.snapshot_for_kernel(), probe_cfg=cfg or {},
+            occupied=hub.occupied_devices()))
 
         hub.absorb_logs(replies)
         busy = next((r for r in replies if r.type == "Busy"), None)
@@ -610,6 +688,12 @@ def create_app(
         except codegen.CodegenError as exc:
             return JSONResponse({"error": str(exc), "node": exc.node_id}, status_code=400)
 
+        # Smoke는 "지금 이 그래프가 학습이 되긴 하는가"를 30초 안에 답하는 것이다
+        # (§13.1 M7). 짧고 결정적이라 두 번 돌리면 loss가 bitwise로 같아야 한다.
+        smoke = bool(options.get("smoke"))
+        if smoke:
+            options = {**options, "steps": 20, "batch": 8, "log_every": 1}
+
         run_id = options.get("run_id") or l2.new_run_id()
         # 생성 코드가 실제로 받는 인자만 넘긴다 - 그래프가 rt.num_classes를 안 쓰면
         # 생성자에도 그 인자가 없다.
@@ -640,12 +724,14 @@ def create_app(
             "nan_policy": options.get("nan_policy", "pause"),
             "seed": int(options.get("seed", 0)),
             "device": options.get("device", "auto"),
+            "smoke": smoke,
         }
 
+        kind = options.get("kind", "exploratory")
         handle = l2.start(run_id=run_id, root=hub.runs_dir, job=job, code=code)
+        handle.extra.update({"kind": kind, "smoke": smoke})
         hub.l2[run_id] = handle
-        hub.tracker.ensure_run(run_id, kind=options.get("kind", "exploratory"),
-                               name=graph.name,
+        hub.tracker.ensure_run(run_id, kind=kind, name=graph.name,
                                manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir)})
         return JSONResponse({"ok": True, **handle.as_dict()})
 
@@ -660,11 +746,20 @@ def create_app(
         if cmd == "pause":
             l2.command(handle, pause=True)
         elif cmd == "resume":
-            l2.command(handle, pause=False)
+            if handle.alive:
+                l2.command(handle, pause=False)
+            else:
+                # 워커가 이미 끝났거나 hub와 함께 죽었다 - 체크포인트에서 다시 띄운다.
+                l2.resume(handle, steps=options.get("steps"))
+                hub.tracker.ensure_run(run_id)
         elif cmd == "stop":
             l2.command(handle, stop=True)
-        elif cmd == "set_lr":
-            l2.command(handle, lr=float(options["value"]))
+        elif cmd == "promote":
+            # exploratory -> reported. 이 뒤로는 in-place 변경이 fork가 된다(§5.7.2).
+            hub.tracker.set_kind(run_id, "reported")
+            handle.extra["kind"] = "reported"
+        elif cmd in ("set_lr", "set_hparam"):
+            return _apply_hparam(hub, handle, options)
         else:
             return JSONResponse({"error": f"unknown cmd {cmd!r}"}, status_code=400)
         l2.merge(handle, hub.tracker)

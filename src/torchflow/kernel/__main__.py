@@ -29,6 +29,7 @@ class Kernel:
         self.session = None      # L0Session - 첫 RunNodes에서 만든다(torch import 지연).
         self.l1_session = None   # L1의 살아 있는 모듈 트리
         self.l1_pass = None      # 마지막 probe 패스 - Debug Console이 여기서 값을 읽는다.
+        self.l1_device = None    # 모듈 트리가 지금 올라가 있는 디바이스
         self.budget = None       # ProbeBudget
         context = zmq.Context.instance()
         self.socket = context.socket(zmq.DEALER)
@@ -129,7 +130,14 @@ class Kernel:
             self.send(proto.Progress(req_id=message.req_id, done=0, total=0))
             return
 
-        choice = pick_l1_device(torch, batch=decision.batch)
+        # L2가 GPU를 가져갔으면 L1은 비켜선다. 그래프를 죽이지 않고 CPU로 내려가되,
+        # 살아 있는 모듈 트리는 버리지 않고 옮긴다 - 다시 만들면 콜드 비용을 다시 낸다.
+        choice = pick_l1_device(torch, occupied=tuple(message.occupied), batch=decision.batch)
+        if self.l1_session is not None and self.l1_device != choice.device:
+            for module in self.l1_session.modules.values():
+                if hasattr(module, "to"):
+                    module.to(choice.device)
+        self.l1_device = choice.device
         config = ProbeConfig(
             **{**message.probe_cfg,
                "batch": decision.batch,
