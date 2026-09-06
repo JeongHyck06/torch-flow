@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "torchflow"
+version = "0.0.1"
+description = "Reactive PyTorch research workbench"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pydantic>=2.5",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    # uvicorn[standard]는 필요 없는 것까지 끌고 온다. WS 구현만 명시적으로 고른다.
+    "websockets>=12",
+    "pyzmq>=25",
+    "msgpack>=1.0",
+    "click>=8.1",
+]
+
+# torch is intentionally NOT a dependency: kernels run in the user's own
+# interpreter with their own CUDA build (기획서 §9). hub must never import it.
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "httpx>=0.27"]
+
+[project.scripts]
+torchflow = "torchflow.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/torchflow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

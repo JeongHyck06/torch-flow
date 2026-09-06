@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# Node
+node_modules/
+web/dist/
+
+# 프론트 빌드 산출물 — `npm run build`가 만든다. wheel 빌드 시 생성한다.
+src/torchflow/hub/static/
+
+# 로컬 상태 (--state-dir 기본값): 캐시·journal·layout·registry
+.torchflow/
+
+# 도구 산출물
+graphify-out/
+CLAUDE.md
+.claude/
+
+# OS
+.DS_Store
