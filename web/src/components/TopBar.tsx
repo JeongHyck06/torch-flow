@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { closeGraph, estimateMemory, runProbe, saveGraph } from "../api";
+import { applyEdit } from "../edit";
+import { op } from "../graph/ops";
 import { useStore } from "../store";
 import { formatCount } from "../theme";
 
@@ -28,6 +30,14 @@ export function TopBar() {
     if (dirty && !window.confirm("저장하지 않은 편집이 있습니다. 첫 화면으로 나갈까요?")) return;
     await closeGraph();
     useStore.getState().closeGraph();
+  };
+
+  const name = graph?.graph.name ?? "";
+  const rename = (next: string) => {
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === name) return;
+    // 역 op가 이전 이름을 알아야 되돌릴 수 있다(§8.2.3).
+    void applyEdit(op("rename", { name: trimmed, previous: name }));
   };
 
   const save = async () => {
@@ -65,6 +75,19 @@ export function TopBar() {
         <span className="wordmark__version">0.0.1</span>
       </button>
 
+      <input
+        className="graphname"
+        defaultValue={name}
+        key={name}
+        aria-label="그래프 이름"
+        spellCheck={false}
+        onBlur={(event) => rename(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+          if (event.key === "Escape") (event.target as HTMLInputElement).value = name;
+        }}
+      />
+
       <span className="savestate">
         <button className="savestate__button" onClick={save} disabled={saving === "…"}>
           저장
@@ -75,7 +98,7 @@ export function TopBar() {
       </span>
 
       <nav className="crumbs" aria-label="그래프 경로">
-        {scopes.map((scope, index) => (
+        {(scopes.length > 1 ? scopes : []).map((scope, index) => (
           <span key={scope.callPath || scope.name}>
             {index > 0 && <span className="crumbs__sep">›</span>}
             <button

@@ -247,7 +247,8 @@ FromKernel = Annotated[
 # browser <-> hub
 
 OpKind = Literal[
-    "add_node", "remove_node", "set_param", "set_ports", "connect", "disconnect", "move", "group",
+    "add_node", "remove_node", "set_param", "set_ports", "rename", "connect", "disconnect",
+    "move", "group",
     "set_code", "set_switch_active", "promote_hp", "save_variant", "add_probe",
     "remove_probe", "batch",
 ]

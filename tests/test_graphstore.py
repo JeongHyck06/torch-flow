@@ -173,3 +173,15 @@ def test_set_ports_changes_the_graph_input_spec(minivit):
     node = next(node for node in store.ir.graph.nodes if node.id == "01J9Q4B1")
     assert node.ports_out[0].shape == ["B", 3, 64, 64]
     assert validate(store.ir) == []
+
+
+def test_rename_changes_the_graph_name_and_is_undoable(minivit):
+    store = GraphStore(minivit)
+    store.apply({"kind": "rename", "payload": {"name": "TinyCNN"}})
+    assert store.ir.graph.name == "TinyCNN"
+
+    store.apply({"kind": "rename", "payload": {"name": "MiniViT"}, "inverse_of": 1})
+    assert store.ir.graph.name == "MiniViT"
+
+    with pytest.raises(OpError):
+        store.apply({"kind": "rename", "payload": {"name": "  "}})

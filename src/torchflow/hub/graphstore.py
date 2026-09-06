@@ -22,8 +22,8 @@ from typing import Any
 
 from ..ir import ModuleGraph, canonical_json, save, split_endpoint
 
-APPLIED_KINDS = {"add_node", "remove_node", "set_param", "set_ports", "set_switch_active",
-                 "connect", "disconnect"}
+APPLIED_KINDS = {"add_node", "remove_node", "set_param", "set_ports", "rename",
+                 "set_switch_active", "connect", "disconnect"}
 
 
 class OpError(ValueError):
@@ -62,6 +62,12 @@ class GraphStore:
             self._add_node(scope, payload)
         elif kind == "remove_node":
             self._remove_node(scope, payload)
+        elif kind == "rename":
+            # 그래프 이름은 생성 코드에서 클래스 이름이 된다(§7.2). 빈 이름은 받지 않는다.
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                raise OpError("graph name cannot be empty")
+            self.ir.graph.name = name
         elif kind == "set_ports":
             self._set_ports(scope, payload)
         elif kind == "set_param":

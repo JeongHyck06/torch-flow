@@ -144,6 +144,10 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
         value: (instance.args ?? {})[payload.path as string] ?? null,
       });
     }
+    case "rename":
+      // 스코프가 아니라 그래프 전체 이름이다. 이전 이름은 호출한 쪽이 실어 준다.
+      return payload.previous === undefined
+        ? null : op("rename", { name: payload.previous });
     case "set_ports": {
       const node = (scope.nodes ?? []).find((entry) => entry.id === payload.node);
       if (!node) return null;
