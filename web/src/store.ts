@@ -6,6 +6,7 @@
 
 import { create } from "zustand";
 import type { ModuleGraph, NodeState } from "./types.gen";
+import type { Recipe } from "./api";
 import type { Op } from "./graph/ops";
 
 export interface Scope {
@@ -42,6 +43,9 @@ interface State {
   dirty: boolean;                // 마지막 저장 이후 편집이 있었나
   /** 팔레트를 띄운 캔버스 좌표. null이면 닫혀 있다(§4.2). */
   paletteAt: { x: number; y: number } | null;
+  /** 이 그래프가 배우는 데이터와 정제 설정. 그래프의 experiment.data가 정본이다. */
+  dataset: string;
+  recipe: Recipe | null;
 
   setGraph: (graph: ModuleGraph, seq: number) => void;
   openGraph: (graph: ModuleGraph, seq: number) => void;
@@ -65,6 +69,7 @@ interface State {
   takeRedo: () => Op | undefined;
   setDirty: (dirty: boolean) => void;
   openPalette: (at: { x: number; y: number }) => void;
+  setData: (dataset: string, recipe: Recipe | null) => void;
   closePalette: () => void;
   enterScope: (scope: Scope) => void;
   popToScope: (index: number) => void;
@@ -99,6 +104,8 @@ export const useStore = create<State>((set, get) => ({
   redoStack: [],
   dirty: false,
   paletteAt: null,
+  dataset: "teacher",
+  recipe: null,
 
   openGraph: (graph, seq) =>
     // **다른** 그래프를 연다. 이전 그래프에 딸린 것은 전부 비운다 - 노드 상태,
@@ -107,7 +114,8 @@ export const useStore = create<State>((set, get) => ({
     set({ graph, seq, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" }],
           undoStack: [], redoStack: [], dirty: false, paletteAt: null,
-          totals: { params: 0, band: null, batch: 64 } }),
+          totals: { params: 0, band: null, batch: 64 },
+          ...dataOf(graph) }),
   setGraph: (graph, seq) =>
     // 브레드크럼의 뿌리는 그래프 이름이다.
     set((prev) => ({
@@ -175,6 +183,7 @@ export const useStore = create<State>((set, get) => ({
   },
   setDirty: (dirty) => set({ dirty }),
   openPalette: (paletteAt) => set({ paletteAt }),
+  setData: (dataset, recipe) => set({ dataset, recipe }),
   closePalette: () => set({ paletteAt: null }),
   enterScope: (scope) =>
     set((prev) =>
@@ -186,6 +195,12 @@ export const useStore = create<State>((set, get) => ({
   select: (selected) => set({ selected }),
   focus: (focused) => set({ focused }),
 }));
+
+/** 그래프에 붙은 데이터. 없으면 합성 과제다. */
+function dataOf(graph: ModuleGraph): { dataset: string; recipe: Recipe | null } {
+  const data = (graph.experiment as { data?: { name?: string; recipe?: Recipe } } | undefined)?.data;
+  return { dataset: data?.name ?? "teacher", recipe: data?.recipe ?? null };
+}
 
 /** 현재 스코프의 nodes/edges/instances. 컴포지트에 들어가면 그 안을 본다. */
 export function currentScope(state: Pick<State, "graph" | "scopes">) {

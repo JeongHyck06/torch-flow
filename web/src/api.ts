@@ -67,12 +67,12 @@ export async function fetchRegistry(): Promise<Block[]> {
 
 /** 빈 그래프에서 시작한다. 첫 화면의 진입점 하나(§2.2). */
 /** ``dataset``을 주면 Input/Output이 그 데이터 규격으로 깔린 채 열린다. */
-export async function newGraph(name = "untitled", dataset?: string):
+export async function newGraph(name = "untitled", dataset?: string, recipe?: Recipe | null):
     Promise<{ ok?: boolean; error?: string }> {
   const response = await fetch("/api/new", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(dataset ? { name, dataset } : { name }),
+    body: JSON.stringify(dataset ? { name, dataset, recipe: recipe ?? {} } : { name }),
   });
   return response.json();
 }
@@ -228,6 +228,44 @@ export interface DatasetInfo {
   class_names?: string[];
 }
 
+/** 사람이 정제한 설정. 키는 datasets.recipe_defaults가 정한다. */
+export type Recipe = Record<string, unknown>;
+
+export interface DatasetColumn { name: string; kind: string; missing: number; uniques?: string[] | null }
+export interface EffectiveSpec extends DatasetInfo {
+  recipe: Recipe; split?: { train: number; val: number };
+  class_counts?: Record<string, number>; problem?: string;
+}
+export interface DatasetPreview {
+  base: DatasetInfo & { columns?: DatasetColumn[]; label_column?: string };
+  spec: EffectiveSpec;
+  preview: {
+    columns?: DatasetColumn[]; header?: string[]; rows?: string[][];
+    thumbnails?: { png: string; labels: string[]; tile: number; per_class: number } | null;
+  };
+  error?: string;
+}
+
+export async function previewDataset(name: string, recipe: Recipe | null): Promise<DatasetPreview> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(name)}/preview`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ recipe: recipe ?? {} }),
+  });
+  return response.json();
+}
+
+/** 그래프에 데이터와 레시피를 붙이고 Input 규격을 맞춘다. */
+export async function setGraphData(name: string, recipe: Recipe | null):
+    Promise<{ ok?: boolean; error?: string; spec?: EffectiveSpec }> {
+  const response = await fetch("/api/data", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ name, recipe: recipe ?? {} }),
+  });
+  return response.json();
+}
+
 /** 다른 곳의 폴더를 data/ 에 링크로 등록한다. */
 export async function addDatasetFolder(path: string): Promise<DatasetInfo & { error?: string }> {
   const response = await fetch("/api/datasets", {
@@ -253,7 +291,7 @@ export async function downloadDataset(name: string): Promise<{ ok?: boolean; err
 }
 
 export interface TrainOptions {
-  dataset?: string;
+  dataset?: string; recipe?: Recipe;
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
   scheduler?: string; warmup_steps?: number;
 }

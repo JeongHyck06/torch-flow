@@ -6,15 +6,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchCurve, fetchLogs, fetchRuns } from "../api";
 import type { CurveSeries, LogLine, RunInfo } from "../api";
+import { setGraphData } from "../api";
 import { Console } from "./Console";
+import { DataCard } from "./DataCard";
 import { TrainLog } from "./TrainLog";
 import { Trainer } from "./Trainer";
 import { useStore } from "../store";
 
-type Tab = "curves" | "stdout" | "manifest" | "logs" | "console";
+type Tab = "curves" | "data" | "stdout" | "manifest" | "logs" | "console";
 
 const TAB_LABELS: Record<Tab, string> = {
-  curves: "Run 곡선", stdout: "학습 출력", manifest: "run manifest",
+  curves: "Run 곡선", data: "데이터", stdout: "학습 출력", manifest: "run manifest",
   logs: "로그", console: "콘솔",
 };
 
@@ -28,6 +30,19 @@ export function RunPanel() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const open = useStore((state) => state.runPanel);
   const toggle = useStore((state) => state.toggleRunPanel);
+  const dataset = useStore((state) => state.dataset);
+  const recipe = useStore((state) => state.recipe);
+  const setData = useStore((state) => state.setData);
+  const [applied, setApplied] = useState<string | null>(null);
+
+  // 레시피를 그래프에 붙인다. hub가 Input을 set_ports op로 맞추고 브로드캐스트한다.
+  const apply = async () => {
+    setApplied("…");
+    const result = await setGraphData(dataset, recipe);
+    if (result.error) { setApplied(result.error); return; }
+    setData(dataset, result.spec?.recipe ?? recipe);
+    setApplied(`적용됨 · Input [B, ${(result.spec?.shape ?? []).join(", ")}]`);
+  };
 
   const refresh = useCallback(async () => {
     const found = await fetchRuns();
@@ -90,6 +105,21 @@ export function RunPanel() {
             </p>
           ) : (
             <Curves series={series} label={key} />
+          )
+        )}
+
+        {tab === "data" && (
+          dataset === "teacher" || dataset === "noise" ? (
+            <p className="mono muted">Run 곡선 탭의 데이터 선택에서 데이터셋을 고르면 여기서 정제합니다</p>
+          ) : (
+            <>
+              <div className="trainer">
+                <button className="trainer__run" onClick={() => void apply()}>그래프에 적용</button>
+                <span className="mono trainer__progress">{dataset}</span>
+                {applied && <span className="mono trainer__note">{applied}</span>}
+              </div>
+              <DataCard name={dataset} recipe={recipe} onRecipe={(next) => setData(dataset, next)} />
+            </>
           )
         )}
 

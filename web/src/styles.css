@@ -354,6 +354,34 @@ body {
 .snippet__notes p { margin: 0; font-size: 12px; color: var(--text-muted); }
 .snippet__notes .mono { font-size: 12px; color: var(--text-secondary); }
 
+.templates__row--on .templates__name { color: var(--state-ok); }
+.datacard-wrap { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border-subtle); }
+.datacard-wrap .scratch__row { margin-bottom: 14px; }
+.datacard { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.datacard h3 {
+  margin: 12px 0 6px; font-size: 11px; font-weight: 500; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.datacard h3:first-child { margin-top: 0; }
+.datacard__checks { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; }
+.datacard__checks label { display: flex; align-items: center; gap: 5px; }
+.datacard__bars { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.datacard__bar { display: grid; grid-template-columns: 96px 1fr 56px; align-items: center; gap: 8px; }
+.datacard__bar .muted { text-align: right; }
+.datacard__fill { display: block; height: 6px; border-radius: 2px; background: var(--dtype-f32); }
+.datacard__thumbs { display: flex; gap: 8px; margin-top: 12px; }
+.datacard__thumblabels { display: flex; flex-direction: column; font-size: 11px; }
+.datacard__thumblabels span { display: flex; align-items: center; }
+.datacard__thumbs img { image-rendering: pixelated; border: 1px solid var(--border-subtle); }
+.datacard__table { margin-top: 12px; overflow-x: auto; }
+.datacard__table table { border-collapse: collapse; font: 12px var(--font-mono); }
+.datacard__table th, .datacard__table td {
+  padding: 3px 10px; text-align: left; border-bottom: 1px solid var(--border-subtle); white-space: nowrap;
+}
+.datacard__table th { color: var(--text-secondary); font-weight: 500; }
+.datacard__table p { margin: 8px 0 0; font-size: 11px; }
+.datacard__summary { margin: 12px 0 0; font-size: 12px; color: var(--text-primary); }
+
 .datafolder { display: flex; gap: 8px; margin-top: 10px; }
 .datafolder input {
   flex: 1; padding: 6px 10px; font-size: 12px;

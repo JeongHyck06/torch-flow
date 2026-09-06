@@ -11,7 +11,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addDatasetFolder, fetchDatasets, fetchStart, importSource, inspectSource, newGraph, openGraph,
 } from "../api";
-import type { Candidate, DatasetInfo, RecentGraph, StartInfo, Template } from "../api";
+import type { Candidate, DatasetInfo, Recipe, RecentGraph, StartInfo, Template } from "../api";
+import { DataCard } from "./DataCard";
 
 const KIND_LABEL: Record<string, string> = {
   builtin: "내장", image_folder: "이미지 폴더", csv: "CSV 표", arrays: "npy 배열",
@@ -33,6 +34,8 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
   const [hover, setHover] = useState(false);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [folder, setFolder] = useState("");
+  const [card, setCard] = useState<DatasetInfo | null>(null);
+  const [recipe, setRecipe] = useState<Recipe | null>(null);
   const picker = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -44,7 +47,7 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
   const startFromDataset = async (entry: DatasetInfo) => {
     setBusy(entry.name);
     setError(null);
-    const result = await newGraph(entry.label, entry.name);
+    const result = await newGraph(entry.label, entry.name, recipe);
     setBusy(null);
     if (result.error) setError(result.error);
     else onOpened();
@@ -262,9 +265,10 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
             <ul className="templates">
               {datasets.map((entry) => (
                 <li key={entry.name}>
-                  <button className="templates__row" disabled={busy !== null}
-                          onClick={() => void startFromDataset(entry)}
-                          title={`Input [B, ${entry.shape.join(", ")}] · 출력 ${entry.classes} 클래스로 새 그래프`}>
+                  <button className={`templates__row${card?.name === entry.name ? " templates__row--on" : ""}`}
+                          disabled={busy !== null}
+                          onClick={() => { setCard(entry); setRecipe(null); }}
+                          title="정제 설정을 보고 이 데이터로 새 그래프를 엽니다">
                     <span className="templates__left">
                       <span className="templates__name">{entry.label}</span>
                       <span className="templates__recipe mono">
@@ -312,6 +316,22 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
             </div>
           </section>
         </div>
+
+        {card && (
+          <section className="datacard-wrap">
+            <div className="scratch__row">
+              <div>
+                <span className="scratch__title">{card.label}</span>
+                <p>자동으로 알아본 것 위에 정제 설정을 얹습니다. 설정은 그래프에 남아 run과 함께 재현됩니다.</p>
+              </div>
+              <button className="ghost" onClick={() => setCard(null)}>취소</button>
+              <button className="solid" onClick={() => void startFromDataset(card)} disabled={busy !== null}>
+                {busy === card.name ? "여는 중" : "이 설정으로 그래프 시작"}
+              </button>
+            </div>
+            <DataCard name={card.name} recipe={recipe} onRecipe={setRecipe} />
+          </section>
+        )}
 
         <section className="scratch">
           <div className="scratch__row">

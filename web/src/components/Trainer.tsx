@@ -13,13 +13,17 @@ import { controlTraining, downloadDataset, fetchDatasets, fetchTraining, startTr
 import type { DatasetInfo, PortSpec, TrainRun } from "../api";
 import { applyEdit } from "../edit";
 import { op } from "../graph/ops";
+import { useStore } from "../store";
 
 const RUNNING = new Set(["running", "starting"]);
 
 export function Trainer({ onChange }: { onChange: () => void }) {
   const [runs, setRuns] = useState<TrainRun[]>([]);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
-  const [dataset, setDataset] = useState("teacher");
+  // 데이터와 레시피는 그래프에 딸린 것이라 스토어에 산다(experiment.data).
+  const dataset = useStore((state) => state.dataset);
+  const recipe = useStore((state) => state.recipe);
+  const setData = useStore((state) => state.setData);
   const [fetching, setFetching] = useState(false);
   const [steps, setSteps] = useState(500);
   const [batch, setBatch] = useState(32);
@@ -56,9 +60,9 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     setNote(null);
     setFix(null);
     const result = await startTraining(
-      smoke ? { smoke: true, dataset }
-        : { dataset, steps, batch, lr, optimizer: "adamw", scheduler: schedule,
-            warmup_steps: warmup });
+      smoke ? { smoke: true, dataset, recipe: recipe ?? undefined }
+        : { dataset, recipe: recipe ?? undefined, steps, batch, lr, optimizer: "adamw",
+            scheduler: schedule, warmup_steps: warmup });
     if (result.error) { setError(result.error); setFix(result.fix ?? null); }
     else setRuns((previous) => [...previous, result]);
   };
@@ -122,7 +126,7 @@ export function Trainer({ onChange }: { onChange: () => void }) {
           )}
           <label className="trainer__field">데이터
             <select className="trainer__select mono" value={dataset}
-                    onChange={(event) => setDataset(event.target.value)}>
+                    onChange={(event) => setData(event.target.value, null)}>
               <option value="teacher">합성</option>
               {datasets.map((entry) => (
                 <option key={entry.name} value={entry.name}>
