@@ -3,9 +3,10 @@
 // 좌표는 IR이 아니라 `layout.json`에 산다(§10.1) - 그래서 노드를 옮겨도 그래프
 // 의미는 바뀌지 않고, git에서는 `merge=ours`로 충돌하지 않는다.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Background, BackgroundVariant, Controls, MiniMap, ReactFlow, applyNodeChanges, useReactFlow,
+  Background, BackgroundVariant, Controls, MiniMap, ReactFlow, applyNodeChanges,
+  useNodesInitialized, useReactFlow,
 } from "@xyflow/react";
 import type {
   Connection, NodeChange, NodeMouseHandler, Node as FlowNode,
@@ -41,6 +42,9 @@ export function Canvas() {
   const paletteAt = useStore((state) => state.paletteAt);
 
   const [zoom, setZoom] = useState(1);
+  // 뷰가 포커스를 따라가는 것은 키보드 탐색일 때만이다. 클릭에도 따라가면
+  // 노드를 집으려던 손 밑에서 캔버스가 움직여 포트를 이을 수 없다.
+  const followFocus = useRef(false);
   const { fitView, screenToFlowPosition } = useReactFlow();
   const scope = currentScope({ graph, scopes });
   const callPath = scopes[scopes.length - 1].callPath;
@@ -117,6 +121,7 @@ export function Canvas() {
         return;
       }
 
+      followFocus.current = true;
       switch (event.key) {
         case "ArrowRight": case "ArrowDown":
           focus(order[Math.min(index + 1, order.length - 1)] ?? order[0]); break;
@@ -141,10 +146,25 @@ export function Canvas() {
       openPalette, screenToFlowPosition, remove]);
 
   useEffect(() => {
-    if (focused) fitView({ nodes: [{ id: focused }], maxZoom: 1.2, duration: 200 });
+    if (!focused || !followFocus.current) return;
+    followFocus.current = false;
+    fitView({ nodes: [{ id: focused }], maxZoom: 1.2, duration: 200 });
   }, [focused, fitView]);
 
-  useEffect(() => { fitView({ duration: 0 }); }, [scopes, fitView]);
+  // 뷰를 자동으로 맞추는 때는 둘뿐이다: 스코프를 옮겼을 때와, 그래프가 처음
+  // 들어왔을 때. 편집마다 맞추면(setGraph이 scopes를 새로 만든다) 사용자가 잡아 둔
+  // 확대·위치가 블록을 놓을 때마다 날아간다.
+  const scopeKey = scopes.map((entry) => entry.callPath).join("/");
+  const fitted = useRef(false);
+  useEffect(() => { fitted.current = false; fitView({ duration: 0 }); }, [scopeKey, fitView]);
+  // 노드가 실측되기 전에 맞추면 0x0 기준으로 맞춰져 화면 밖으로 나간다.
+  // 노드가 0개일 때도 "초기화됨"이라 노드가 실제로 들어온 뒤라야 의미가 있다.
+  const measured = useNodesInitialized() && computed.nodes.length > 0;
+  useEffect(() => {
+    if (fitted.current || !measured) return;
+    fitted.current = true;
+    fitView({ duration: 0 });
+  }, [measured, fitView]);
 
   const onNodeClick: NodeMouseHandler = (_event, node) => { select(node.id); focus(node.id); };
   const onNodeDoubleClick: NodeMouseHandler = (_event, node) => enter(node.id);
@@ -154,14 +174,20 @@ export function Canvas() {
   };
 
   // 포트를 이어 붙이면 그대로 connect op다. 배선이 곧 그래프 의미다(§8.2.2).
+  //
+  // 노드 카드에는 아직 포트가 좌우 하나씩뿐이라 핸들에 이름이 없다. 출력 포트
+  // 이름은 IR이 알고 있으므로(`ports_out`) 거기서 가져온다 - Input 노드의 출력은
+  // `output`이 아니라 `x`이고, 이름이 틀리면 L0가 "미연결"로 본다.
   const onConnect = useCallback((connection: Connection) => {
-    if (!connection.source || !connection.target) return;
+    if (!connection.source || !connection.target || !scope) return;
+    const source = (scope.nodes ?? []).find((node) => node.id === connection.source);
+    const outPort = connection.sourceHandle ?? source?.ports_out?.[0]?.name ?? "output";
     void applyEdit(op("connect", {
       ...(composite ? { composite } : {}),
-      src: `${connection.source}.${connection.sourceHandle ?? "output"}`,
+      src: `${connection.source}.${outPort}`,
       dst: `${connection.target}.${connection.targetHandle ?? "input"}`,
     }));
-  }, [composite]);
+  }, [composite, scope]);
 
   return (
     <ReactFlow

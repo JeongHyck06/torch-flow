@@ -49,9 +49,11 @@ export function Palette() {
     const failed = await applyEdit(op);
     if (failed) { setError(failed); return; }
     // 놓은 자리에 그대로 있어야 한다. 좌표는 그래프가 아니라 layout.json에(§10.1).
+    // 키보드로 연달아 열면 같은 자리가 나오므로 이미 찬 자리는 비켜 놓는다.
     const key = current.callPath ? `${current.callPath}/${nodeId}` : nodeId;
-    useStore.getState().setPosition(key, at);
-    void saveLayout(key, at);
+    const spot = freeSpot(at, Object.values(useStore.getState().positions));
+    useStore.getState().setPosition(key, spot);
+    void saveLayout(key, spot);
     select(nodeId);
     close();
   };
@@ -108,6 +110,16 @@ export function Palette() {
       </div>
     </>
   );
+}
+
+/** 이미 노드가 있는 자리면 대각선으로 비켜 간다. */
+function freeSpot(at: { x: number; y: number }, taken: { x: number; y: number }[]) {
+  const spot = { ...at };
+  while (taken.some((other) => Math.abs(other.x - spot.x) < 48 && Math.abs(other.y - spot.y) < 48)) {
+    spot.x += 56;
+    spot.y += 56;
+  }
+  return spot;
 }
 
 /** 포트 이름만 안다. 포트 타입 시그니처(§4.3)는 레지스트리에 아직 없다. */
