@@ -28,6 +28,7 @@ class Kernel:
         self.rt: dict = {}
         self.session = None      # L0Session - 첫 RunNodes에서 만든다(torch import 지연).
         self.l1_session = None   # L1의 살아 있는 모듈 트리
+        self.l1_pass = None      # 마지막 probe 패스 - Debug Console이 여기서 값을 읽는다.
         self.budget = None       # ProbeBudget
         context = zmq.Context.instance()
         self.socket = context.socket(zmq.DEALER)
@@ -36,6 +37,13 @@ class Kernel:
 
     def send(self, message, frames=None) -> None:
         self.socket.send_multipart(proto.encode(message, frames))
+
+    def send_captured(self, req_id: str, captured: list[dict]) -> None:
+        """노드가 찍은 stdout/stderr를 노드 태그와 함께 올린다(§5.6.1)."""
+        for entry in captured:
+            key = f"{entry['path']}/{entry['node_id']}" if entry["path"] else entry["node_id"]
+            self.send(proto.Log(req_id=req_id, level_name=entry["stream"],
+                                node_id=key, text=entry["text"]))
 
     def announce(self) -> None:
         import torch
@@ -88,6 +96,8 @@ class Kernel:
             self.import_trace(message)
         elif message.type == "EstimateMemory":
             self.estimate_memory(message)
+        elif message.type == "Eval":
+            self.eval_expr(message)
         elif message.type == "ReloadBlocks":
             from .registry import write
 
@@ -131,9 +141,12 @@ class Kernel:
 
             self.l1_session = L0Session()
 
-        result = L1Pass(self.graph, rt=self.rt, device=choice.device, probe=config,
-                        session=self.l1_session).probe_once()
+        # 패스를 들고 있어야 Debug Console이 마지막 활성값·모듈을 볼 수 있다(§5.6.1).
+        self.l1_pass = L1Pass(self.graph, rt=self.rt, device=choice.device, probe=config,
+                              session=self.l1_session)
+        result = self.l1_pass.probe_once()
         self.budget.record(result.elapsed_ms)
+        self.send_captured(message.req_id, result.captured)
 
         if result.error:
             self.send(proto.Error(req_id=message.req_id, kind=result.error["kind"],
@@ -156,6 +169,19 @@ class Kernel:
             ))
             emitted += 1
         self.send(proto.Progress(req_id=message.req_id, done=emitted, total=emitted))
+
+    def eval_expr(self, message) -> None:
+        """Debug Console 표현식 1개(§5.6.1). 마지막 probe가 없으면 그렇게 답한다."""
+        from .console import evaluate
+
+        if self.l1_pass is None:
+            self.send(proto.EvalResult(req_id=message.req_id, ok=False,
+                                       error="probe를 한 번 돌린 뒤에 값을 볼 수 있습니다"))
+        else:
+            key = f"{message.path}/{message.node_id}" if message.path else message.node_id
+            self.send(proto.EvalResult(req_id=message.req_id,
+                                       **evaluate(self.l1_pass, key, message.expr)))
+        self.send(proto.Progress(req_id=message.req_id, done=1, total=1))
 
     def import_trace(self, message) -> None:
         """사용자 .py를 인스턴스화해서 그래프로 만든다(§7.4 경로 3)."""
@@ -208,6 +234,7 @@ class Kernel:
         wanted = {item.node_id for item in message.batch} or None
         versions = {item.node_id: item.version for item in message.batch}
 
+        self.send_captured(message.req_id, result.captured)
         emitted = 0
         for report in result.nodes:
             if wanted is not None and report.node_id not in wanted:

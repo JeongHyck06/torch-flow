@@ -159,9 +159,12 @@ class Tracker:
             (run_id, node_id, stream, text, time.time()))
         self.connection.commit()
 
-    def tail(self, limit: int = 500) -> list[dict[str, Any]]:
+    def tail(self, limit: int = 500, node_id: str | None = None) -> list[dict[str, Any]]:
+        """최근 로그. ``node_id``를 주면 그 노드가 찍은 것만 - Inspector 출력 탭."""
+        where = "WHERE node_id = ?" if node_id else ""
         rows = self.connection.execute(
-            "SELECT * FROM logs ORDER BY wall DESC LIMIT ?", (limit,)).fetchall()
+            f"SELECT * FROM logs {where} ORDER BY wall DESC LIMIT ?",
+            ((node_id, limit) if node_id else (limit,))).fetchall()
         return [dict(row) for row in reversed(rows)]
 
     def close(self) -> None:

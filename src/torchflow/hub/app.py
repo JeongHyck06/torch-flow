@@ -160,6 +160,7 @@ class Hub:
         replies = self.kernel.request(
             proto.RunNodes(req_id=f"r-{self.store.seq}", graph=self.snapshot_for_kernel(), batch=batch)
         )
+        self.absorb_logs(replies)
         summary = next((reply for reply in replies if reply.type == "Progress"), None)
         if summary is not None and summary.total_params is not None:
             self.total_params = summary.total_params
@@ -178,6 +179,16 @@ class Hub:
             self.node_states[key] = state.model_dump(mode="json")
             states.append(state)
         return states
+
+    def absorb_logs(self, replies: list) -> None:
+        """커널이 올린 노드별 stdout/stderr를 트래커에 남긴다(§5.6.1).
+
+        하단 로그 탭과 Inspector 출력 탭이 같은 테이블을 읽는다.
+        """
+        for reply in replies:
+            if reply.type == "Log" and reply.text:
+                self.tracker.log_text(reply.text, node_id=reply.node_id,
+                                      stream=reply.level_name)
 
     async def broadcast(self, message) -> None:
         payload = message.model_dump_json(exclude_none=True)
@@ -361,6 +372,7 @@ def create_app(
         replies = hub.l1.request(proto.RunClosure(
             req_id=f"p-{hub.seq}", graph=hub.snapshot_for_kernel(), probe_cfg=cfg or {}))
 
+        hub.absorb_logs(replies)
         busy = next((r for r in replies if r.type == "Busy"), None)
         if busy is not None:
             return JSONResponse({"ok": False, "budget": busy.reason})
@@ -459,8 +471,26 @@ def create_app(
         ]})
 
     @app.get("/api/logs")
-    def read_logs(limit: int = 300) -> JSONResponse:
-        return JSONResponse({"logs": hub.tracker.tail(limit)})
+    def read_logs(limit: int = 300, node: str = "") -> JSONResponse:
+        return JSONResponse({"logs": hub.tracker.tail(limit, node or None)})
+
+    @app.post("/api/eval")
+    def eval_expression(request: dict[str, Any]) -> JSONResponse:
+        """Debug Console(§5.6.1). 표현식은 L1 커널의 마지막 probe 위에서 평가된다."""
+        if hub.attached:
+            return JSONResponse(
+                {"ok": False, "error": "Attach 모드의 값은 사용자 프로세스 안에 있습니다 "
+                                       "(콘솔은 v1)"}, status_code=409)
+        if not hub.l1.alive():
+            return JSONResponse({"ok": False, "error": "probe를 한 번 돌려 주세요"})
+        node = request.get("node") or ""
+        path, _, node_id = node.rpartition("/")
+        replies = hub.l1.request(proto.Eval(
+            req_id=f"e-{hub.seq}", expr=request.get("expr") or "", node_id=node_id, path=path))
+        result = next((r for r in replies if r.type == "EvalResult"), None)
+        if result is None:
+            return JSONResponse({"ok": False, "error": "커널이 응답하지 않았습니다"}, status_code=502)
+        return JSONResponse(result.model_dump(mode="json", exclude_none=True))
 
     @app.post("/api/probes")
     def add_probe(spec: dict[str, Any]) -> JSONResponse:
