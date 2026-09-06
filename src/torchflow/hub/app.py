@@ -106,7 +106,11 @@ class Hub:
         return catalogue
 
     def recent(self, limit: int = 8) -> list[dict[str, Any]]:
-        """열 수 있는 내 그래프들. 프로젝트 graph/ 와 작업 폴더를 훑는다(§10.1)."""
+        """열 수 있는 내 그래프들. 프로젝트 graph/ 와 작업 폴더를 훑는다(§10.1).
+
+        제목은 파일 이름이 아니라 **그래프 이름**이다 - 이름을 바꿔도 파일 이름은
+        따라가지 않으므로, 파일 이름만 보여 주면 바꾼 이름이 어디에도 안 보인다.
+        """
         seen: dict[str, dict[str, Any]] = {}
         for root in (Path.cwd() / "graph", Path.cwd(), self.state_dir):
             if not root.is_dir():
@@ -116,7 +120,8 @@ class Hub:
                 if resolved in seen:
                     continue
                 seen[resolved] = {"path": resolved,
-                                  "name": path.name.removesuffix(".tfg.json"),
+                                  "name": _graph_name(path),
+                                  "file": path.name,
                                   "modified": path.stat().st_mtime,
                                   "where": str(root.resolve())}
         entries = sorted(seen.values(), key=lambda entry: entry["modified"], reverse=True)
@@ -214,6 +219,14 @@ class Hub:
                 await client.send_text(payload)
             except (WebSocketDisconnect, RuntimeError):
                 self.clients.remove(client)
+
+
+def _graph_name(path: Path) -> str:
+    """파일에서 그래프 이름만 꺼낸다. 깨진 파일이면 파일 이름으로 대신한다."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))["graph"]["name"]
+    except Exception:
+        return path.name.removesuffix(".tfg.json")
 
 
 def create_app(
@@ -425,8 +438,12 @@ def create_app(
             return no_graph()
         given = (request or {}).get("path")
         # 그래프는 프로젝트의 graph/ 에 산다(§10.1). state-dir는 캐시·journal·runs.db 자리다.
+        # 이름을 바꿨으면 바꾼 이름의 파일로 간다 - 열려 있던 파일을 말없이 옮기지는 않는다.
+        name = hub.store.ir.graph.name
+        keep = hub.graph_path if (hub.graph_path
+                                  and hub.graph_path.name == f"{name}.tfg.json") else None
         path = Path(given).expanduser() if given else (
-            hub.graph_path or Path.cwd() / "graph" / f"{hub.store.ir.graph.name}.tfg.json")
+            keep or Path.cwd() / "graph" / f"{name}.tfg.json")
         problems = ir_problems(hub.store.ir)
         path.parent.mkdir(parents=True, exist_ok=True)
         hub.store.save(path)

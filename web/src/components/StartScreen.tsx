@@ -208,7 +208,7 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                             onClick={() => open(entry)} title={entry.path}>
                       <span className="templates__left">
                         <span className="templates__name">{entry.name}</span>
-                        <span className="templates__recipe mono">{entry.where}</span>
+                        <span className="templates__recipe mono">{entry.file}</span>
                       </span>
                       <span className="templates__metric mono">
                         {busy === entry.path ? "여는 중"

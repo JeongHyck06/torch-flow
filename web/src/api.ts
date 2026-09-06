@@ -40,7 +40,9 @@ export interface Candidate {
   params: { name: string; annotation: string | null; default: unknown }[];
 }
 
-export interface RecentGraph { path: string; name: string; modified: number; where: string }
+export interface RecentGraph {
+  path: string; name: string; file: string; modified: number; where: string;
+}
 
 export interface StartInfo {
   graph_open: boolean;
