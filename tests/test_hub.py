@@ -330,7 +330,9 @@ def test_new_graph_starts_empty_and_saves(tmp_path):
                                                 "shape": ["B", 8], "dtype": "float32"}]}}})
         assert added.status_code == 200 and added.json()["seq"] == 1
 
-        saved = client.post("/api/save", headers=auth).json()
+        # 저장 기본 경로는 프로젝트의 graph/ 다 - 테스트는 tmp_path로 명시한다.
+        target = tmp_path / "graph" / "scratch.tfg.json"
+        saved = client.post("/api/save", headers=auth, json={"path": str(target)}).json()
         assert saved["ok"] and saved["problems"] == []
         assert Path(saved["path"]).is_file()
     finally:

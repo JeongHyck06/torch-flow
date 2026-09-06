@@ -115,7 +115,8 @@ class Hub:
                 resolved = str(path.resolve())
                 if resolved in seen:
                     continue
-                seen[resolved] = {"path": resolved, "name": path.stem,
+                seen[resolved] = {"path": resolved,
+                                  "name": path.name.removesuffix(".tfg.json"),
                                   "modified": path.stat().st_mtime,
                                   "where": str(root.resolve())}
         entries = sorted(seen.values(), key=lambda entry: entry["modified"], reverse=True)
