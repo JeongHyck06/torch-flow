@@ -224,3 +224,14 @@ def test_hub_push_failures_do_not_break_training(session):
     session.url = "http://127.0.0.1:9/"   # 아무도 듣지 않는 포트
     session.log(0, loss=1.0)
     session.probe()
+
+
+def test_module_args_keep_tuples_and_name_positional_values():
+    """extra_repr의 튜플 안 쉼표에서 잘리지 않고, 이름 없는 값은 __init__ 순서로 이름을 얻는다."""
+    from torchflow.attach.trace import _module_args
+
+    conv = _module_args(nn.Conv2d(3, 64, 8, 8))
+    assert conv["in_channels"] == 3 and conv["out_channels"] == 64
+    assert conv["kernel_size"] == (8, 8) and conv["stride"] == (8, 8)
+    assert _module_args(nn.LayerNorm(64))["normalized_shape"] == (64,)
+    assert _module_args(nn.GELU())["approximate"] == "none"

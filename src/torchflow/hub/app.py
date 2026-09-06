@@ -283,6 +283,10 @@ class Hub:
 
 # 재시작이 필요한 변경을 사람 말로 옮긴 것. Phase B는 **표시만** 한다 - 자동
 # 재시작은 신뢰를 깨므로 사람이 Stop하고 다시 누른다(ADR-05).
+# 트레이스 그래프의 인자는 extra_repr에서 건진 표시용 문자열이라 모듈을 다시 만들 수 없고,
+# 함수형 연산이 빠진 엣지로 forward를 쓰면 틀린 모델이 된다. 코드도 학습도 원본 .py의 몫이다.
+TRACED_IS_READ_ONLY = "트레이스로 가져온 그래프는 코드를 만들지 않습니다. 원본 .py가 정본입니다"
+
 RESTART_REASON = {
     "scheduler": "스케줄러 변경은 재생성이 필요합니다. Stop 후 다시 Run하세요",
     "restart": "가중치는 유지되지만 재시작이 필요합니다. Stop 후 다시 Run하세요",
@@ -515,6 +519,8 @@ def create_app(
         """Code 탭(§7.3 model-only). 디스크에 쓰지 않고 메모리에서 렌더한다(§7.6.2)."""
         if hub.store is None:
             return no_graph()
+        if hub.traced:
+            return JSONResponse({"error": TRACED_IS_READ_ONLY}, status_code=400)
         try:
             code = codegen.generate(
                 hub.store.ir, version=__version__,
@@ -719,6 +725,8 @@ def create_app(
         """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
         if hub.store is None:
             return no_graph()
+        if hub.traced:
+            return JSONResponse({"error": TRACED_IS_READ_ONLY}, status_code=400)
         options = request or {}
 
         graph = hub.store.ir.graph
