@@ -639,3 +639,41 @@ def test_probe_reports_a_kernel_failure(client):
     body = client.post("/api/probe", headers=auth, json={}).json()
     assert body["ok"] is False and body["node"] == "01J9Q4B5"
     assert body["error"]
+
+
+def test_merge_survives_concurrent_polling(tmp_path):
+    """이벤트 병합은 스레드풀에서 동시에 불린다. 커서가 파일 끝을 넘으면 이벤트를 영영 잃는다."""
+    import threading
+    import time
+
+    from torchflow.hub.tracker import Tracker
+
+    directory = tmp_path / "run"
+    directory.mkdir()
+    events = directory / "events.jsonl"
+    tracker = Tracker(tmp_path / "runs.db")
+    tracker.ensure_run("r")
+    handle = l2.RunHandle(run_id="r", directory=directory)
+    running = True
+
+    def poll():
+        while running:
+            l2.merge(handle, tracker)
+
+    threads = [threading.Thread(target=poll) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    with events.open("a", encoding="utf-8") as stream:
+        for step in range(1500):
+            stream.write(json.dumps({"kind": "scalar", "step": step, "loss": 1.0}) + "\n")
+            stream.flush()
+            time.sleep(0.0005)
+        stream.write(json.dumps({"kind": "status", "state": "stopped", "step": 1499}) + "\n")
+    running = False
+    for thread in threads:
+        thread.join()
+    l2.merge(handle, tracker)
+    tracker.close()
+
+    assert handle.cursor == events.stat().st_size
+    assert handle.state == "stopped" and handle.step == 1499

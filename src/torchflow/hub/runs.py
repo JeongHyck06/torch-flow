@@ -13,6 +13,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,9 @@ class RunHandle:
     error: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     overrides_dirty: bool = False         # 새 hparam 이벤트를 읽었다 - 파일을 다시 써야 한다
+    # merge()는 uvicorn 스레드풀에서 동시에 불린다(Trainer 1 s, RunPanel·LayerStrip 3 s 폴링).
+    # 두 스레드가 같은 커서에서 읽고 둘 다 커서를 밀면 파일 끝을 넘어가 이후 이벤트를 영영 잃는다.
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     @property
     def alive(self) -> bool:
@@ -222,19 +226,20 @@ def merge(handle: RunHandle, tracker) -> int:
         return 0
 
     written = 0
-    # 텍스트 반복 중에는 tell()을 못 쓴다. 바이트로 읽고 소비한 만큼만 커서를 민다.
-    with path.open("rb") as stream:
-        stream.seek(handle.cursor)
-        chunk = stream.read()
-    for raw in chunk.splitlines(keepends=True):
-        if not raw.endswith(b"\n"):
-            break                         # 반쯤 쓰인 줄은 다음 번에 읽는다.
-        handle.cursor += len(raw)
-        try:
-            event = json.loads(raw.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        written += _absorb(handle, event, tracker)
+    with handle.lock:
+        # 텍스트 반복 중에는 tell()을 못 쓴다. 바이트로 읽고 소비한 만큼만 커서를 민다.
+        with path.open("rb") as stream:
+            stream.seek(handle.cursor)
+            chunk = stream.read()
+        for raw in chunk.splitlines(keepends=True):
+            if not raw.endswith(b"\n"):
+                break                     # 반쯤 쓰인 줄은 다음 번에 읽는다.
+            handle.cursor += len(raw)
+            try:
+                event = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            written += _absorb(handle, event, tracker)
     return written
 
 
