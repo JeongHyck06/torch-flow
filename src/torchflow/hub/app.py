@@ -63,7 +63,7 @@ class Hub:
             try:
                 return json.loads(self.layout_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
-                pass   # 좌표가 깨져도 그래프는 열려야 한다 — 자동 배치로 돌아간다.
+                pass   # 좌표가 깨져도 그래프는 열려야 한다 - 자동 배치로 돌아간다.
         return {"positions": {}}
 
     def update_layout(self, positions: dict[str, Any]) -> None:

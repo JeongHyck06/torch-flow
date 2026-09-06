@@ -14,7 +14,7 @@ export interface StatusStyle {
   /** 링 색 CSS 변수. idle/ok는 링이 없다. */
   ring: string | null;
   dashed: boolean;
-  /** 폰트에 내장된 흑백 글리프만 쓴다 — 이모지는 컬러 폴백되어 무채색 원칙을 깬다. */
+  /** 폰트에 내장된 흑백 글리프만 쓴다 - 이모지는 컬러 폴백되어 무채색 원칙을 깬다. */
   glyph: string;
   color: string;
   label: string;
@@ -125,14 +125,14 @@ export function formatRatio(value: number | undefined): string {
 }
 
 /**
- * Grad-Flow 오버레이. 계열 안에서 **명도**로만 가른다 — 계열 밖 색을 쓰지 않는다.
+ * Grad-Flow 오버레이. 계열 안에서 명도로만 가른다 - 계열 밖 색을 쓰지 않는다.
  * 작은 grad는 옅게, 큰 grad는 짙게.
  */
 export function gradColor(norm: number | undefined, range: [number, number]): string {
   if (!norm || norm <= 0) return "var(--state-idle)";
   const [low, high] = range;
   const t = high > low ? Math.min(1, Math.max(0, (Math.log10(norm) - low) / (high - low))) : 0.5;
-  const lightness = 72 - t * 44;   // 72%(옅음) → 28%(짙음), 색상은 214° 고정
+  const lightness = 72 - t * 44;   // 72%(옅음) -> 28%(짙음), 색상은 214° 고정
   return `hsl(214 55% ${lightness}%)`;
 }
 

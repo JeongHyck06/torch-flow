@@ -107,7 +107,7 @@ def _build_ir(torch, model, example_input, order, name: str) -> ModuleGraph:
     instances: dict[str, Instance] = {}
     nodes: list[Node] = []
     edges: list[tuple[str, str]] = []
-    produced: dict[int, str] = {}   # 텐서 id → "노드.포트"
+    produced: dict[int, str] = {}   # 텐서 id -> "노드.포트"
 
     # 그래프 입력.
     input_ports = []

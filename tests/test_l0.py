@@ -129,5 +129,5 @@ def test_unresolved_hparam_is_attributed_to_a_node(minivit):
 
 
 def test_missing_runtime_constant_does_not_crash(minivit):
-    result = run_pass(minivit)  # rt 없음 → rt.num_classes 미해소
+    result = run_pass(minivit)  # rt 없음 -> rt.num_classes 미해소
     assert not result.ok and "num_classes" in result.error["message"]

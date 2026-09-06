@@ -213,7 +213,7 @@ class L1Pass(L0Pass):
             with self._context():
                 graph_outputs = self._run_scope(
                     self.ir.graph, {"hp": self.hp, "p": {}, "rt": self.rt}, {}, "")
-        except Exception as exc:  # L0Error 포함 — 노드 귀속은 그대로 살아 있다.
+        except Exception as exc:  # L0Error 포함 - 노드 귀속은 그대로 살아 있다.
             return L1Result(
                 device=str(self.device),
                 error=_error_of(exc),

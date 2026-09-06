@@ -14,7 +14,7 @@ export function lodOf(zoom: number): Lod {
   return "focus";
 }
 
-/** 이 노드가 들어갈 수 있는 컴포지트인가 — 브레드크럼 진입 대상(§2.2). */
+/** 이 노드가 들어갈 수 있는 컴포지트인가 - 브레드크럼 진입 대상(§2.2). */
 export function enterableComposite(scope: Graph | Composite, nodeId: string): string | null {
   const node = scope.nodes?.find((candidate) => candidate.id === nodeId);
   if (!node?.call) return null;

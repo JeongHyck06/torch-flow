@@ -25,7 +25,7 @@ class Kernel:
         self.state_dir = state_dir
         self.graph: ModuleGraph | None = None
         self.rt: dict = {}
-        self.session = None      # L0Session — 첫 RunNodes에서 만든다(torch import 지연).
+        self.session = None      # L0Session - 첫 RunNodes에서 만든다(torch import 지연).
         self.l1_session = None   # L1의 살아 있는 모듈 트리
         self.budget = None       # ProbeBudget
         context = zmq.Context.instance()

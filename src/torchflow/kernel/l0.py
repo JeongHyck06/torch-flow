@@ -184,7 +184,7 @@ class L0Pass:
         self.hp.update(hp or {})
         self.fake_mode = FakeTensorMode(allow_non_fake_inputs=True)
         self.session = session or L0Session()
-        self.forced = dict(bind or {})  # 심볼 → 구체값(메모리 추정용)
+        self.forced = dict(bind or {})  # 심볼 -> 구체값(메모리 추정용)
 
         self._symbols: dict[str, int] = {}
         self._reports: list[NodeReport] = []

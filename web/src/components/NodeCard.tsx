@@ -119,7 +119,7 @@ export function NodeCard({ data }: NodeProps) {
         </div>
       </div>
 
-      {/* 상태 링 — 카드 바깥 6px, 별도 사각형. 색 + 선 스타일 + 글리프의 두 번째 축. */}
+      {/* 상태 링 - 카드 바깥 6px, 별도 사각형. 색 + 선 스타일 + 글리프의 두 번째 축. */}
       {status.ring && (
         <div
           className="node__ring"

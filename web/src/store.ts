@@ -30,7 +30,7 @@ interface State {
   probing: boolean;
   probeObjective: string;
   gradOverlay: boolean;
-  /** 노드 키 → 좌표. layout.json이 정본이고 IR은 좌표를 모른다(§10.1). */
+  /** 노드 키 -> 좌표. layout.json이 정본이고 IR은 좌표를 모른다(§10.1). */
   positions: Record<string, { x: number; y: number }>;
 
   setGraph: (graph: ModuleGraph, seq: number) => void;

@@ -64,7 +64,7 @@ export function layeredLayout(
   return positions;
 }
 
-/** 위상 순 노드 id — 키보드 탐색이 이 순서를 따른다(§2.2). */
+/** 위상 순 노드 id - 키보드 탐색이 이 순서를 따른다(§2.2). */
 export function topologicalIds(nodes: Node[], edges: [string, string][]): string[] {
   const layer = computeLayers(nodes, edges);
   return [...nodes]
