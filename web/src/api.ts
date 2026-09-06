@@ -266,6 +266,15 @@ export async function setGraphData(name: string, recipe: Recipe | null):
   return response.json();
 }
 
+/** 끌어다 놓은 파일 하나를 data/<name>/<path>로 올린다. 본문이 곧 파일이다. */
+export async function uploadDatasetFile(name: string, path: string, file: File):
+    Promise<{ ok?: boolean; error?: string }> {
+  const response = await fetch(
+    `/api/datasets/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+    { method: "PUT", headers: authHeaders(), body: file });
+  return response.json();
+}
+
 /** 다른 곳의 폴더를 data/ 에 링크로 등록한다. */
 export async function addDatasetFolder(path: string): Promise<DatasetInfo & { error?: string }> {
   const response = await fetch("/api/datasets", {

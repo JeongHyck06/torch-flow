@@ -758,3 +758,14 @@ def test_detail_route_needs_a_probe_first(client):
     client.post("/api/probe", headers=auth, json={})
     body = client.post("/api/detail", headers=auth, json={"node": "01J9Q4B5"}).json()
     assert body["ok"] and body["panels"]
+
+
+def test_dropped_files_land_under_data(app, client, tmp_path):
+    """브라우저가 끌어다 놓은 파일은 data/<이름>/<상대 경로>에 그대로 놓인다. 경로 탈출은 막는다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.data_dir = tmp_path / "data"
+    body = b"a,b,label\n1,2,x\n3,4,y\n"
+    response = client.put("/api/datasets/table/files?path=t.csv", headers=auth, content=body)
+    assert response.status_code == 200 and (tmp_path / "data" / "table" / "t.csv").read_bytes() == body
+    assert client.put("/api/datasets/table/files?path=../evil.csv", headers=auth, content=body).status_code == 400
+    assert [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]] == ["mnist", "table"]

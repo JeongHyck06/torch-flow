@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addDatasetFolder, fetchDatasets, fetchStart, importSource, inspectSource, newGraph, openGraph,
+  uploadDatasetFile,
 } from "../api";
 import type { Candidate, DatasetInfo, Recipe, RecentGraph, StartInfo, Template } from "../api";
 import { DataCard } from "./DataCard";
@@ -22,6 +23,32 @@ interface Dropped {
   filename: string;
   source: string;
   candidates: Candidate[];
+}
+
+/** 드롭된 항목을 파일 목록으로 편다. 폴더는 재귀로 들어간다(webkitGetAsEntry). */
+async function walk(items: DataTransferItem[]): Promise<{ path: string; file: File }[]> {
+  const out: { path: string; file: File }[] = [];
+  const visit = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (entry.isFile) {
+      const file = await new Promise<File>((resolve, reject) =>
+        (entry as FileSystemFileEntry).file(resolve, reject));
+      if (!file.name.startsWith(".")) out.push({ path: prefix + file.name, file });
+      return;
+    }
+    if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader();
+      const read = (): Promise<FileSystemEntry[]> =>
+        new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+      for (let batch = await read(); batch.length; batch = await read()) {
+        for (const child of batch) await visit(child, `${prefix}${entry.name}/`);
+      }
+    }
+  };
+  for (const item of items) {
+    const entry = item.webkitGetAsEntry?.();
+    if (entry) await visit(entry, "");
+  }
+  return out;
 }
 
 export function StartScreen({ onOpened }: { onOpened: () => void }) {
@@ -37,6 +64,8 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
   const [card, setCard] = useState<DatasetInfo | null>(null);
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const picker = useRef<HTMLInputElement>(null);
+  const folderPicker = useRef<HTMLInputElement>(null);
+  const [progress, setProgress] = useState<string | null>(null);
 
   useEffect(() => {
     fetchStart().then(setInfo).catch(() => undefined);
@@ -51,6 +80,30 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
     setBusy(null);
     if (result.error) setError(result.error);
     else onOpened();
+  };
+
+  // 데이터 불러오기: 폴더(클래스별 하위 폴더)나 파일들을 data/<이름>/ 로 올리고 카드를 연다.
+  const importData = async (entries: { path: string; file: File }[]) => {
+    if (!entries.length) return;
+    const first = entries[0].path.split("/");
+    const name = (first.length > 1 ? first[0] : entries[0].file.name.replace(/\.[^.]+$/, ""))
+      .replace(/[^A-Za-z0-9._-]/g, "_") || "dropped";
+    setBusy("upload");
+    setError(null);
+    for (const [index, entry] of entries.entries()) {
+      setProgress(`${name} 올리는 중 ${index + 1} / ${entries.length}`);
+      // 폴더째 놓으면 첫 조각이 폴더 이름이다 - data/<이름>/ 아래 상대 경로만 남긴다.
+      const relative = first.length > 1 ? entry.path.split("/").slice(1).join("/") : entry.path;
+      const result = await uploadDatasetFile(name, relative, entry.file);
+      if (result.error) { setError(result.error); setBusy(null); setProgress(null); return; }
+    }
+    setProgress(null);
+    setBusy(null);
+    const found = await fetchDatasets();
+    setDatasets(found);
+    const entry = found.find((one) => one.name === name);
+    if (entry) { setCard(entry); setRecipe(null); }
+    else setError(`${name}: 이미지 폴더(클래스별 하위 폴더), CSV, x.npy+y.npy 중 무엇도 아닙니다`);
   };
 
   const addFolder = async () => {
@@ -149,8 +202,15 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
           onDrop={(event) => {
             event.preventDefault();
             setHover(false);
+            const items = Array.from(event.dataTransfer.items ?? []);
+            const entry = items[0]?.webkitGetAsEntry?.();
             const file = event.dataTransfer.files[0];
-            if (file) void accept(file);
+            // 폴더거나 데이터 파일이면 데이터 불러오기, .py면 모델 import.
+            if (entry?.isDirectory || (file && /\.(csv|npy|npz)$/i.test(file.name))) {
+              void walk(items).then(importData);
+            } else if (file) {
+              void accept(file);
+            }
           }}
         >
           <button className="dropband__half" onClick={() => picker.current?.click()}>
@@ -161,12 +221,32 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
             </span>
           </button>
           <div className="dropband__divider" />
+          <button className="dropband__half" onClick={() => folderPicker.current?.click()}>
+            <span className="dropband__title">데이터 폴더 드롭</span>
+            <span className="dropband__sub">클래스별 이미지 폴더 · CSV · x.npy+y.npy</span>
+            <span className="dropband__hint mono">
+              {progress ?? "끌어다 놓거나 눌러서 폴더를 고르세요"}
+            </span>
+          </button>
+          <div className="dropband__divider" />
           <div className="dropband__half dropband__half--off">
             <span className="dropband__title">체크포인트 드롭</span>
             <span className="dropband__sub">.pt / .ckpt / safetensors</span>
             <span className="dropband__hint mono">state_dict에서 구조를 역추정합니다</span>
             <span className="soon">v1</span>
           </div>
+          <input
+            ref={folderPicker} type="file" hidden multiple
+            // @ts-expect-error webkitdirectory는 표준 속성이 아니지만 모든 주요 브라우저가 지원한다.
+            webkitdirectory=""
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              void importData(files.map((file) => ({
+                path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name, file,
+              })));
+              event.target.value = "";
+            }}
+          />
           <input
             ref={picker} type="file" accept=".py" hidden
             onChange={(event) => {

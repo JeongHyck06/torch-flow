@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -804,6 +804,22 @@ def create_app(
                     await hub.broadcast(state)
         return JSONResponse({"ok": True, "spec": effective, "seq": hub.seq,
                              "node_states": [s.model_dump(mode="json") for s in states]})
+
+    @app.put("/api/datasets/{name}/files")
+    async def upload_dataset_file(name: str, request: Request, path: str = "") -> JSONResponse:
+        """브라우저에서 끌어다 놓은 데이터 파일 하나를 data/<name>/<path>에 쓴다.
+
+        multipart 없이 본문이 곧 파일이다 - 의존성 하나를 아끼고 폴더 하나에 수백 장이어도
+        요청 수백 개로 충분하다(로컬이다).
+        """
+        relative = Path(path)
+        if not name or "/" in name or name.startswith(".") or relative.is_absolute() \
+                or ".." in relative.parts or not path:
+            return JSONResponse({"error": f"쓸 수 없는 경로: {name}/{path}"}, status_code=400)
+        target = hub.data_dir / name / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(await request.body())
+        return JSONResponse({"ok": True, "path": str(target)})
 
     @app.post("/api/datasets")
     def add_dataset_folder(request: dict[str, Any]) -> JSONResponse:
