@@ -6,6 +6,7 @@ L0 커널 프로세스에서 돈다. ``tests/test_hub.py``가 이 불변식을 �
 
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,7 +31,8 @@ from .kernels import KernelManager
 class Hub:
     """그래프 상태 · 커널 · 접속 클라이언트를 한 곳에서 소유한다."""
 
-    def __init__(self, ir: ModuleGraph | None, state_dir: Path, rt: dict[str, Any] | None = None):
+    def __init__(self, ir: ModuleGraph | None, state_dir: Path, rt: dict[str, Any] | None = None,
+                 path: Path | None = None):
         self.state_dir = state_dir
         # 그래프 없이도 뜬다 - 첫 화면에서 무엇으로 시작할지 고르게 하기 위해(§2.2).
         self.store: GraphStore | None = None
@@ -49,15 +51,19 @@ class Hub:
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
         self.attached = False
+        self._graph_id: str | None = None
         self.total_params = 0
         self.rerun_ratio = 0.0
         self.layout_path = state_dir / "layout.json"
         self.layout = self._load_layout()
         if ir is not None:
-            self.open(ir)
+            # 경로를 같이 넘긴다. 안 넘기면 CLI로 연 그래프가 저장된 파일이 아닌 것처럼
+            # 보여서, 같은 파일을 다시 열 때 identity가 달라진다.
+            self.open(ir, path)
 
     def open(self, ir: ModuleGraph, path: Path | None = None) -> None:
         """그래프를 연다. 첫 화면에서 템플릿을 고르면 이 경로로 들어온다."""
+        self._graph_id = (ir.meta or {}).get("id") or _graph_id_for(path)
         self.store = GraphStore(ir, self.state_dir / "journal.jsonl")
         self.engine = Engine(ir)
         self.graph_path = path
@@ -221,13 +227,11 @@ class Hub:
     def graph_id(self) -> str | None:
         """지금 열린 그래프의 identity. run이 어느 그래프 것인지 가르는 값이다.
 
-        IR 해시가 아니라 ``meta.id``인 이유: 해시는 편집할 때마다 바뀌므로 그것으로
+        IR 해시가 아니라 identity인 이유: 해시는 편집할 때마다 바뀌므로 그것으로
         묶으면 노드 하나 고친 순간 이전 run이 남이 된다. 비교하려고 남기는 것이
         곡선인데 그러면 쓸모가 없다.
         """
-        if self.store is None:
-            return None
-        return (self.store.ir.meta or {}).get("id")
+        return None if self.store is None else self._graph_id
 
     def occupied_devices(self) -> list[str]:
         """L2 워커가 잡고 있는 가속기. L1은 여기를 피해 배정한다(§5.1.5)."""
@@ -323,6 +327,21 @@ def _apply_hparam(hub: "Hub", handle, options: dict[str, Any]) -> JSONResponse:
     return JSONResponse({"ok": True, **handle.as_dict()})
 
 
+def _graph_id_for(path: Path | None) -> str:
+    """``meta.id``가 없는 그래프의 identity.
+
+    id 없이 저장된 그래프가 이미 있다. 그때 "가르지 않는다"로 떨어지면 그 그래프를
+    열 때마다 남의 run이 전부 딸려 온다 - 이 함수가 없을 때 그랬다.
+
+    파일 경로에서 만든다. hub를 다시 띄워도 같은 값이라 곡선이 그 그래프에 계속
+    붙어 있는다. 저장 전 그래프는 경로가 없으므로 이 세션 동안만 유효한 값을 준다.
+    """
+    if path is None:
+        return f"session-{uuid4().hex[:8].upper()}"
+    digest = hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()
+    return f"path-{digest[:12]}"
+
+
 def _class_name(name: str) -> str:
     from ..codegen import _class_name as convert
 
@@ -348,9 +367,8 @@ def create_app(
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     # 그래프 없이 뜨면 첫 화면이 뜬다(§2.2의 5개 진입점).
-    hub = Hub(load(graph_path) if graph_path else None, state_dir, rt)
-    if graph_path:
-        hub.graph_path = Path(graph_path)
+    hub = Hub(load(graph_path) if graph_path else None, state_dir, rt,
+              path=Path(graph_path) if graph_path else None)
     token = token or new_token()
 
     @asynccontextmanager

@@ -569,6 +569,26 @@ def test_a_new_project_does_not_inherit_the_previous_curves(app, client, trained
     assert len(app.state.hub.tracker.runs()) == 1
 
 
+def test_a_graph_without_an_id_still_gets_one(app, client, tmp_path):
+    """id 없이 저장된 그래프가 이미 있다. 그때 가르기를 포기하면 남의 run이 딸려 온다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    plain = tmp_path / "legacy.tfg.json"
+    plain.write_text(json.dumps({"schema_version": "1.0.0",
+                                 "graph": {"name": "legacy", "nodes": [], "edges": []}}),
+                     encoding="utf-8")
+
+    client.post("/api/open", headers=auth, json={"path": str(plain)})
+    first = app.state.hub.graph_id
+    assert first, "id 없는 그래프도 identity를 가져야 한다"
+    # CLI로 연 것과 화면에서 연 것이 같은 파일이면 같은 값이어야 한다.
+    assert create_app(plain, state_dir=tmp_path / "s", token="t").state.hub.graph_id == first
+
+    # 경로에서 만들므로 다시 열어도 같다 - hub를 다시 띄워도 곡선이 붙어 있는다.
+    client.post("/api/new", headers=auth, json={"name": "다른 것"})
+    client.post("/api/open", headers=auth, json={"path": str(plain)})
+    assert app.state.hub.graph_id == first
+
+
 def test_a_new_project_gets_its_own_identity(app, client):
     """id가 없으면 새 프로젝트끼리도 run이 섞인다."""
     auth = {"Authorization": f"token {TOKEN}"}
