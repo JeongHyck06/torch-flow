@@ -433,8 +433,10 @@ def create_app(
         await hub.broadcast(proto.OpBroadcast(seq=seq, op=op))
         for state in states:
             await hub.broadcast(state)
+        # 총계는 L0가 센 값이 정본이다. 편집마다 같이 보내야 상단 바가 다시 열 때까지 0으로 남지 않는다.
         return JSONResponse(
-            {"seq": seq, "node_states": [s.model_dump(mode="json") for s in states]}
+            {"seq": seq, "node_states": [s.model_dump(mode="json") for s in states],
+             "total_params": hub.total_params}
         )
 
     @app.post("/api/shapes")

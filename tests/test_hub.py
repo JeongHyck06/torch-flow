@@ -333,6 +333,8 @@ def test_new_graph_starts_empty_and_saves(tmp_path):
                                  "ports_out": [{"name": "x", "type": "Tensor",
                                                 "shape": ["B", 8], "dtype": "float32"}]}}})
         assert added.status_code == 200 and added.json()["seq"] == 1
+        # 편집 응답에 총계가 실린다 - 상단 바가 다시 열 때까지 0으로 남지 않게.
+        assert added.json()["total_params"] == 0
 
         # 저장 기본 경로는 프로젝트의 graph/ 다 - 테스트는 tmp_path로 명시한다.
         target = tmp_path / "graph" / "scratch.tfg.json"

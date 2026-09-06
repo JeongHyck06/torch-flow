@@ -21,6 +21,7 @@ async function run(operation: Op, direction: Direction): Promise<string | null> 
     const { graph, seq } = await fetchGraph();
     useStore.getState().setGraph(graph, seq);
     for (const state of result.node_states) useStore.getState().applyNodeState(state);
+    if (result.total_params !== undefined) useStore.getState().setTotals({ params: result.total_params });
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }

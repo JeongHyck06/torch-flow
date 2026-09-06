@@ -101,7 +101,7 @@ export async function saveGraph(path?: string):
  * 한 번이 싸다 - 로컬 hub에서 한 자릿수 ms다.`
  */
 export async function sendOp(operation: Op):
-    Promise<{ seq: number; node_states: NodeState[]; error?: string }> {
+    Promise<{ seq: number; node_states: NodeState[]; total_params?: number; error?: string }> {
   const response = await fetch("/api/ops", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
