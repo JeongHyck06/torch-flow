@@ -20,6 +20,9 @@ from typing import Any, Iterable
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id          TEXT PRIMARY KEY,
+    -- 어느 그래프의 run인가. 그래프를 갈아 끼워도 곡선이 따라오지 않게 하는 열이고,
+    -- IR 해시가 아니라 그래프 identity라 편집을 거쳐도 같은 값이다.
+    graph_id    TEXT,
     kind        TEXT NOT NULL DEFAULT 'exploratory',
     parent_run  TEXT,
     created     REAL NOT NULL,
@@ -53,6 +56,7 @@ MAX_POINTS = 4000
 @dataclass
 class Run:
     id: str
+    graph_id: str | None
     kind: str
     parent_run: str | None
     created: float
@@ -77,6 +81,10 @@ class Tracker:
         self.connection = sqlite3.connect(self.path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
+        # 이 열이 생기기 전에 만든 runs.db도 있다. 열 하나 붙이는 것으로 끝난다.
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(runs)")}
+        if "graph_id" not in columns:
+            self.connection.execute("ALTER TABLE runs ADD COLUMN graph_id TEXT")
         self.connection.commit()
 
     # ── run ───────────────────────────────────────────────────────────
@@ -91,16 +99,19 @@ class Tracker:
             return self.connection.execute(sql, args).fetchall()
 
     def ensure_run(self, run_id: str, *, kind: str = "exploratory", name: str | None = None,
-                   parent_run: str | None = None, manifest: dict[str, Any] | None = None) -> str:
+                   parent_run: str | None = None, manifest: dict[str, Any] | None = None,
+                   graph_id: str | None = None) -> str:
         now = time.time()
         self._execute(
-            """INSERT INTO runs (id, kind, parent_run, created, updated, status, name, manifest)
-               VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
+            """INSERT INTO runs (id, graph_id, kind, parent_run, created, updated, status,
+                                 name, manifest)
+               VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    updated = excluded.updated,
+                   graph_id = COALESCE(excluded.graph_id, runs.graph_id),
                    name = COALESCE(excluded.name, runs.name),
                    manifest = COALESCE(excluded.manifest, runs.manifest)""",
-            (run_id, kind, parent_run, now, now, name,
+            (run_id, graph_id, kind, parent_run, now, now, name,
              json.dumps(manifest, ensure_ascii=False) if manifest else None),
         )
         return run_id
@@ -118,8 +129,14 @@ class Tracker:
         self._execute("UPDATE runs SET status = ?, updated = ? WHERE id = ?",
                       (status, time.time(), run_id))
 
-    def runs(self, limit: int = 100) -> list[Run]:
-        rows = self._query("SELECT * FROM runs ORDER BY created DESC LIMIT ?", (limit,))
+    def runs(self, limit: int = 100, graph_id: str | None = None) -> list[Run]:
+        """``graph_id``를 주면 그 그래프의 run만. 안 주면 전부(내보내기·복구용)."""
+        if graph_id is None:
+            rows = self._query("SELECT * FROM runs ORDER BY created DESC LIMIT ?", (limit,))
+        else:
+            rows = self._query(
+                "SELECT * FROM runs WHERE graph_id = ? ORDER BY created DESC LIMIT ?",
+                (graph_id, limit))
         return [_row_to_run(row) for row in rows]
 
     def run(self, run_id: str) -> Run | None:
@@ -194,7 +211,7 @@ class Tracker:
 
 def _row_to_run(row: sqlite3.Row) -> Run:
     return Run(
-        id=row["id"], kind=row["kind"], parent_run=row["parent_run"],
+        id=row["id"], graph_id=row["graph_id"], kind=row["kind"], parent_run=row["parent_run"],
         created=row["created"], updated=row["updated"], status=row["status"],
         name=row["name"], manifest=json.loads(row["manifest"]) if row["manifest"] else {},
     )

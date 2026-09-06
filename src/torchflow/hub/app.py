@@ -7,10 +7,10 @@ L0 커널 프로세스에서 돈다. ``tests/test_hub.py``가 이 불변식을 �
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-
-from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -217,6 +217,18 @@ class Hub:
                 l2.write_overrides(handle.run_id, handle.extra["overrides"],
                                    self.runs_dir.parent)
 
+    @property
+    def graph_id(self) -> str | None:
+        """지금 열린 그래프의 identity. run이 어느 그래프 것인지 가르는 값이다.
+
+        IR 해시가 아니라 ``meta.id``인 이유: 해시는 편집할 때마다 바뀌므로 그것으로
+        묶으면 노드 하나 고친 순간 이전 run이 남이 된다. 비교하려고 남기는 것이
+        곡선인데 그러면 쓸모가 없다.
+        """
+        if self.store is None:
+            return None
+        return (self.store.ir.meta or {}).get("id")
+
     def occupied_devices(self) -> list[str]:
         """L2 워커가 잡고 있는 가속기. L1은 여기를 피해 배정한다(§5.1.5)."""
         return sorted({handle.device for handle in self.l2.values()
@@ -235,7 +247,11 @@ class Hub:
             if run_id in self.l2:
                 continue
             handle = l2.RunHandle(run_id=run_id, directory=job.parent)
-            self.tracker.ensure_run(run_id)
+            try:
+                handle.extra["graph_id"] = json.loads(job.read_text(encoding="utf-8")).get("graph_id")
+            except (OSError, json.JSONDecodeError):
+                pass
+            self.tracker.ensure_run(run_id, graph_id=handle.extra.get("graph_id"))
             self.tracker.clear_scalars(run_id)
             self.l2[run_id] = handle
             l2.merge(handle, self.tracker)
@@ -288,9 +304,10 @@ def _apply_hparam(hub: "Hub", handle, options: dict[str, Any]) -> JSONResponse:
     if run is not None and run.kind == "reported":
         child = l2.fork(handle, root=hub.runs_dir, changes=l2.hot_command(path, value))
         child.extra["kind"] = "reported"
+        child.extra["graph_id"] = handle.extra.get("graph_id")
         hub.l2[child.run_id] = child
         hub.tracker.ensure_run(child.run_id, kind="reported", parent_run=handle.run_id,
-                               name=run.name,
+                               name=run.name, graph_id=run.graph_id,
                                manifest={**run.manifest, "parent_run": handle.run_id,
                                          "forked_at_step": handle.step})
         # 갈라진 run의 lr은 job.json에 박혀 있어 워커가 따로 알려 주지 않는다.
@@ -520,7 +537,9 @@ def create_app(
         from ..ir import Graph
 
         name = ((request or {}).get("name") or "untitled").strip() or "untitled"
-        hub.open(ModuleGraph(graph=Graph(name=name)))
+        # id를 여기서 박아 둔다. 없으면 새 프로젝트마다 run이 섞인다.
+        meta = {"app_version": __version__, "id": uuid4().hex[:8].upper()}
+        hub.open(ModuleGraph(meta=meta, graph=Graph(name=name)))
         return JSONResponse({"ok": True, "name": name})
 
     @app.post("/api/close")
@@ -664,7 +683,7 @@ def create_app(
         step = int(record.pop("step", 0))
         record.pop("wall", None)
         name = record.pop("run_name", None)
-        hub.tracker.ensure_run(run_id, name=name)
+        hub.tracker.ensure_run(run_id, name=name, graph_id=hub.graph_id)
         return JSONResponse({"ok": True, "written": hub.tracker.log(run_id, step, record)})
 
     @app.post("/api/runs")
@@ -673,6 +692,7 @@ def create_app(
         run_id = hub.tracker.ensure_run(
             request["run_id"], kind=request.get("kind", "exploratory"),
             name=request.get("name"), parent_run=request.get("parent_run"),
+            graph_id=hub.graph_id,
             manifest=request.get("manifest"))
         return JSONResponse({"ok": True, "run_id": run_id})
 
@@ -735,13 +755,15 @@ def create_app(
             "seed": int(options.get("seed", 0)),
             "device": options.get("device", "auto"),
             "smoke": smoke,
+            # 복구가 이 파일만 보고 run의 소속을 알 수 있어야 한다.
+            "graph_id": hub.graph_id,
         }
 
         kind = options.get("kind", "exploratory")
         handle = l2.start(run_id=run_id, root=hub.runs_dir, job=job, code=code)
-        handle.extra.update({"kind": kind, "smoke": smoke})
+        handle.extra.update({"kind": kind, "smoke": smoke, "graph_id": hub.graph_id})
         hub.l2[run_id] = handle
-        hub.tracker.ensure_run(run_id, kind=kind, name=graph.name,
+        hub.tracker.ensure_run(run_id, kind=kind, name=graph.name, graph_id=hub.graph_id,
                                manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir)})
         return JSONResponse({"ok": True, **handle.as_dict()})
 
@@ -798,14 +820,19 @@ def create_app(
 
     @app.get("/api/train")
     def training_status() -> JSONResponse:
-        """돌고 있는 run들의 상태. 곡선은 /api/runs/curve가 준다."""
+        """돌고 있는 run들의 상태. 곡선은 /api/runs/curve가 준다.
+
+        다른 그래프의 run은 빼고 준다 - 워커는 계속 돌지만 이 화면의 것이 아니다.
+        """
         hub.sync_runs()
-        return JSONResponse({"runs": [handle.as_dict() for handle in hub.l2.values()]})
+        return JSONResponse({"runs": [
+            handle.as_dict() for handle in hub.l2.values()
+            if hub.graph_id is None or handle.extra.get("graph_id") == hub.graph_id]})
 
     @app.get("/api/runs")
     def list_runs() -> JSONResponse:
         hub.sync_runs()
-        runs = [run.as_dict() for run in hub.tracker.runs()]
+        runs = [run.as_dict() for run in hub.tracker.runs(graph_id=hub.graph_id)]
         for run in runs:
             run["keys"] = hub.tracker.keys(run["id"])
         return JSONResponse({"runs": runs})
@@ -816,7 +843,7 @@ def create_app(
         """곡선 하나 또는 시드 그룹의 평균과 표준편차."""
         ids = [item for item in runs.split(",") if item]
         if not ids:
-            ids = [run.id for run in hub.tracker.runs(limit=8)]
+            ids = [run.id for run in hub.tracker.runs(limit=8, graph_id=hub.graph_id)]
         if aggregate:
             return JSONResponse({"key": key, "aggregate": hub.tracker.aggregate(ids, key)})
         return JSONResponse({"key": key, "series": [

@@ -549,6 +549,36 @@ def test_l1_probe_tells_the_kernel_which_gpus_l2_holds(app, monkeypatch):
     assert hub.occupied_devices() == ["cuda:0"]
 
 
+def test_a_new_project_does_not_inherit_the_previous_curves(app, client, trained):
+    """새 그래프를 열면 이전 그래프의 run이 따라오면 안 된다.
+
+    트래커는 state-dir 하나를 쓰므로 DB에는 남아 있다. 남아 있는 것과 화면에
+    보이는 것은 다른 문제고, 여기서 가르는 것은 그래프 identity(meta.id)다 -
+    IR 해시로 가르면 노드 하나 고친 순간 비교하려던 곡선이 남이 된다.
+    """
+    run_id, handle, auth = trained
+    before = client.get("/api/runs", headers=auth).json()["runs"]
+    assert [run["id"] for run in before] == [run_id]
+
+    client.post("/api/new", headers=auth, json={"name": "빈 프로젝트"})
+
+    assert client.get("/api/runs", headers=auth).json()["runs"] == []
+    # 워커는 계속 돌지만 이 화면의 것이 아니다.
+    assert client.get("/api/train", headers=auth).json()["runs"] == []
+    # DB에서 지운 것이 아니다 - 그래프를 도로 열면 다시 보인다.
+    assert len(app.state.hub.tracker.runs()) == 1
+
+
+def test_a_new_project_gets_its_own_identity(app, client):
+    """id가 없으면 새 프로젝트끼리도 run이 섞인다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    client.post("/api/new", headers=auth, json={"name": "하나"})
+    first = app.state.hub.graph_id
+    client.post("/api/new", headers=auth, json={"name": "둘"})
+
+    assert first and app.state.hub.graph_id and first != app.state.hub.graph_id
+
+
 def test_training_refuses_a_graph_without_an_input(app, client):
     auth = {"Authorization": f"token {TOKEN}"}
     app.state.hub.store.ir.graph.nodes = [

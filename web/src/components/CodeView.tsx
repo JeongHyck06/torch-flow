@@ -11,6 +11,9 @@ import { useStore } from "../store";
 
 export function CodeView() {
   const seq = useStore((state) => state.seq);
+  // seq만 보면 안 된다. 새 그래프의 seq는 0이라 편집 없이 다른 그래프를 열면
+  // 값이 그대로여서 이전 그래프의 코드가 남는다.
+  const graph = useStore((state) => state.graph);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState(0);
@@ -24,7 +27,7 @@ export function CodeView() {
       setLines(body.lines ?? 0);
     }).catch((reason) => setError(String(reason)));
     return () => { cancelled = true; };
-  }, [seq]);
+  }, [seq, graph]);
 
   return (
     <section className="codeview" aria-label="생성 코드">

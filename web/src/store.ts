@@ -44,6 +44,7 @@ interface State {
   paletteAt: { x: number; y: number } | null;
 
   setGraph: (graph: ModuleGraph, seq: number) => void;
+  openGraph: (graph: ModuleGraph, seq: number) => void;
   closeGraph: () => void;
   applyNodeState: (state: NodeState) => void;
   applyNodeStates: (states: Record<string, NodeState>) => void;
@@ -99,6 +100,14 @@ export const useStore = create<State>((set, get) => ({
   dirty: false,
   paletteAt: null,
 
+  openGraph: (graph, seq) =>
+    // **다른** 그래프를 연다. 이전 그래프에 딸린 것은 전부 비운다 - 노드 상태,
+    // 브레드크럼, 선택, 편집 히스토리, 총계. setGraph는 편집 왕복마다 불리므로
+    // 거기서 비우면 매 편집마다 배지가 사라진다. 그래서 둘을 나눈다.
+    set({ graph, seq, nodeStates: {}, selected: null, focused: null,
+          scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" }],
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null,
+          totals: { params: 0, band: null, batch: 64 } }),
   setGraph: (graph, seq) =>
     // 브레드크럼의 뿌리는 그래프 이름이다.
     set((prev) => ({
