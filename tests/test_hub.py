@@ -237,3 +237,30 @@ def test_open_rejects_a_missing_path(client):
     response = client.post("/api/open", headers={"Authorization": f"token {TOKEN}"},
                            json={"path": "/nope/missing.tfg.json"})
     assert response.status_code == 404
+
+
+def test_scalars_land_in_the_tracker(client):
+    auth = {"Authorization": f"token {TOKEN}"}
+    client.post("/api/runs", headers=auth,
+                json={"run_id": "r1", "name": "demo", "manifest": {"seed": 3}})
+    for step in range(4):
+        client.post("/api/scalars", headers=auth,
+                    json={"run_id": "r1", "step": step, "train/loss": 2.0 - step * 0.1})
+
+    runs = client.get("/api/runs", headers=auth).json()["runs"]
+    assert runs[0]["id"] == "r1" and runs[0]["keys"] == ["train/loss"]
+    assert runs[0]["manifest"]["seed"] == 3
+
+    curve = client.get("/api/runs/curve?key=train/loss&runs=r1", headers=auth).json()
+    assert curve["series"][0]["points"][0] == [0, 2.0]
+
+
+def test_seed_group_aggregate_endpoint(client):
+    auth = {"Authorization": f"token {TOKEN}"}
+    for seed in range(3):
+        client.post("/api/scalars", headers=auth,
+                    json={"run_id": f"s{seed}", "step": 0, "loss": 1.0 + seed})
+    payload = client.get("/api/runs/curve?key=loss&runs=s0,s1,s2&aggregate=true",
+                         headers=auth).json()
+    assert payload["aggregate"][0]["mean"] == 2.0
+    assert payload["aggregate"][0]["n"] == 3

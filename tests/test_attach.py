@@ -195,7 +195,28 @@ def test_log_buffers_scalars(session):
     session.log(0, loss=1.5, lr=1e-3)
     session.log(1, loss=1.2, lr=1e-3)
     assert [record["loss"] for record in session.scalars] == [1.5, 1.2]
-    assert all("wall" in record for record in session.scalars)
+    assert all(record["run_id"] == session.run_id for record in session.scalars)
+
+
+def test_manifest_carries_what_reproduction_needs(session):
+    """구조 해시, 시드, 환경, git 상태가 모두 있어야 다시 돌릴 수 있다."""
+    manifest = session.manifest()
+    assert manifest["run_id"] == session.run_id
+    assert manifest["structure_hash"]
+    assert manifest["params"] > 0
+    assert manifest["env"]["torch"]
+    assert manifest["probe"]["linked_ratio"] is not None
+
+
+def test_manifest_can_be_anonymised(session, tmp_path):
+    """익명 심사에서 저자가 드러나면 안 된다."""
+    import json
+
+    path = session.save_manifest(tmp_path / "manifest.json", anonymous=True)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "packages" not in payload
+    assert (payload.get("git") or {}).get("remote") is None
+    assert payload["tool"] == "<redacted>"
 
 
 def test_hub_push_failures_do_not_break_training(session):

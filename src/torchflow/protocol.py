@@ -79,6 +79,16 @@ class RunClosure(_Msg):
     probe_cfg: dict[str, Any] = Field(default_factory=dict)
 
 
+class ImportTrace(_Msg):
+    """인스턴스 import (§7.4 경로 3). 커널이 사용자 모델을 만들어 트레이스한다."""
+
+    type: Literal["ImportTrace"] = "ImportTrace"
+    req_id: str
+    file: str
+    factory: str
+    example_inputs: dict[str, Any] = Field(default_factory=dict)
+
+
 class EstimateMemory(_Msg):
     """메모리 밴드 추정 요청 (§6.2). 배치를 구체값으로 묶어 실행한다."""
 
@@ -96,7 +106,8 @@ class Shutdown(_Msg):
 
 
 ToKernel = Annotated[
-    Union[Ping, RunNodes, RunClosure, Cancel, ReloadBlocks, EstimateMemory, Shutdown],
+    Union[Ping, RunNodes, RunClosure, Cancel, ReloadBlocks, ImportTrace, EstimateMemory,
+          Shutdown],
     Field(discriminator="type"),
 ]
 
@@ -178,6 +189,13 @@ class Log(_Msg):
     text: str = ""
 
 
+class Imported(_Msg):
+    type: Literal["Imported"] = "Imported"
+    req_id: str
+    graph: dict[str, Any] | None = None
+    report: dict[str, Any] = Field(default_factory=dict)
+
+
 class MemoryEstimate(_Msg):
     type: Literal["MemoryEstimate"] = "MemoryEstimate"
     req_id: str
@@ -202,7 +220,7 @@ class Progress(_Msg):
 
 
 FromKernel = Annotated[
-    Union[Ready, Pong, Done, Error, Busy, Log, Progress, MemoryEstimate],
+    Union[Ready, Pong, Done, Error, Busy, Log, Progress, MemoryEstimate, Imported],
     Field(discriminator="type"),
 ]
 
