@@ -34,8 +34,11 @@ class KernelManager:
 
         # uvicorn은 동기 핸들러를 스레드풀에서 돌린다. pyzmq 소켓은 스레드 안전하지
         # 않아 두 요청이 겹치면 identity 프레임과 본문이 서로 다른 스레드로 갈린다.
+        # 기동도 마찬가지다: 첫 화면과 첫 shape 요청이 겹치면 커널을 두 번 띄우고
+        # Ready 핸드셰이크가 엇갈려 shape가 통째로 비어 돌아온다. ensure가 start를
+        # 감싸므로 **재진입 가능한** 락이어야 한다(Lock이면 자기 자신에 걸린다).
         # ponytail: 커널 하나당 락 하나. 축(L0/L1/L2)이 늘어도 매니저가 늘 뿐이다.
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
         self.context = zmq.Context.instance()
         self.socket = self.context.socket(zmq.ROUTER)
@@ -76,8 +79,9 @@ class KernelManager:
 
     def ensure(self) -> None:
         """죽었으면 다시 세운다. UI는 이 사이에도 멈추지 않는다(§5.5)."""
-        if not self.alive():
-            self.start()
+        with self.lock:
+            if not self.alive():
+                self.start()
 
     def stop(self, timeout: float = 5.0) -> None:
         if self.alive():
