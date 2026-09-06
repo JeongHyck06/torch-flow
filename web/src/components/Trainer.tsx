@@ -9,13 +9,16 @@
 
 import { useEffect, useState } from "react";
 
-import { controlTraining, fetchTraining, startTraining } from "../api";
-import type { TrainRun } from "../api";
+import { controlTraining, downloadDataset, fetchDatasets, fetchTraining, startTraining } from "../api";
+import type { DatasetInfo, TrainRun } from "../api";
 
 const RUNNING = new Set(["running", "starting"]);
 
 export function Trainer({ onChange }: { onChange: () => void }) {
   const [runs, setRuns] = useState<TrainRun[]>([]);
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  const [dataset, setDataset] = useState("teacher");
+  const [fetching, setFetching] = useState(false);
   const [steps, setSteps] = useState(500);
   const [batch, setBatch] = useState(32);
   const [lr, setLr] = useState(0.001);
@@ -26,6 +29,10 @@ export function Trainer({ onChange }: { onChange: () => void }) {
 
   const active = runs.find((run) => RUNNING.has(run.state) || run.state === "paused");
   const last = runs[runs.length - 1];
+  const chosen = datasets.find((entry) => entry.name === dataset);
+  const needsDownload = chosen !== undefined && !chosen.available;
+
+  useEffect(() => { fetchDatasets().then(setDatasets).catch(() => undefined); }, []);
 
   useEffect(() => {
     let stop = false;
@@ -44,10 +51,20 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     setError(null);
     setNote(null);
     const result = await startTraining(
-      smoke ? { smoke: true }
-        : { steps, batch, lr, optimizer: "adamw", scheduler: schedule, warmup_steps: warmup });
+      smoke ? { smoke: true, dataset }
+        : { dataset, steps, batch, lr, optimizer: "adamw", scheduler: schedule,
+            warmup_steps: warmup });
     if (result.error) setError(result.error);
     else setRuns((previous) => [...previous, result]);
+  };
+
+  const download = async () => {
+    setFetching(true);
+    setError(null);
+    const result = await downloadDataset(dataset);
+    setFetching(false);
+    if (result.error) setError(result.error);
+    else setDatasets(await fetchDatasets());
   };
 
   const send = async (cmd: string, extra: Record<string, unknown> = {}) => {
@@ -73,8 +90,14 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     <div className="trainer">
       {!active ? (
         <>
-          <button className="trainer__run" onClick={() => void start()}>Run</button>
-          <button className="trainer__stop" onClick={() => void start(true)}
+          {needsDownload ? (
+            <button className="trainer__run" onClick={() => void download()} disabled={fetching}>
+              {fetching ? "내려받는 중" : `${chosen.label} 내려받기 (${chosen.size_mb} MB)`}
+            </button>
+          ) : (
+            <button className="trainer__run" onClick={() => void start()}>Run</button>
+          )}
+          <button className="trainer__stop" onClick={() => void start(true)} disabled={needsDownload}
                   title="20 step · batch 8 · 결정적 - 두 번 돌리면 loss가 같습니다">
             Smoke
           </button>
@@ -83,6 +106,17 @@ export function Trainer({ onChange }: { onChange: () => void }) {
               재개
             </button>
           )}
+          <label className="trainer__field">데이터
+            <select className="trainer__select mono" value={dataset}
+                    onChange={(event) => setDataset(event.target.value)}>
+              <option value="teacher">합성</option>
+              {datasets.map((entry) => (
+                <option key={entry.name} value={entry.name}>
+                  {entry.label}{entry.available ? "" : " (내려받기 필요)"}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="trainer__field">steps
             <input type="number" min={1} value={steps}
                    onChange={(event) => setSteps(Number(event.target.value))} />
@@ -113,7 +147,11 @@ export function Trainer({ onChange }: { onChange: () => void }) {
               {last.run_id} · {last.state} · step {last.step.toLocaleString()}
             </span>
           )}
-          <span className="muted trainer__note">합성 과제 · 데이터셋 노드는 Experiment 탭에서</span>
+          <span className="muted trainer__note">
+            {chosen
+              ? `${chosen.label} · Input 규격 [B, ${chosen.shape.join(", ")}] · 검증은 test 분할`
+              : "합성 과제 · 무작위 입력에 고정 teacher 라벨"}
+          </span>
         </>
       ) : (
         <>

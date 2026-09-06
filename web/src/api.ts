@@ -219,7 +219,26 @@ export interface TrainRun {
   restart_required?: string; message?: string; ok?: boolean;
 }
 
+export interface DatasetInfo {
+  name: string; label: string; shape: number[]; classes: number; size_mb: number; available: boolean;
+}
+
+export async function fetchDatasets(): Promise<DatasetInfo[]> {
+  const response = await fetch("/api/datasets", { headers: authHeaders() });
+  if (!response.ok) return [];
+  return (await response.json()).datasets ?? [];
+}
+
+/** 다운로드는 사람이 누른 버튼에서만 시작한다(§3.1). */
+export async function downloadDataset(name: string): Promise<{ ok?: boolean; error?: string }> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(name)}/download`, {
+    method: "POST", headers: authHeaders(),
+  });
+  return response.json();
+}
+
 export interface TrainOptions {
+  dataset?: string;
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
   scheduler?: string; warmup_steps?: number;
 }
