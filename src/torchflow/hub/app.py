@@ -725,6 +725,9 @@ def create_app(
             "batch": int(options.get("batch", 32)),
             "steps": int(options.get("steps", 200)),
             "optimizer": options.get("optimizer", "adamw"),
+            # 스케줄러가 있으면 lr은 base다 - 실제 lr은 base x schedule(§5.7.1).
+            "scheduler": options.get("scheduler", "none"),
+            "warmup_steps": int(options.get("warmup_steps", 0)),
             "lr": float(options.get("lr", 1e-3)),
             "weight_decay": float(options.get("weight_decay", 0.0)),
             "log_every": int(options.get("log_every", 5)),

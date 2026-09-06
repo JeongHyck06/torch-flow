@@ -214,11 +214,14 @@ export interface TrainRun {
   reason?: string; nan_step?: number;
   // reported run은 hparam이 동결이라 학습 중 편집이 fork가 된다(§5.7.2).
   kind?: string; smoke?: boolean; parent_run?: string; forked_from?: string;
+  // 스케줄러가 있으면 lr은 base이고 실제 lr은 base x schedule(§5.7.1).
+  scheduler?: string | null; lr?: number; base_lr?: number;
   restart_required?: string; message?: string; ok?: boolean;
 }
 
 export interface TrainOptions {
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
+  scheduler?: string; warmup_steps?: number;
 }
 
 /** 학습을 시작한다. 워커는 hub와 분리된 세션에서 돈다(§5.5.3). */

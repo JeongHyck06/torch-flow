@@ -19,6 +19,8 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   const [steps, setSteps] = useState(500);
   const [batch, setBatch] = useState(32);
   const [lr, setLr] = useState(0.001);
+  const [schedule, setSchedule] = useState("none");
+  const [warmup, setWarmup] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
 
@@ -42,7 +44,8 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     setError(null);
     setNote(null);
     const result = await startTraining(
-      smoke ? { smoke: true } : { steps, batch, lr, optimizer: "adamw" });
+      smoke ? { smoke: true }
+        : { steps, batch, lr, optimizer: "adamw", scheduler: schedule, warmup_steps: warmup });
     if (result.error) setError(result.error);
     else setRuns((previous) => [...previous, result]);
   };
@@ -61,6 +64,10 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   };
 
   const reported = active?.kind === "reported";
+  // 스케줄러가 돌면 사람이 고치는 lr은 base다. 실제 lr은 스케줄이 정하므로
+  // 둘을 같이 보여 주지 않으면 "입력한 값과 다른 값이 돈다"로 읽힌다.
+  const scheduled = Boolean(active?.scheduler);
+  const factor = active?.base_lr && active?.lr ? active.lr / active.base_lr : null;
 
   return (
     <div className="trainer">
@@ -88,6 +95,19 @@ export function Trainer({ onChange }: { onChange: () => void }) {
             <input type="number" step={0.0001} min={0} value={lr}
                    onChange={(event) => setLr(Number(event.target.value))} />
           </label>
+          <label className="trainer__field">스케줄
+            <select className="trainer__select mono" value={schedule}
+                    onChange={(event) => setSchedule(event.target.value)}>
+              <option value="none">없음</option>
+              <option value="cosine">cosine</option>
+            </select>
+          </label>
+          {schedule === "cosine" && (
+            <label className="trainer__field">warmup
+              <input type="number" min={0} value={warmup}
+                     onChange={(event) => setWarmup(Number(event.target.value))} />
+            </label>
+          )}
           {last && (
             <span className="mono trainer__progress">
               {last.run_id} · {last.state} · step {last.step.toLocaleString()}
@@ -117,7 +137,7 @@ export function Trainer({ onChange }: { onChange: () => void }) {
               exploratory †
             </button>
           )}
-          <label className="trainer__field">lr
+          <label className="trainer__field">{scheduled ? "base lr" : "lr"}
             {/* 제어 입력이어야 한다. defaultValue는 마운트 때만 읽히는데 React가
                 Run 폼의 입력 DOM을 재사용해서 batch 값이 남아 있었다. */}
             <input type="number" step={0.0001} min={0} value={lr}
@@ -127,8 +147,16 @@ export function Trainer({ onChange }: { onChange: () => void }) {
                      void send("set_hparam", { path: "optim.lr", value: lr });
                    }} />
           </label>
+          {scheduled && factor !== null && (
+            <span className="mono trainer__progress">
+              현재 lr {active.lr!.toExponential(2)} = base {active.base_lr!.toExponential(2)}
+              {" × "}{factor.toFixed(3)}
+            </span>
+          )}
           <span className="muted trainer__note">
-            {reported ? "lr을 바꾸면 run이 갈라집니다" : "lr은 Enter로 학습 중에 바뀝니다"}
+            {reported ? "lr을 바꾸면 run이 갈라집니다"
+              : scheduled ? "Enter로 base를 옮깁니다. 스케줄 모양은 그대로입니다"
+              : "lr은 Enter로 학습 중에 바뀝니다"}
           </span>
         </>
       )}

@@ -243,6 +243,11 @@ def _absorb(handle: RunHandle, event: dict[str, Any], tracker) -> int:
     if kind == "scalar":
         step = int(event.get("step", 0))
         handle.step = step
+        # 곡선과 별개로 "지금 lr"을 들고 있는다. 스케줄러가 있으면 base도 같이 -
+        # 화면이 "현재 lr = base x schedule"을 쓸 수 있어야 한다(§5.7.1).
+        for name in ("lr", "base_lr"):
+            if (value := event.get(name)) is not None:
+                handle.extra[name] = value
         values = {key: value for key, value in event.items()
                   if key not in ("kind", "wall", "step")}
         return tracker.log(handle.run_id, step, values, wall=event.get("wall"))
@@ -251,6 +256,8 @@ def _absorb(handle: RunHandle, event: dict[str, Any], tracker) -> int:
         handle.step = int(event.get("step", handle.step))
         handle.total = int(event.get("steps", handle.total)) or handle.total
         handle.device = str(event.get("device", handle.device))
+        if scheduler := event.get("scheduler"):
+            handle.extra["scheduler"] = scheduler
         if handle.state in ("done", "stopped", "failed"):
             tracker.finish_run(handle.run_id, handle.state)
         if reason := event.get("reason"):

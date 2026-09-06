@@ -1,6 +1,7 @@
 """L2 학습 워커: Smoke 재현성과 체크포인트 재개 (기획서 §5.7.2, §10.4)."""
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -85,13 +86,15 @@ def test_resume_continues_the_same_trajectory(tmp_path):
     assert [event["step"] for event in events(half_dir, "scalar")] == [1, 2, 3, 4]
 
 
-def test_a_fork_resumes_with_the_new_hparam(tmp_path):
+@pytest.mark.parametrize("scheduler", ["none", "cosine"])
+def test_a_fork_resumes_with_the_new_hparam(tmp_path, scheduler):
     """갈라진 run의 lr은 ckpt에 저장된 lr을 이겨야 한다.
 
-    optimizer.load_state_dict가 param_groups를 통째로 되돌리기 때문에, 그냥 두면
-    "lr을 바꾸려고 갈라낸 run"이 옛 lr로 돈다.
+    optimizer.load_state_dict가 param_groups를, scheduler.load_state_dict가 base_lrs를
+    통째로 되돌리기 때문에, 그냥 두면 "lr을 바꾸려고 갈라낸 run"이 옛 lr로 돈다.
+    스케줄러가 있으면 job의 lr은 실제 lr이 아니라 base다.
     """
-    job, run_dir = make_job(tmp_path, steps=2, lr=1e-3)
+    job, run_dir = make_job(tmp_path, steps=2, lr=1e-3, scheduler=scheduler)
     train(job, run_dir)
 
     forked = {**job, "steps": 4, "lr": 2e-4, "resume": str(run_dir / "ckpt.pt")}
@@ -99,7 +102,67 @@ def test_a_fork_resumes_with_the_new_hparam(tmp_path):
     child_dir.mkdir()
     train(forked, child_dir)
 
-    assert {event["lr"] for event in events(child_dir, "scalar")} == {2e-4}
+    if scheduler == "none":
+        assert {event["lr"] for event in events(child_dir, "scalar")} == {2e-4}
+    else:
+        assert {event["base_lr"] for event in events(child_dir, "scalar")} == {2e-4}
+        # 실제 lr은 base를 넘지 않는다 - 스케줄이 곱해질 뿐이다.
+        assert max(lrs(child_dir)) <= 2e-4
+
+
+def lrs(run_dir: Path) -> list[float]:
+    return [event["lr"] for event in events(run_dir, "scalar")]
+
+
+def test_cosine_decays_and_warms_up(tmp_path):
+    job, run_dir = make_job(tmp_path, steps=8, lr=1e-3, scheduler="cosine", warmup_steps=2)
+    train(job, run_dir)
+
+    schedule = lrs(run_dir)
+    assert schedule[0] < schedule[1], "warmup 구간은 올라가야 한다"
+    assert schedule[2] > schedule[-1], "warmup 뒤에는 내려가야 한다"
+    assert schedule[0] == pytest.approx(1e-3 * 2 / 3), "warmup 첫 스텝은 base x 2/3"
+
+
+def test_changing_lr_survives_the_scheduler(tmp_path):
+    """스케줄러가 돌 때 lr 변경은 base로 들어가야 산다.
+
+    param_groups에 직접 쓰면 다음 scheduler.step()이 base_lrs에서 다시 계산해
+    덮어쓴다. 그러면 사람이 바꾼 lr이 한 스텝만 반영되고 조용히 사라진다.
+    """
+    plain, plain_dir = make_job(tmp_path / "plain", steps=6, lr=1e-3, scheduler="cosine")
+    train(plain, plain_dir)
+
+    scaled, scaled_dir = make_job(tmp_path / "scaled", steps=6, lr=1e-3, scheduler="cosine")
+    # 워커는 매 스텝 control.json을 읽는다 - 시작 전에 써 두면 첫 스텝부터 반영된다.
+    (scaled_dir / "control.json").write_text(json.dumps({"lr": 5e-4}), encoding="utf-8")
+    train(scaled, scaled_dir)
+
+    # base가 절반이면 모든 스텝의 lr이 정확히 절반이다 - 스케줄 모양은 그대로다.
+    assert lrs(scaled_dir) == pytest.approx([value / 2 for value in lrs(plain_dir)])
+    changes = events(scaled_dir, "hparam")
+    assert len(changes) == 1 and changes[0]["value"] == 5e-4
+
+
+def cosine(step: int, total: int = 6, warmup: int = 2) -> float:
+    if step < warmup:
+        return (step + 1) / (warmup + 1)
+    return 0.5 * (1 + math.cos(math.pi * min((step - warmup) / (total - warmup), 1.0)))
+
+
+def test_resume_keeps_its_place_in_the_schedule(tmp_path):
+    """재개한 run은 스케줄의 **지금 자리**에서 이어야 한다.
+
+    ckpt의 last_epoch를 복원하는 것만으로는 부족하다. 3 step짜리 코사인을 6 step으로
+    늘려 재개하면 스케줄의 모양 자체가 달라지므로, ckpt에 박힌 lr이 아니라 새 스케줄이
+    지금 자리에서 말하는 값으로 시작해야 한다 - 안 그러면 첫 스텝이 lr 0으로 돈다.
+    """
+    job, run_dir = make_job(tmp_path, steps=3, lr=1e-3, scheduler="cosine", warmup_steps=2)
+    train(job, run_dir)
+    train({**job, "steps": 6, "resume": str(run_dir / "ckpt.pt")}, run_dir)
+
+    assert [event["step"] for event in events(run_dir, "scalar")] == [1, 2, 3, 4, 5, 6]
+    assert lrs(run_dir)[3:] == pytest.approx([1e-3 * cosine(step) for step in (4, 5, 6)])
 
 
 def test_a_stopped_run_leaves_a_checkpoint(tmp_path):
@@ -113,4 +176,4 @@ def test_a_stopped_run_leaves_a_checkpoint(tmp_path):
     import torch
 
     assert set(torch.load(run_dir / "ckpt.pt")) == {"step", "model", "optimizer",
-                                                    "rng", "data_rng"}
+                                                    "scheduler", "rng", "data_rng"}
