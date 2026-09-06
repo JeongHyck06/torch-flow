@@ -6,6 +6,7 @@ hub 쪽 규칙은 하나뿐이다: **이 파일도, hub의 어떤 파일도 torc
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -55,6 +56,7 @@ class KernelManager:
                 "--level", self.level,
                 "--identity", self.identity.decode(),
                 "--state-dir", str(self.state_dir),
+                "--parent", str(os.getpid()),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
