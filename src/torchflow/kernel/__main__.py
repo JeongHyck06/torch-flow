@@ -86,14 +86,13 @@ class Kernel:
             try:
                 self.dispatch(message)
             except Exception as exc:
-                self.send(
-                    proto.Error(
-                        req_id=getattr(message, "req_id", "?"),
-                        kind="kernel",
-                        message=f"{type(exc).__name__}: {exc}",
-                        traceback=traceback.format_exc(),
-                    )
-                )
+                req_id = getattr(message, "req_id", "?")
+                self.send(proto.Error(req_id=req_id, kind="kernel",
+                                      message=f"{type(exc).__name__}: {exc}",
+                                      traceback=traceback.format_exc()))
+                # 요청은 Progress로 끝나야 한다. 안 보내면 hub가 타임아웃(120 s)까지 기다리고,
+                # 그 사이 이벤트 루프가 서서 화면 전체가 멈춘다.
+                self.send(proto.Progress(req_id=req_id, done=0, total=0))
 
     def dispatch(self, message) -> None:
         if message.type == "Ping":

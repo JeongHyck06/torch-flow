@@ -191,3 +191,14 @@ def test_kernel_exits_when_its_parent_dies(tmp_path):
     while time.time() < deadline and alive():
         time.sleep(0.2)
     assert not alive(), "커널이 부모 없이 살아남았다"
+
+
+def test_a_dispatch_failure_still_ends_the_request(kernel):
+    """커널 안에서 예외가 나도 요청은 Progress로 끝난다 - hub가 타임아웃까지 서 있으면 안 된다."""
+    started = time.perf_counter()
+    replies = kernel.request(
+        proto.RunNodes(req_id="r-bad", graph={"graph": {"nodes": "not-a-list"}}, batch=[]),
+        timeout=10)
+    assert time.perf_counter() - started < 5
+    assert replies[0].type == "Error" and replies[0].kind == "kernel"
+    assert replies[-1].type == "Progress"
