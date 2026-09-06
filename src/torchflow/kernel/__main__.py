@@ -9,6 +9,7 @@ hub와는 zmq DEALER로만 말한다. 이 프로세스만 torch를 import하므�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import traceback
 from pathlib import Path
@@ -16,7 +17,7 @@ from pathlib import Path
 import zmq
 
 from .. import protocol as proto
-from ..ir import ModuleGraph
+from ..ir import ModuleGraph, canonical_json
 
 
 class Kernel:
@@ -83,6 +84,8 @@ class Kernel:
             self.run_nodes(message)
         elif message.type == "RunClosure":
             self.run_closure(message)
+        elif message.type == "ImportTrace":
+            self.import_trace(message)
         elif message.type == "EstimateMemory":
             self.estimate_memory(message)
         elif message.type == "ReloadBlocks":
@@ -153,6 +156,23 @@ class Kernel:
             ))
             emitted += 1
         self.send(proto.Progress(req_id=message.req_id, done=emitted, total=emitted))
+
+    def import_trace(self, message) -> None:
+        """사용자 .py를 인스턴스화해서 그래프로 만든다(§7.4 경로 3)."""
+        from .importer import ImportError_, import_instance
+
+        try:
+            ir, report = import_instance(message.file, message.factory, message.example_inputs)
+        except ImportError_ as exc:
+            self.send(proto.Error(req_id=message.req_id, kind="exception",
+                                  message=exc.message, mapping={"stage": exc.stage}))
+        else:
+            self.send(proto.Imported(
+                req_id=message.req_id,
+                graph=json.loads(canonical_json(ir)),
+                report=report,
+            ))
+        self.send(proto.Progress(req_id=message.req_id, done=1, total=1))
 
     def estimate_memory(self, message) -> None:
         from .l0 import estimate_memory

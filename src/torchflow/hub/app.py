@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import protocol as proto
 from ..ir import ModuleGraph, canonical_json, load
+from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
 from .engine import Engine
 from .graphstore import GraphStore, OpError
@@ -80,7 +81,7 @@ class Hub:
         ready = self.kernel.ready
         if ready is None:
             return []
-        return [{"name": ready.device, "note": ready.torch_version}]
+        return [{"name": ready.device, "label": ready.device}]
 
     def templates(self) -> list[dict[str, Any]]:
         """검증된 템플릿 목록(§13.3). 파일이 실제로 있는 것만 열 수 있다."""
@@ -123,8 +124,35 @@ class Hub:
         self.engine.on_edit(op)
         return seq
 
+    @property
+    def traced(self) -> bool:
+        """hook 트레이스로 만들어진 그래프인가.
+
+        트레이스 결과는 IR을 다시 인스턴스화할 수 있는 명세가 아니다. 모듈의
+        생성 인자는 파이썬이 기억하지 않으므로 `extra_repr`에서 건진 표시용
+        문자열뿐이고, 그걸로 모듈을 다시 만들면 엉뚱한 크기가 나온다.
+        실측값이 이미 노드에 박혀 있으니 그것을 쓴다(§3.5: Attach에는 L0
+        반응형 갱신이 없다).
+        """
+        return bool(self.store and self.store.ir.meta.get("source") == "attach")
+
+    def measured_states(self) -> list[proto.NodeState]:
+        """트레이스가 기록해 둔 실측 spec을 그대로 노드 상태로 낸다."""
+        states = []
+        for node in self.store.ir.graph.nodes:
+            measured = getattr(node, "measured", None)
+            state = proto.NodeState(seq=self.seq, node=node.id, axis="L0",
+                                    state="ok", spec=measured,
+                                    badges={"measured": True})
+            self.node_states[node.id] = state.model_dump(mode="json")
+            states.append(state)
+        self.total_params = int(self.store.ir.meta.get("params") or 0)
+        return states
+
     def run_l0(self, node_ids: list[str] | None = None) -> list[proto.NodeState]:
         """L0 정적 패스 1회. 커널이 죽어 있으면 조용히 다시 세운다."""
+        if self.traced:
+            return self.measured_states()
         self.kernel.ensure()
         batch = [proto.NodeRequest(node_id=n, version=self.engine.version.get(n, 0))
                  for n in (node_ids or [])]
@@ -249,6 +277,50 @@ def create_app(
             "templates": hub.templates(),
         })
 
+    @app.post("/api/inspect")
+    def inspect_source(request: dict[str, Any]) -> JSONResponse:
+        """드롭된 .py에서 인스턴스화할 수 있는 클래스를 고른다.
+
+        hub는 사용자 코드를 실행하지 않는다. ast로 읽기만 한다.
+        """
+        try:
+            found = candidates(request.get("source") or "")
+        except SyntaxError as exc:
+            return JSONResponse({"error": f"구문 오류 {exc.lineno}행: {exc.msg}"}, status_code=400)
+        return JSONResponse({"candidates": found})
+
+    @app.post("/api/import")
+    def import_source(request: dict[str, Any]) -> JSONResponse:
+        """사용자 .py를 인스턴스로 만들어 그래프로 편다(§7.4 경로 3)."""
+        name = Path(request.get("filename") or "model.py").name
+        target = hub.state_dir / "imports" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if request.get("source") is not None:
+            target.write_text(request["source"], encoding="utf-8")
+
+        try:
+            example = parse_example_spec(request.get("example") or "")
+        except ValueError as exc:
+            return JSONResponse({"error": f"입력 명세: {exc}"}, status_code=400)
+
+        hub.l1.ensure()
+        replies = hub.l1.request(proto.ImportTrace(
+            req_id=f"i-{hub.seq}", file=str(target),
+            factory=request.get("factory") or "", example_inputs=example))
+
+        failure = next((r for r in replies if r.type == "Error"), None)
+        if failure is not None:
+            stage = (failure.mapping or {}).get("stage", "import")
+            return JSONResponse({"error": failure.message, "stage": stage}, status_code=400)
+
+        imported = next((r for r in replies if r.type == "Imported"), None)
+        if imported is None or imported.graph is None:
+            return JSONResponse({"error": "커널이 그래프를 돌려주지 않았습니다"}, status_code=502)
+
+        hub.open(ModuleGraph.model_validate(imported.graph), target)
+        return JSONResponse({"ok": True, "name": hub.store.ir.graph.name,
+                             "report": imported.report})
+
     @app.post("/api/open")
     def open_graph(request: dict[str, Any]) -> JSONResponse:
         """템플릿 또는 경로를 연다. 첫 화면의 진입점 하나."""
@@ -369,6 +441,9 @@ def create_app(
         """메모리 밴드 추정(§6.2). 배치 슬라이더가 이 값을 읽는다."""
         if hub.store is None:
             return no_graph()
+        if hub.traced:
+            # 트레이스 그래프는 재인스턴스화가 안 되므로 활성값을 셀 수 없다.
+            return JSONResponse({"ok": False, "error": "traced graph"})
         hub.kernel.ensure()
         replies = hub.kernel.request(
             proto.EstimateMemory(req_id=f"m-{hub.seq}", graph=hub.snapshot_for_kernel(),
