@@ -167,6 +167,7 @@ class Done(_Msg):
     # L1 probe 결과(§17.5의 Done 예시).
     grad: dict[str, Any] | None = None
     histogram: list[int] | None = None
+    feature: dict[str, Any] | None = None
     frames: list[dict[str, Any]] = Field(default_factory=list)
 
 

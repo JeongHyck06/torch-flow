@@ -161,7 +161,7 @@ class Kernel:
             self.send(proto.Done(
                 req_id=message.req_id, node_id=node.node_id, path=node.path,
                 spec=node.spec, elapsed_ms=result.elapsed_ms,
-                numeric=node.numeric, histogram=node.histogram,
+                numeric=node.numeric, histogram=node.histogram, feature=node.feature,
                 grad={"norm": node.grad_norm, "ratio": node.grad_ratio,
                       "weight_norm": node.weight_norm, "warn": node.warn,
                       "objective": result.objective, "device": result.device,

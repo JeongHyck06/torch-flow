@@ -116,6 +116,9 @@ export function toFlow(
         string | undefined,
       folded: own === undefined && gradNorm !== undefined,
       gradColor: options.gradOverlay && gradNorm ? gradColor(gradNorm, range) : undefined,
+      histogram: state?.badges?.histogram as number[] | undefined,
+      feature: state?.badges?.feature as
+        { size: number; pixels: string; channels: number; shown: number } | undefined,
       enterable: enterableComposite(scope, node.id) !== null,
       lod: options.lod,
       selected: options.selected === node.id,

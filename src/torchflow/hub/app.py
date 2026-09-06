@@ -528,7 +528,8 @@ def create_app(
                 badges={key: value for key, value in {
                     "grad_norm": grad.get("norm"), "grad_ratio": grad.get("ratio"),
                     "grad_warn": grad.get("warn"), "probe_objective": grad.get("objective"),
-                    "histogram": reply.histogram, "device": grad.get("device"),
+                    "histogram": reply.histogram, "feature": reply.feature,
+                    "device": grad.get("device"),
                     "measured": reply.spec,
                 }.items() if value is not None},
             )
