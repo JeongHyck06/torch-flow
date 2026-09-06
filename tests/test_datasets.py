@@ -87,3 +87,49 @@ def test_npy_pair_is_recognised_without_numpy_in_the_hub(tmp_path):
     listed = [entry["name"] for entry in datasets.scan(tmp_path)]
     assert listed == ["mnist", "arrays"]
     assert datasets.load_any("arrays", tmp_path)["train"][0].shape[1] == 4
+
+
+def test_recipe_changes_label_column_features_and_missing_values(tmp_path):
+    """정제: 정답 열을 바꾸고, 특징 열을 고르고, 범주형은 원-핫, 결측은 평균으로."""
+    folder = tmp_path / "table"
+    folder.mkdir()
+    (folder / "t.csv").write_text(
+        "age,city,score,label\n"
+        "30,seoul,1.0,a\n40,busan,,b\n50,seoul,3.0,a\n60,busan,4.0,b\n70,seoul,5.0,a\n",
+        encoding="utf-8")
+    spec = datasets.inspect(folder)
+    assert [c["kind"] for c in spec["columns"]] == ["numeric", "text", "numeric", "text"]
+    assert spec["columns"][2]["missing"] == 1
+
+    recipe = {"label_column": "city", "features": ["age", "score"], "missing": "mean",
+              "normalize": "none", "val_fraction": 0.2}
+    effective = datasets.resolve(spec, recipe)
+    assert effective["class_names"] == ["busan", "seoul"] and effective["shape"] == [2]
+    assert effective["split"] == {"train": 4, "val": 1}
+
+    splits = datasets.load_any("table", tmp_path, recipe)
+    x = torch.cat([splits["train"][0], splits["test"][0]])
+    assert x.shape == (5, 2) and not torch.isnan(x).any()
+    assert abs(float(x[:, 1].sum()) - (1 + 3.25 + 3 + 4 + 5)) < 1e-4   # 결측 하나가 평균 3.25로
+
+    onehot = datasets.resolve(spec, {"features": ["city", "age"]})
+    assert onehot["shape"] == [3]   # city 원-핫 2 + age 1
+
+
+def test_recipe_filters_classes_limits_samples_and_resizes_images(tmp_path):
+    write_image_folder(tmp_path, side=20, per_class=3)
+    spec = datasets.inspect(tmp_path / "shapes")
+    recipe = {"classes": ["red"], "size": 8, "channels": 1, "limit": 2, "normalize": "fixed"}
+    effective = datasets.resolve(spec, recipe)
+    assert effective["shape"] == [1, 8, 8] and effective["class_names"] == ["red"]
+    assert effective["count"] == 2 and effective["problem"]   # 클래스 하나로는 분류가 안 된다
+
+    splits = datasets.load_any("shapes", tmp_path, {"size": 8, "channels": 1, "normalize": "fixed",
+                                                    "val_fraction": 0.5})
+    x, y = splits["train"]
+    assert x.shape[1:] == (1, 8, 8) and len(x) == 3 and len(splits["test"][0]) == 3
+    assert float(x.min()) >= -1.0 and float(x.max()) <= 1.0
+
+    shown = datasets.preview(spec, tmp_path, None)
+    assert shown["preview"]["thumbnails"]["labels"] == ["blue", "red"]
+    assert shown["spec"]["split"] == {"train": 5, "val": 1}

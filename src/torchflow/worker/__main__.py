@@ -91,7 +91,7 @@ def build_data(job: dict[str, Any], device, generator, rng_state=None):
     name = job.get("dataset", "teacher")
     batch = int(job.get("batch", 32))
     if name not in ("teacher", "noise"):
-        splits = load_any(name, Path(job.get("data_dir", "data")))
+        splits = load_any(name, Path(job.get("data_dir", "data")), job.get("recipe"))
         if rng_state is not None:
             generator.set_state(rng_state)
         # ponytail: 재개하면 epoch의 첫 배치부터 다시 본다. epoch 안 위치는 ckpt에 없다.

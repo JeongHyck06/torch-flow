@@ -574,6 +574,8 @@ def create_app(
         if request.get("dataset") and spec is None:
             return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {request['dataset']}"},
                                 status_code=400)
+        if spec is not None:
+            spec = datasets.resolve(spec, request.get("recipe"))
         name = (request.get("name") or (spec["label"] if spec else "untitled")).strip() or "untitled"
         nodes = []
         if spec is not None:
@@ -583,7 +585,9 @@ def create_app(
                      {"id": "OUT", "label": "logits", "type": "torchflow.Output"}]
         # id를 여기서 박아 둔다. 없으면 새 프로젝트마다 run이 섞인다.
         meta = {"app_version": __version__, "id": uuid4().hex[:8].upper()}
-        hub.open(ModuleGraph(meta=meta, graph=Graph.model_validate({"name": name, "nodes": nodes})))
+        experiment = {"data": {"name": spec["name"], "recipe": spec["recipe"]}} if spec else None
+        hub.open(ModuleGraph(meta=meta, experiment=experiment,
+                             graph=Graph.model_validate({"name": name, "nodes": nodes})))
         return JSONResponse({"ok": True, "name": name, "dataset": spec and spec["name"]})
 
     @app.post("/api/close")
@@ -756,6 +760,51 @@ def create_app(
         """내장 데이터셋과 data/ 아래 사용자 데이터. 다운로드는 명시 버튼으로만(§3.1)."""
         return JSONResponse({"datasets": datasets.scan(hub.data_dir)})
 
+    @app.post("/api/datasets/{name}/preview")
+    def preview_dataset(name: str, request: dict[str, Any] | None = None) -> JSONResponse:
+        """정제 화면: 레시피를 적용한 명세와 미리보기. 적재는 하지 않는다."""
+        spec = datasets.describe(name, hub.data_dir)
+        if spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {name}"}, status_code=404)
+        if spec["kind"] == "builtin":
+            return JSONResponse({"base": spec, "spec": datasets.resolve(spec, None), "preview": {}})
+        return JSONResponse(datasets.preview(spec, hub.data_dir, (request or {}).get("recipe")))
+
+    @app.post("/api/data")
+    async def set_graph_data(request: dict[str, Any]) -> JSONResponse:
+        """그래프에 데이터와 레시피를 붙이고 Input 규격을 맞춘다.
+
+        레시피는 IR의 ``experiment.data``에 남아 저장·재현에 따라간다. Input은 평범한
+        ``set_ports`` op로 고치므로 실행 취소가 되고 다른 클라이언트도 본다.
+        """
+        if hub.store is None:
+            return no_graph()
+        name = request.get("name") or ""
+        spec = datasets.describe(name, hub.data_dir)
+        if spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {name}"}, status_code=404)
+        effective = datasets.resolve(spec, request.get("recipe"))
+        ir = hub.store.ir
+        ir.experiment = {**(ir.experiment or {}),
+                         "data": {"name": name, "recipe": effective["recipe"]}}
+        entry = next((node for node in ir.graph.nodes if node.type == "torchflow.Input"), None)
+        states = []
+        if entry is not None and entry.ports_out and request.get("apply_input", True):
+            port = entry.ports_out[0]
+            wanted = ["B", *effective["shape"]]
+            if list(port.shape or []) != wanted:
+                op = {"client_id": "hub", "tmp_seq": 0, "kind": "set_ports",
+                      "payload": {"node": entry.id,
+                                  "ports_out": [{"name": port.name, "type": port.type,
+                                                 "shape": wanted, "dtype": port.dtype or "float32"}]}}
+                seq = hub.apply_op(op)
+                states = hub.run_l0()
+                await hub.broadcast(proto.OpBroadcast(seq=seq, op=op))
+                for state in states:
+                    await hub.broadcast(state)
+        return JSONResponse({"ok": True, "spec": effective, "seq": hub.seq,
+                             "node_states": [s.model_dump(mode="json") for s in states]})
+
     @app.post("/api/datasets")
     def add_dataset_folder(request: dict[str, Any]) -> JSONResponse:
         """다른 곳의 폴더를 data/ 에 링크로 등록한다. 복사하지 않는다."""
@@ -803,7 +852,14 @@ def create_app(
         spec = datasets.describe(dataset, hub.data_dir) if dataset not in ("teacher", "noise") else None
         if dataset not in ("teacher", "noise") and spec is None:
             return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {dataset}"}, status_code=400)
+        recipe = options.get("recipe")
+        attached = ((hub.store.ir.experiment or {}).get("data") or {})
+        if recipe is None and attached.get("name") == dataset:
+            recipe = attached.get("recipe")
         if spec is not None:
+            spec = datasets.resolve(spec, recipe)
+            if spec.get("problem"):
+                return JSONResponse({"error": f"{spec['label']}: {spec['problem']}"}, status_code=400)
             given = list(entry.ports_out[0].shape or [])
             wanted = ", ".join(str(dim) for dim in ["B", *spec["shape"]])
             if given[1:] != spec["shape"]:
@@ -862,6 +918,7 @@ def create_app(
             "num_classes": spec["classes"] if spec else int(hub.rt.get("num_classes", 10)),
             "dataset": dataset,
             "data_dir": str(hub.data_dir),
+            "recipe": spec["recipe"] if spec else None,
             "eval_every": int(options.get("eval_every", 100)),
             "batch": int(options.get("batch", 32)),
             "steps": int(options.get("steps", 200)),

@@ -721,3 +721,31 @@ def test_a_new_graph_can_start_from_a_dataset(tmp_path):
     finally:
         app.state.hub.kernel.stop()
         app.state.hub.l1.stop()
+
+
+def test_recipe_preview_and_graph_data(tmp_path):
+    """정제 화면의 미리보기와, 레시피를 그래프에 붙이며 Input을 맞추는 경로."""
+    from test_datasets import write_image_folder
+
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        app.state.hub.data_dir = tmp_path / "data"
+        write_image_folder(tmp_path / "data")
+        body = client.post("/api/datasets/shapes/preview", headers=auth,
+                           json={"recipe": {"size": 8, "channels": 1}}).json()
+        assert body["spec"]["shape"] == [1, 8, 8] and body["spec"]["split"] == {"train": 5, "val": 1}
+        assert body["preview"]["thumbnails"]["labels"] == ["blue", "red"]
+
+        client.post("/api/new", headers=auth, json={"dataset": "shapes"})
+        out = client.post("/api/data", headers=auth,
+                          json={"name": "shapes", "recipe": {"size": 8, "channels": 1}}).json()
+        assert out["ok"] and out["spec"]["shape"] == [1, 8, 8]
+        graph = client.get("/api/graph", headers=auth).json()["graph"]
+        assert graph["experiment"]["data"]["recipe"]["size"] == 8
+        entry = next(node for node in graph["graph"]["nodes"] if node["type"] == "torchflow.Input")
+        assert entry["ports_out"][0]["shape"] == ["B", 1, 8, 8]
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()
