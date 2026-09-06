@@ -42,6 +42,7 @@ interface State {
   paletteAt: { x: number; y: number } | null;
 
   setGraph: (graph: ModuleGraph, seq: number) => void;
+  closeGraph: () => void;
   applyNodeState: (state: NodeState) => void;
   applyNodeStates: (states: Record<string, NodeState>) => void;
   setConnected: (connected: boolean) => void;
@@ -101,6 +102,12 @@ export const useStore = create<State>((set, get) => ({
       scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" },
                ...prev.scopes.slice(1)],
     })),
+  // 첫 화면으로 돌아간다. 편집 히스토리와 노드 상태는 그래프에 딸린 것이라 함께 비운다.
+  closeGraph: () =>
+    set({ graph: null, seq: 0, nodeStates: {}, selected: null, focused: null,
+          scopes: [{ name: "$graph", label: "Net", callPath: "" }],
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null,
+          totals: { params: 0, band: null, batch: 64 } }),
   applyNodeState: (state) =>
     // L1은 L0가 채운 spec 위에 grad 배지를 얹는다 - 축이 다르므로 덮어쓰지 않고 합친다.
     set((prev) => {

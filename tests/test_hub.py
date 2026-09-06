@@ -336,3 +336,18 @@ def test_new_graph_starts_empty_and_saves(tmp_path):
     finally:
         app.state.hub.kernel.stop()
         app.state.hub.l1.stop()
+
+
+def test_close_returns_to_the_start_screen(app, client):
+    """그래프를 닫으면 첫 화면 상태로 돌아간다(§2.2). 커널은 살아 있다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    assert client.get("/api/health", headers=auth).json()["graph_open"] is True
+
+    assert client.post("/api/close", headers=auth).json()["ok"] is True
+    health = client.get("/api/health", headers=auth).json()
+    assert health["graph_open"] is False
+    assert client.get("/api/graph", headers=auth).status_code == 409
+
+    # 다시 열 수 있어야 한다 - 닫기가 종착역이 아니다.
+    assert client.post("/api/new", headers=auth, json={"name": "next"}).status_code == 200
+    assert client.get("/api/health", headers=auth).json()["graph_open"] is True

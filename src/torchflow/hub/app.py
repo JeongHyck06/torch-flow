@@ -386,6 +386,20 @@ def create_app(
         hub.open(ModuleGraph(graph=Graph(name=name)))
         return JSONResponse({"ok": True, "name": name})
 
+    @app.post("/api/close")
+    def close_graph() -> JSONResponse:
+        """그래프를 닫고 첫 화면으로 돌아간다(§2.2).
+
+        커널은 살려 둔다 - 다음 그래프를 열 때 다시 기동하는 비용(콜드 <5 s)을
+        치를 이유가 없다.
+        """
+        hub.store = None
+        hub.engine = None
+        hub.graph_path = None
+        hub.node_states.clear()
+        hub.total_params = 0
+        return JSONResponse({"ok": True})
+
     @app.post("/api/save")
     def save_graph(request: dict[str, Any] | None = None) -> JSONResponse:
         """그래프를 파일로 쓴다. 경로가 없으면 state-dir 안에 만든다."""

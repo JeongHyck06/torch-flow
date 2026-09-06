@@ -1,7 +1,7 @@
 // 상단 바 - Figma Screens 기준. 크롬은 무채색이고 색은 그래프에서만 나온다.
 
 import { useEffect, useState } from "react";
-import { estimateMemory, runProbe, saveGraph } from "../api";
+import { closeGraph, estimateMemory, runProbe, saveGraph } from "../api";
 import { useStore } from "../store";
 import { formatCount } from "../theme";
 
@@ -23,6 +23,12 @@ export function TopBar() {
   const dirty = useStore((state) => state.dirty);
   const setDirty = useStore((state) => state.setDirty);
   const [saving, setSaving] = useState<string | null>(null);
+
+  const home = async () => {
+    if (dirty && !window.confirm("저장하지 않은 편집이 있습니다. 첫 화면으로 나갈까요?")) return;
+    await closeGraph();
+    useStore.getState().closeGraph();
+  };
 
   const save = async () => {
     setSaving("…");
@@ -53,11 +59,11 @@ export function TopBar() {
 
   return (
     <header className="topbar">
-      <span className="wordmark">
+      <button className="wordmark wordmark--home" onClick={home} title="첫 화면으로">
         <span className="wordmark__dot" aria-hidden />
         torchflow
         <span className="wordmark__version">0.0.1</span>
-      </span>
+      </button>
 
       <span className="savestate">
         <button className="savestate__button" onClick={save} disabled={saving === "…"}>

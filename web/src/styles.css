@@ -65,6 +65,9 @@ body {
 .totals { display: flex; align-items: center; gap: 14px; margin-left: auto; color: var(--text-secondary); }
 .totals__item { font-family: var(--font-mono); font-size: 11px; }
 
+.wordmark--home { background: none; border: 0; cursor: pointer; padding: 0; }
+.wordmark--home:hover { color: var(--text-primary); }
+
 .savestate { display: flex; align-items: center; gap: 8px; }
 .savestate__button {
   background: none; border: 1px solid var(--border-default); border-radius: 6px;

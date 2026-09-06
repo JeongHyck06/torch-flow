@@ -70,6 +70,12 @@ export async function newGraph(name = "untitled"): Promise<{ ok?: boolean; error
   return response.json();
 }
 
+/** 그래프를 닫고 첫 화면으로. 커널은 살아 있다. */
+export async function closeGraph(): Promise<{ ok?: boolean }> {
+  const response = await fetch("/api/close", { method: "POST", headers: authHeaders() });
+  return response.json();
+}
+
 export async function saveGraph(path?: string):
     Promise<{ ok?: boolean; path?: string; problems?: string[]; error?: string }> {
   const response = await fetch("/api/save", {
