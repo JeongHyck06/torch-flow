@@ -17,7 +17,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, codegen, paper, protocol as proto
+from .. import __version__, codegen, datasets, paper, protocol as proto
 from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
@@ -48,6 +48,8 @@ class Hub:
         # L2 학습 run들. hub는 워커를 띄우고 파일을 읽을 뿐 학습을 돌리지 않는다(§5.5.3).
         self.runs_dir = Path.cwd() / "runs"
         self.l2: dict[str, l2.RunHandle] = {}
+        # 내려받은 데이터셋 자리. hub는 파일 유무와 다운로드만 알고 적재는 워커가 한다.
+        self.data_dir = Path.cwd() / "data"
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
         self.attached = False
@@ -734,6 +736,25 @@ def create_app(
             manifest=request.get("manifest"))
         return JSONResponse({"ok": True, "run_id": run_id})
 
+    @app.get("/api/datasets")
+    def list_datasets() -> JSONResponse:
+        """내장 데이터셋과 내려받았는지 여부. 다운로드는 명시 버튼으로만(§3.1)."""
+        return JSONResponse({"datasets": [
+            {"name": name, "label": entry["label"], "shape": entry["shape"],
+             "classes": entry["classes"], "size_mb": entry["size_mb"],
+             "available": datasets.available(name, hub.data_dir)}
+            for name, entry in datasets.CATALOGUE.items()]})
+
+    @app.post("/api/datasets/{name}/download")
+    def download_dataset(name: str) -> JSONResponse:
+        if name not in datasets.CATALOGUE:
+            return JSONResponse({"error": f"unknown dataset {name}"}, status_code=404)
+        try:
+            written = datasets.download(name, hub.data_dir)
+        except OSError as exc:
+            return JSONResponse({"error": f"내려받지 못했습니다: {exc}"}, status_code=502)
+        return JSONResponse({"ok": True, "files": [str(path) for path in written]})
+
     @app.post("/api/train")
     def start_training(request: dict[str, Any] | None = None) -> JSONResponse:
         """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
@@ -748,6 +769,27 @@ def create_app(
         if entry is None or not entry.ports_out:
             return JSONResponse(
                 {"error": "Input 노드와 입력 규격이 있어야 학습할 수 있습니다"}, status_code=400)
+
+        # 실제 데이터셋이면 워커를 띄우기 전에 규격을 맞춰 본다. 워커 안에서 터지면 사람은
+        # stdout을 뒤져야 하고, 여기서 말하면 Input 노드를 고치면 된다.
+        dataset = options.get("dataset", "teacher")
+        spec = datasets.CATALOGUE.get(dataset)
+        if spec is not None:
+            given = list(entry.ports_out[0].shape or [])
+            wanted = ", ".join(str(dim) for dim in ["B", *spec["shape"]])
+            if given[1:] != spec["shape"]:
+                return JSONResponse({"error": f"{spec['label']}의 입력은 [{wanted}]입니다. "
+                                              f"Input 노드의 규격을 {wanted}로 바꾸세요 (지금 {given})"},
+                                    status_code=400)
+            sink = next((node for node in graph.nodes if node.type == "torchflow.Output"), None)
+            logits = ((hub.node_states.get(sink.id) or {}).get("spec") or {}).get("shape") if sink else None
+            if logits and logits[-1] != spec["classes"]:
+                return JSONResponse({"error": f"{spec['label']}는 {spec['classes']}개 클래스입니다. "
+                                              f"출력이 [B, {spec['classes']}]여야 합니다 (지금 {logits})"},
+                                    status_code=400)
+            if not datasets.available(dataset, hub.data_dir):
+                return JSONResponse({"error": f"{spec['label']} 파일이 없습니다. 먼저 내려받으세요",
+                                     "download": dataset}, status_code=400)
 
         try:
             code = codegen.generate(hub.store.ir, version=__version__,
@@ -781,7 +823,10 @@ def create_app(
             "class_name": _class_name(graph.name),
             "model_args": model_args,
             "input_shape": list(entry.ports_out[0].shape or []),
-            "num_classes": int(hub.rt.get("num_classes", 10)),
+            "num_classes": spec["classes"] if spec else int(hub.rt.get("num_classes", 10)),
+            "dataset": dataset,
+            "data_dir": str(hub.data_dir),
+            "eval_every": int(options.get("eval_every", 100)),
             "batch": int(options.get("batch", 32)),
             "steps": int(options.get("steps", 200)),
             "optimizer": options.get("optimizer", "adamw"),

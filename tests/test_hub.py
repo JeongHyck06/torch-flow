@@ -677,3 +677,15 @@ def test_merge_survives_concurrent_polling(tmp_path):
 
     assert handle.cursor == events.stat().st_size
     assert handle.state == "stopped" and handle.step == 1499
+
+
+def test_training_on_a_dataset_checks_the_input_spec(app, client, tmp_path):
+    """MNIST는 [B, 1, 28, 28]이다. 규격이 다르면 워커를 띄우기 전에 말한다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.data_dir = tmp_path / "data"
+    listed = client.get("/api/datasets", headers=auth).json()["datasets"]
+    assert [(entry["name"], entry["available"]) for entry in listed] == [("mnist", False)]
+
+    response = client.post("/api/train", headers=auth, json={"dataset": "mnist", "steps": 2})
+    assert response.status_code == 400 and "1, 28, 28" in response.json()["error"]
+    assert client.post("/api/datasets/nope/download", headers=auth).status_code == 404

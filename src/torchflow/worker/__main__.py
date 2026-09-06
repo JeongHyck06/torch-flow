@@ -25,6 +25,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from ..datasets import CATALOGUE, load as load_dataset
+
 HEARTBEAT_EVERY = 2.0      # 초. hub가 이 파일의 mtime으로 생존을 본다(§5.5.3).
 
 
@@ -74,20 +76,35 @@ def build_model(job: dict[str, Any]):
 
 
 def build_data(job: dict[str, Any], device, generator, rng_state=None):
-    """(입력, 타깃) 배치를 무한히 내놓는 것.
+    """``(배치 이터레이터, 검증 함수 또는 None)``.
 
     기본은 **배울 것이 있는 합성 과제**다: 고정된 무작위 teacher 사영의 argmax를
     라벨로 쓴다. 순수 난수 라벨이면 손실이 ln(C)에서 평평해서 학습 루프가 도는지조차
     구분되지 않는다. 네트워크도 디스크도 건드리지 않는다(§3.1: 다운로드는 명시
-    버튼으로만). 실제 데이터셋 노드는 Experiment Graph와 함께 온다.
+    버튼으로만).
+
+    ``dataset``이 내장 데이터셋 이름이면(``datasets.CATALOGUE``) 내려받아 둔 train
+    분할을 epoch마다 섞어 돌고, test 분할로 검증한다.
     """
     import torch
 
+    name = job.get("dataset", "teacher")
+    batch = int(job.get("batch", 32))
+    if name in CATALOGUE:
+        splits = load_dataset(name, Path(job.get("data_dir", "data")))
+        if rng_state is not None:
+            generator.set_state(rng_state)
+        # ponytail: 재개하면 epoch의 첫 배치부터 다시 본다. epoch 안 위치는 ckpt에 없다.
+        return (_epochs(torch, splits["train"], batch, device, generator),
+                _evaluator(torch, splits["test"], device))
+
     shape = job["input_shape"]
     classes = int(job.get("num_classes") or 10)
-    batch = int(job.get("batch", 32))
-    learnable = job.get("dataset", "teacher") != "noise"
+    return _synthetic(torch, shape, classes, batch, device, generator,
+                      learnable=name != "noise", rng_state=rng_state), None
 
+
+def _synthetic(torch, shape, classes, batch, device, generator, *, learnable, rng_state):
     features = 1
     for dim in shape[1:]:
         features *= int(dim)
@@ -104,6 +121,37 @@ def build_data(job: dict[str, Any], device, generator, rng_state=None):
         else:
             targets = (inputs.flatten(1) @ teacher).argmax(dim=1)
         yield inputs.to(device), targets.to(device)
+
+
+def _epochs(torch, split, batch, device, generator):
+    """epoch마다 새로 섞는다. 순서는 데이터 generator에서 나오므로 시드가 같으면 같다."""
+    inputs, targets = split
+    while True:
+        order = torch.randperm(len(inputs), generator=generator)
+        for start in range(0, len(order) - batch + 1, batch):
+            index = order[start:start + batch]
+            yield inputs[index].to(device), targets[index].to(device)
+
+
+def _evaluator(torch, split, device, batch: int = 1000):
+    """test 분할 전체의 loss와 정확도. eval 모드로 돌고 원래 모드로 돌려놓는다."""
+    inputs, targets = split
+
+    def evaluate(model, loss_fn) -> dict[str, float]:
+        was_training = model.training
+        model.eval()
+        total_loss = correct = 0.0
+        with torch.no_grad():
+            for start in range(0, len(inputs), batch):
+                x = inputs[start:start + batch].to(device)
+                y = targets[start:start + batch].to(device)
+                output = model(x)
+                total_loss += float(loss_fn(output, y)) * len(y)
+                correct += float((output.argmax(dim=1) == y).sum())
+        model.train(was_training)
+        return {"val_loss": total_loss / len(inputs), "val_acc": correct / len(inputs)}
+
+    return evaluate
 
 
 def make_optimizer(torch, model, job: dict[str, Any]):
@@ -240,8 +288,8 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
                 group["weight_decay"] = float(job.get("weight_decay", group["weight_decay"]))
             torch.set_rng_state(state["rng"])
             resumed = int(state["step"])
-        data = build_data(job, device, generator,
-                          rng_state=state["data_rng"] if state else None)
+        data, evaluate = build_data(job, device, generator,
+                                    rng_state=state["data_rng"] if state else None)
     except Exception as exc:
         events.write("error", stage="setup", message=f"{type(exc).__name__}: {exc}",
                      traceback=traceback.format_exc())
@@ -249,6 +297,7 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
         return
 
     total = int(job.get("steps", 200))
+    eval_every = max(1, int(job.get("eval_every", 100)))
     nan_policy = job.get("nan_policy", "pause")
     # events.jsonl은 기계가 읽고 stdout은 사람이 읽는다. 학습 스크립트를 직접
     # 돌릴 때 보던 그 출력이 UI의 "학습 출력" 탭에 그대로 나온다.
@@ -329,12 +378,23 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
             value = float(loss.detach())
             lr = float(optimizer.param_groups[0]["lr"])
             base = base_lr_of(scheduler, optimizer)
+            # 분류면 배치 정확도도 적는다 - loss 숫자만으로는 입문자가 "되고 있나"를 못 읽는다.
+            acc = (float((output.argmax(dim=1) == targets).float().mean())
+                   if output.dim() == 2 and targets.dim() == 1 else None)
             events.write("scalar", step=step, loss=value, lr=lr, grad_norm=float(grad_norm),
+                         **({"acc": acc} if acc is not None else {}),
                          **({"base_lr": base} if scheduler is not None else {}))
-            print(f"step {step:>6} / {total}   loss {value:.4f}   lr {lr:.3g}"
+            print(f"step {step:>6} / {total}   loss {value:.4f}"
+                  + (f"   acc {acc:.3f}" if acc is not None else "")
+                  + f"   lr {lr:.3g}"
                   + (f" = {base:.3g} x {lr / base if base else 0:.3f}"
                      if scheduler is not None else "")
                   + f"   |g| {float(grad_norm):.3f}")
+        if evaluate is not None and (step % eval_every == 0 or step == total):
+            metrics = evaluate(model, loss_fn)
+            events.write("scalar", step=step, **metrics)
+            print(f"eval {step:>6}          val_loss {metrics['val_loss']:.4f}"
+                  f"   val_acc {metrics['val_acc']:.4f}")
         now = time.monotonic()
         if now - last_beat > HEARTBEAT_EVERY:
             last_beat = now

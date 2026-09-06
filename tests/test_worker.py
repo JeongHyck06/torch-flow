@@ -177,3 +177,36 @@ def test_a_stopped_run_leaves_a_checkpoint(tmp_path):
 
     assert set(torch.load(run_dir / "ckpt.pt")) == {"step", "model", "optimizer",
                                                     "scheduler", "rng", "data_rng"}
+
+
+def test_a_dataset_job_logs_accuracy_and_validation(tmp_path):
+    """내장 데이터셋이면 train acc를 매 로그에, test 분할의 val_acc를 eval_every마다 적는다."""
+    from test_datasets import write_fake_mnist
+    from torchflow.ir import ModuleGraph
+
+    write_fake_mnist(tmp_path / "data")
+    ir = ModuleGraph.model_validate({"graph": {
+        "name": "Tiny",
+        "instances": {"i1": {"label": "fc", "type": "torch.nn.Linear",
+                             "args": {"in_features": 784, "out_features": 10}}},
+        "nodes": [
+            {"id": "n0", "label": "x", "type": "torchflow.Input",
+             "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 1, 28, 28],
+                            "dtype": "float32"}]},
+            {"id": "n1", "label": "flat", "type": "torch.flatten", "args": {"start_dim": 1}},
+            {"id": "n2", "label": "fc", "call": "i1", "method": "forward"},
+            {"id": "n3", "label": "out", "type": "torchflow.Output"}],
+        "edges": [["n0.x", "n1.input"], ["n1.output", "n2.input"], ["n2.output", "n3.input"]],
+    }})
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "model.py").write_text(codegen.generate(ir, version="0.0.1"), encoding="utf-8")
+    job = {"code": str(run_dir / "model.py"), "class_name": "Tiny", "model_args": {"seed": 0},
+           "input_shape": ["B", 1, 28, 28], "num_classes": 10,
+           "dataset": "mnist", "data_dir": str(tmp_path / "data"), "eval_every": 2,
+           "batch": 4, "steps": 4, "lr": 1e-2, "log_every": 1, "seed": 0, "device": "cpu"}
+    train(job, run_dir)
+
+    scalars = events(run_dir, "scalar")
+    assert all("acc" in event for event in scalars if "loss" in event)
+    assert [event["step"] for event in scalars if "val_acc" in event] == [2, 4]
