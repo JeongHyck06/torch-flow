@@ -147,3 +147,16 @@ def test_edits_inside_a_composite_stay_there(minivit):
 
     assert any(node.id == "n-drop" for node in store.ir.composites["MLP"].nodes)
     assert all(node.id != "n-drop" for node in store.ir.graph.nodes)
+
+
+def test_set_param_reaches_node_args_too(minivit):
+    """호출 인자(torch.mean의 dim)는 인스턴스가 아니라 노드에 붙는다."""
+    store = GraphStore(minivit)
+    store.apply({"kind": "set_param", "payload": {"node": "01J9Q4B4", "path": "dim", "value": 2}})
+
+    node = next(node for node in store.ir.graph.nodes if node.id == "01J9Q4B4")
+    assert node.args["dim"] == 2
+
+    # null은 삭제다 - 기본값으로 되돌리는 역 op가 성립해야 한다(§8.2.3).
+    store.apply({"kind": "set_param", "payload": {"node": "01J9Q4B4", "path": "dim", "value": None}})
+    assert "dim" not in next(n for n in store.ir.graph.nodes if n.id == "01J9Q4B4").args

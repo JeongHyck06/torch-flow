@@ -1,10 +1,16 @@
 // Inspector - 박스 없는 `라벨 …… 값` 조밀한 행 (Figma Screens).
-// 파라미터 편집 폼은 M5(IR 편집 op). 지금은 읽기 전용이다.
+//
+// 파라미터는 그 자리에서 고친다: 값을 바꾸면 `set_param` op가 나가고 서버가
+// 승인한 그래프를 다시 읽는다(§8.2.2). `$hp`/`$p`/`$expr` 참조는 읽기 전용으로
+// 둔다 - 참조를 푸는 UI는 승격(`promote_hp`)과 함께 와야 한다.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { fetchLogs } from "../api";
+import { fetchLogs, fetchRegistry } from "../api";
 import type { LogLine } from "../api";
+import { applyEdit } from "../edit";
+import { op } from "../graph/ops";
+import type { Block } from "../graph/ops";
 import { currentScope, useStore } from "../store";
 import { formatRatio, formatShape } from "../theme";
 
@@ -19,6 +25,8 @@ export function Inspector() {
         ? `${scopes[scopes.length - 1].callPath}/${selected}` : selected)
     : "";
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [blocks, setBlocks] = useState<Block[]>([]);
+  useEffect(() => { fetchRegistry().then(setBlocks).catch(() => undefined); }, []);
 
   // 이 노드가 찍은 stdout/stderr(§5.6.1). 하단 로그 탭과 같은 테이블을 읽는다.
   useEffect(() => {
@@ -48,8 +56,17 @@ export function Inspector() {
   const node = scope.nodes?.find((candidate) => candidate.id === selected);
   const instance = node?.call ? scope.instances?.[node.call] : undefined;
   const state = states[stateKey];
-  const args = { ...(instance?.args ?? {}), ...(node?.args ?? {}) };
   const badges = state?.badges ?? {};
+  const composite = scopes[scopes.length - 1].name === "$graph"
+    ? null : scopes[scopes.length - 1].name;
+  const kind = (node?.type ?? instance?.type ?? "").split("@")[0];
+  const schema = blocks.find((block) => block.type.split("@")[0] === kind)?.params ?? {};
+  // 인자는 두 곳에 있다: 모듈 생성 인자는 인스턴스에, 호출 인자는 노드에.
+  const owner = instance
+    ? { instance: node?.call as string, args: instance.args ?? {} }
+    : { node: selected, args: node?.args ?? {} };
+  const fields = { ...Object.fromEntries(Object.keys(schema).map((name) => [name, undefined])),
+                   ...owner.args };
 
   return (
     <aside className="inspector" aria-label="Inspector">
@@ -77,12 +94,26 @@ export function Inspector() {
         ) : null}
       </dl>
 
-      {Object.keys(args).length > 0 && (
+      {Object.keys(fields).length > 0 && (
         <>
           <h3>Parameters</h3>
           <dl className="rows">
-            {Object.entries(args).map(([key, value]) => (
-              <div key={key}><dt>{key}</dt><dd>{renderValue(value)}</dd></div>
+            {Object.entries(fields).map(([key, value]) => (
+              <div key={key}>
+                <dt>{key}</dt>
+                <dd>
+                  <ParamField
+                    name={key}
+                    value={value}
+                    schema={schema[key]}
+                    onCommit={(next) => void applyEdit(op("set_param", {
+                      ...(composite ? { composite } : {}),
+                      ...(owner.instance ? { instance: owner.instance } : { node: owner.node }),
+                      path: key, value: next,
+                    }))}
+                  />
+                </dd>
+              </div>
             ))}
           </dl>
         </>
@@ -135,6 +166,99 @@ export function Inspector() {
   );
 }
 
+/**
+ * 값 하나를 고치는 칸. 타입은 레지스트리 스키마에서 오고, 없으면 값에서 짐작한다.
+ *
+ * 커밋 시점은 blur와 Enter다 - 글자 하나마다 op를 보내면 journal이 타자 기록이 된다.
+ * 슬라이더와 pointer-up 코얼레싱(§5.5.1)은 아직 없다.
+ */
+function ParamField({ name, value, schema, onCommit }: {
+  name: string;
+  value: unknown;
+  schema?: { type: string; default?: unknown };
+  onCommit: (next: unknown) => void;
+}) {
+  const reference = refOf(value);
+  const kind = schema?.type ?? typeOf(value);
+  const [draft, setDraft] = useState(() => text(value));
+  const committed = useRef(text(value));
+
+  useEffect(() => { setDraft(text(value)); committed.current = text(value); }, [value]);
+
+  if (reference) {
+    // 참조는 값이 아니라 다른 곳을 가리킨다. 여기서 고치면 참조가 끊긴다.
+    return <span className="mono" title="하이퍼파라미터 참조 - 상단에서 값을 바꿉니다">{reference}</span>;
+  }
+
+  if (kind === "bool") {
+    return (
+      <input
+        type="checkbox" checked={value === true} aria-label={name}
+        onChange={(event) => onCommit(event.target.checked)}
+      />
+    );
+  }
+
+  const commit = () => {
+    if (draft === committed.current) return;
+    committed.current = draft;
+    onCommit(parse(draft, kind));
+  };
+
+  return (
+    <input
+      className="mono field"
+      value={draft}
+      placeholder={schema?.default !== undefined ? String(schema.default) : "값 없음"}
+      spellCheck={false}
+      aria-label={name}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") { commit(); (event.target as HTMLInputElement).blur(); }
+        if (event.key === "Escape") setDraft(committed.current);
+      }}
+    />
+  );
+}
+
+function refOf(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 1 && entries[0][0].startsWith("$")) {
+    return `${entries[0][0]}: ${entries[0][1]}`;
+  }
+  return null;
+}
+
+function typeOf(value: unknown): string {
+  if (typeof value === "boolean") return "bool";
+  if (typeof value === "number") return Number.isInteger(value) ? "int" : "float";
+  return "str";
+}
+
+function text(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/** 빈 칸은 null - 서버가 인자를 지우고 블록의 기본값으로 돌아간다. */
+function parse(draft: string, kind: string): unknown {
+  const trimmed = draft.trim();
+  if (!trimmed) return null;
+  if (kind === "int" || kind === "float") {
+    const parsed = Number(trimmed);
+    return Number.isNaN(parsed) ? trimmed : parsed;
+  }
+  if (trimmed === "true" || trimmed === "false") return trimmed === "true";
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
 /** 히스토그램 스파크라인. 차트 라이브러리 없이 SVG 막대 하나면 충분하다. */
 function Histogram({ bins }: { bins: number[] }) {
   const peak = Math.max(...bins, 1);
@@ -155,15 +279,4 @@ function Histogram({ bins }: { bins: number[] }) {
       ))}
     </svg>
   );
-}
-
-function renderValue(value: unknown): string {
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length === 1 && entries[0][0].startsWith("$")) {
-      return `${entries[0][0]}: ${String(entries[0][1])}`;
-    }
-    return JSON.stringify(value);
-  }
-  return String(value);
 }

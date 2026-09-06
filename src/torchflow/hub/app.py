@@ -252,8 +252,12 @@ def create_app(
         return JSONResponse(hub.registry())
 
     @app.post("/api/ops")
-    def ops(op: dict[str, Any]) -> JSONResponse:
-        """WebSocket 폴백 경로. seq 규약은 WS와 동일하다(§8.2.2)."""
+    async def ops(op: dict[str, Any]) -> JSONResponse:
+        """편집 op 하나. seq 규약은 WS와 동일하다(§8.2.2).
+
+        보낸 클라이언트는 응답으로 결과를 받고, 붙어 있는 다른 클라이언트는
+        WebSocket 브로드캐스트로 같은 편집을 본다.
+        """
         if hub.store is None:
             return no_graph()
         try:
@@ -261,6 +265,9 @@ def create_app(
         except OpError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         states = hub.run_l0()
+        await hub.broadcast(proto.OpBroadcast(seq=seq, op=op))
+        for state in states:
+            await hub.broadcast(state)
         return JSONResponse(
             {"seq": seq, "node_states": [s.model_dump(mode="json") for s in states]}
         )

@@ -63,10 +63,12 @@ class GraphStore:
         elif kind == "remove_node":
             self._remove_node(scope, payload)
         elif kind == "set_param":
-            instance = scope.instances.get(payload["instance"])
-            if instance is None:
-                raise OpError(f"unknown instance {payload['instance']}")
-            instance.args[payload["path"]] = payload["value"]
+            # 인자는 인스턴스(모듈 생성 인자)나 노드(호출 인자) 어느 쪽에도 있다.
+            target = self._param_target(scope, payload)
+            if payload["value"] is None:
+                target.args.pop(payload["path"], None)   # 값을 지우면 기본값으로 돌아간다
+            else:
+                target.args[payload["path"]] = payload["value"]
         elif kind == "set_switch_active":
             instance = scope.instances.get(payload["instance"])
             if instance is None:
@@ -82,6 +84,17 @@ class GraphStore:
             edge = (payload["src"], payload["dst"])
             if edge in scope.edges:
                 scope.edges.remove(edge)
+
+    def _param_target(self, scope, payload: dict[str, Any]):
+        if payload.get("instance"):
+            instance = scope.instances.get(payload["instance"])
+            if instance is None:
+                raise OpError(f"unknown instance {payload['instance']}")
+            return instance
+        node = next((n for n in scope.nodes if n.id == payload.get("node")), None)
+        if node is None:
+            raise OpError(f"unknown node {payload.get('node')}")
+        return node
 
     def _add_node(self, scope, payload: dict[str, Any]) -> None:
         """노드 하나(+ 필요하면 그 모듈 인스턴스)를 스코프에 넣는다.

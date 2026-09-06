@@ -1,6 +1,8 @@
 // hub와의 통신. WebSocket 하나 + REST 몇 개(§8.2.2).
 
 import type { ModuleGraph, NodeState, ToBrowser } from "./types.gen";
+import { clientId } from "./graph/ops";
+import type { Block, Op } from "./graph/ops";
 import { useStore } from "./store";
 
 function authHeaders(): HeadersInit {
@@ -50,6 +52,51 @@ export async function fetchStart(): Promise<StartInfo> {
   const response = await fetch("/api/start", { headers: authHeaders() });
   if (!response.ok) throw new Error(`start: ${response.status}`);
   return response.json();
+}
+
+export async function fetchRegistry(): Promise<Block[]> {
+  const response = await fetch("/api/registry", { headers: authHeaders() });
+  if (!response.ok) return [];
+  return (await response.json()).blocks ?? [];
+}
+
+/** 빈 그래프에서 시작한다. 첫 화면의 진입점 하나(§2.2). */
+export async function newGraph(name = "untitled"): Promise<{ ok?: boolean; error?: string }> {
+  const response = await fetch("/api/new", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return response.json();
+}
+
+export async function saveGraph(path?: string):
+    Promise<{ ok?: boolean; path?: string; problems?: string[]; error?: string }> {
+  const response = await fetch("/api/save", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(path ? { path } : {}),
+  });
+  return response.json();
+}
+
+/**
+ * 편집 op 하나를 권위 그래프에 보낸다.
+ *
+ * 서버가 seq를 붙여 승인하고 같은 응답에 L0 결과를 실어 준다. `ponytail: 낙관
+ * 적용 대신 승인 후 재조회. 편집 규칙을 클라이언트에도 복제하는 것보다 왕복
+ * 한 번이 싸다 - 로컬 hub에서 한 자릿수 ms다.`
+ */
+export async function sendOp(operation: Op):
+    Promise<{ seq: number; node_states: NodeState[]; error?: string }> {
+  const response = await fetch("/api/ops", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(operation),
+  });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error ?? `op: ${response.status}`);
+  return body;
 }
 
 export async function openGraph(path: string): Promise<{ ok?: boolean; error?: string }> {
@@ -160,6 +207,11 @@ export async function estimateMemory(batch: number) {
   return response.json();
 }
 
+async function refreshGraph(): Promise<void> {
+  const { graph, seq } = await fetchGraph();
+  useStore.getState().setGraph(graph, seq);
+}
+
 /** WebSocket 연결. 끊기면 다시 붙고 `Resync`로 놓친 op를 메운다. */
 export function connect(): () => void {
   const { token } = useStore.getState();
@@ -192,6 +244,12 @@ export function connect(): () => void {
             store.setProbeObjective(String(message.badges.probe_objective));
           }
           break;
+        case "OpBroadcast": {
+          // 다른 클라이언트의 편집. 내 op는 이미 응답으로 반영했으므로 건너뛴다.
+          const author = (message.op as { client_id?: string } | undefined)?.client_id;
+          if (author !== clientId()) void refreshGraph();
+          break;
+        }
         case "KernelStatus":
           store.setKernel(message.alive ?? false);
           break;

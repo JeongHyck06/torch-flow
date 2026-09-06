@@ -1,11 +1,12 @@
 // 클라이언트 상태 (Zustand).
 //
-// 서버가 권위를 갖는다(§8.2.2): op는 낙관적으로 먼저 그리고 서버가 seq를 붙여
-// 승인한다. 지금은 뷰어라 편집 op가 없으므로 NodeState 수신과 스코프·선택만
-// 여기서 관리한다. 낙관 적용 큐는 M5에서 이 자리에 붙는다.
+// 서버가 권위를 갖는다(§8.2.2): 편집 op를 보내고 서버가 seq를 붙여 승인한 그래프를
+// 다시 읽는다. 실행 취소 스택은 클라이언트별이며 **역 op**를 담는다(§8.2.3) -
+// 다른 클라이언트의 op는 여기 들어오지 않는다.
 
 import { create } from "zustand";
 import type { ModuleGraph, NodeState } from "./types.gen";
+import type { Op } from "./graph/ops";
 
 export interface Scope {
   name: string;        // "$graph" 또는 컴포지트 이름
@@ -33,6 +34,12 @@ interface State {
   /** 노드 키 -> 좌표. layout.json이 정본이고 IR은 좌표를 모른다(§10.1). */
   positions: Record<string, { x: number; y: number }>;
   runPanel: boolean;
+  /** 역 op 스택. 스택에 든 op를 그대로 보내면 되돌아간다(§8.2.3). */
+  undoStack: Op[];
+  redoStack: Op[];
+  dirty: boolean;                // 마지막 저장 이후 편집이 있었나
+  /** 팔레트를 띄운 캔버스 좌표. null이면 닫혀 있다(§4.2). */
+  paletteAt: { x: number; y: number } | null;
 
   setGraph: (graph: ModuleGraph, seq: number) => void;
   applyNodeState: (state: NodeState) => void;
@@ -47,6 +54,13 @@ interface State {
   setPosition: (key: string, position: { x: number; y: number }) => void;
   setPositions: (positions: Record<string, { x: number; y: number }>) => void;
   setTotals: (totals: Partial<State["totals"]>) => void;
+  pushUndo: (inverse: Op, clearRedo?: boolean) => void;
+  takeUndo: () => Op | undefined;
+  pushRedo: (inverse: Op) => void;
+  takeRedo: () => Op | undefined;
+  setDirty: (dirty: boolean) => void;
+  openPalette: (at: { x: number; y: number }) => void;
+  closePalette: () => void;
   enterScope: (scope: Scope) => void;
   popToScope: (index: number) => void;
   select: (id: string | null) => void;
@@ -58,7 +72,7 @@ export function nodeStateKey(state: { node: string; path?: string }): string {
   return state.path ? `${state.path}/${state.node}` : state.node;
 }
 
-export const useStore = create<State>((set) => ({
+export const useStore = create<State>((set, get) => ({
   token: new URLSearchParams(location.search).get("token") ?? "",
   connected: false,
   seq: 0,
@@ -75,6 +89,10 @@ export const useStore = create<State>((set) => ({
   gradOverlay: true,
   positions: {},
   runPanel: false,
+  undoStack: [],
+  redoStack: [],
+  dirty: false,
+  paletteAt: null,
 
   setGraph: (graph, seq) =>
     // 브레드크럼의 뿌리는 그래프 이름이다.
@@ -116,6 +134,27 @@ export const useStore = create<State>((set) => ({
     set((prev) => ({ positions: { ...prev.positions, [key]: position } })),
   setPositions: (positions) => set((prev) => ({ positions: { ...prev.positions, ...positions } })),
   setTotals: (totals) => set((prev) => ({ totals: { ...prev.totals, ...totals } })),
+  // 새 편집은 redo를 무효로 만든다 - 다른 갈래로 갔으므로 앞으로 갈 곳이 없다.
+  // 다시 실행(redo)이 밀어 넣을 때는 남은 redo 스택을 지우지 않는다.
+  pushUndo: (inverse, clearRedo = true) =>
+    set((prev) => ({ undoStack: [...prev.undoStack, inverse],
+                     redoStack: clearRedo ? [] : prev.redoStack, dirty: true })),
+  takeUndo: () => {
+    const stack = get().undoStack;
+    if (!stack.length) return undefined;
+    set({ undoStack: stack.slice(0, -1) });
+    return stack[stack.length - 1];
+  },
+  pushRedo: (inverse) => set((prev) => ({ redoStack: [...prev.redoStack, inverse], dirty: true })),
+  takeRedo: () => {
+    const stack = get().redoStack;
+    if (!stack.length) return undefined;
+    set({ redoStack: stack.slice(0, -1) });
+    return stack[stack.length - 1];
+  },
+  setDirty: (dirty) => set({ dirty }),
+  openPalette: (paletteAt) => set({ paletteAt }),
+  closePalette: () => set({ paletteAt: null }),
   enterScope: (scope) =>
     set((prev) =>
       prev.scopes.some((existing) => existing.callPath === scope.callPath)

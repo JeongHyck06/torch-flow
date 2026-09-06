@@ -1,7 +1,7 @@
 // 상단 바 - Figma Screens 기준. 크롬은 무채색이고 색은 그래프에서만 나온다.
 
-import { useEffect } from "react";
-import { estimateMemory, runProbe } from "../api";
+import { useEffect, useState } from "react";
+import { estimateMemory, runProbe, saveGraph } from "../api";
 import { useStore } from "../store";
 import { formatCount } from "../theme";
 
@@ -20,6 +20,16 @@ export function TopBar() {
   const toggleGradOverlay = useStore((state) => state.toggleGradOverlay);
   const setProbing = useStore((state) => state.setProbing);
   const token = useStore((state) => state.token);
+  const dirty = useStore((state) => state.dirty);
+  const setDirty = useStore((state) => state.setDirty);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const save = async () => {
+    setSaving("…");
+    const result = await saveGraph();
+    setSaving(result.error ? result.error : null);
+    if (!result.error) setDirty(false);
+  };
 
   const probe = async () => {
     setProbing(true);
@@ -47,6 +57,15 @@ export function TopBar() {
         <span className="wordmark__dot" aria-hidden />
         torchflow
         <span className="wordmark__version">0.0.1</span>
+      </span>
+
+      <span className="savestate">
+        <button className="savestate__button" onClick={save} disabled={saving === "…"}>
+          저장
+        </button>
+        <span className="savestate__label">
+          {saving && saving !== "…" ? saving : dirty ? "저장 안 됨" : "저장됨"}
+        </span>
       </span>
 
       <nav className="crumbs" aria-label="그래프 경로">
