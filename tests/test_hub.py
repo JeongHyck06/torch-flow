@@ -749,3 +749,12 @@ def test_recipe_preview_and_graph_data(tmp_path):
     finally:
         app.state.hub.kernel.stop()
         app.state.hub.l1.stop()
+
+
+def test_detail_route_needs_a_probe_first(client):
+    auth = {"Authorization": f"token {TOKEN}"}
+    body = client.post("/api/detail", headers=auth, json={"node": "01J9Q4B5"}).json()
+    assert body["ok"] is False and "Probe" in body["error"]
+    client.post("/api/probe", headers=auth, json={})
+    body = client.post("/api/detail", headers=auth, json={"node": "01J9Q4B5"}).json()
+    assert body["ok"] and body["panels"]

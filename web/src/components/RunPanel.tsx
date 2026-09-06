@@ -7,17 +7,18 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchCurve, fetchLogs, fetchRuns } from "../api";
 import type { CurveSeries, LogLine, RunInfo } from "../api";
 import { setGraphData } from "../api";
+import { BlockDetail } from "./BlockDetail";
 import { Console } from "./Console";
 import { DataCard } from "./DataCard";
 import { TrainLog } from "./TrainLog";
 import { Trainer } from "./Trainer";
 import { useStore } from "../store";
 
-type Tab = "curves" | "data" | "stdout" | "manifest" | "logs" | "console";
+type Tab = "curves" | "block" | "data" | "stdout" | "manifest" | "logs" | "console";
 
 const TAB_LABELS: Record<Tab, string> = {
-  curves: "Run 곡선", data: "데이터", stdout: "학습 출력", manifest: "run manifest",
-  logs: "로그", console: "콘솔",
+  curves: "Run 곡선", block: "블록 상세", data: "데이터", stdout: "학습 출력",
+  manifest: "run manifest", logs: "로그", console: "콘솔",
 };
 
 const COLORS = ["var(--dtype-f32)", "#4a86c9", "#7c8898", "#2a558d", "#5e93d1"];
@@ -107,6 +108,8 @@ export function RunPanel() {
             <Curves series={series} label={key} />
           )
         )}
+
+        {tab === "block" && <BlockDetail />}
 
         {tab === "data" && (
           dataset === "teacher" || dataset === "noise" ? (

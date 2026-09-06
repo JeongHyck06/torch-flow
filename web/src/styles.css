@@ -382,6 +382,25 @@ body {
 .datacard__table p { margin: 8px 0 0; font-size: 11px; }
 .datacard__summary { margin: 12px 0 0; font-size: 12px; color: var(--text-primary); }
 
+.blockdetail { display: flex; flex-direction: column; gap: 12px; }
+.blockdetail__head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.blockdetail__head h2 .mono { font-weight: 400; font-size: 12px; margin-left: 8px; }
+.blockdetail__head p { margin: 4px 0 0; font-size: 13px; }
+.blockdetail__panels { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+.blockdetail__panel { display: flex; flex-direction: column; gap: 5px; margin: 0; min-width: 140px; }
+.blockdetail__panel figcaption {
+  font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted);
+}
+.blockdetail__panel .mono.muted { font-size: 11px; }
+.blockdetail__panel img { image-rendering: pixelated; border: 1px solid var(--border-subtle); align-self: flex-start; }
+.blockdetail__hist { width: 260px; height: 80px; border-bottom: 1px solid var(--border-subtle); }
+.blockdetail__bars { display: flex; flex-direction: column; gap: 3px; min-width: 220px; }
+.blockdetail__bar { display: grid; grid-template-columns: 28px 1fr 52px; gap: 8px; align-items: center; font-size: 11px; }
+.blockdetail__bar span:last-child { text-align: right; }
+.blockdetail__track { position: relative; height: 8px; }
+.blockdetail__fill { position: absolute; left: 0; top: 1px; height: 6px; border-radius: 2px; background: var(--dtype-f32); }
+.blockdetail__fill--before { top: 1px; background: var(--border-default); }
+
 .datafolder { display: flex; gap: 8px; margin-top: 10px; }
 .datafolder input {
   flex: 1; padding: 6px 10px; font-size: 12px;

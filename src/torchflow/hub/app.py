@@ -1032,6 +1032,19 @@ def create_app(
     def read_logs(limit: int = 300, node: str = "") -> JSONResponse:
         return JSONResponse({"logs": hub.tracker.tail(limit, node or None)})
 
+    @app.post("/api/detail")
+    def node_detail(request: dict[str, Any]) -> JSONResponse:
+        """블록 상세 탭(§6.3). L1 커널의 마지막 probe 값으로 그린다."""
+        if hub.attached or not hub.l1.alive():
+            return JSONResponse({"ok": False, "error": "Probe를 한 번 돌리면 이 블록이 무엇을 했는지 보입니다"})
+        node = request.get("node") or ""
+        path, _, node_id = node.rpartition("/")
+        replies = hub.l1.request(proto.NodeDetail(req_id=f"d-{hub.seq}", node_id=node_id, path=path))
+        result = next((r for r in replies if r.type == "NodeDetailResult"), None)
+        if result is None:
+            return JSONResponse({"ok": False, "error": "커널이 응답하지 않았습니다"}, status_code=502)
+        return JSONResponse(result.model_dump(mode="json", exclude_none=True))
+
     @app.post("/api/eval")
     def eval_expression(request: dict[str, Any]) -> JSONResponse:
         """Debug Console(§5.6.1). 표현식은 L1 커널의 마지막 probe 위에서 평가된다."""

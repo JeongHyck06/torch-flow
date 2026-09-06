@@ -335,6 +335,27 @@ export async function fetchTraining(): Promise<TrainRun[]> {
   return (await response.json()).runs ?? [];
 }
 
+export interface DetailPanel {
+  type: "grid" | "heatmap" | "hist" | "bars" | "text"; title: string;
+  png?: string; cols?: number; rows?: number; note?: string;
+  range?: [number, number]; before?: number[] | null; after?: number[];
+  labels?: string[]; values?: number[];
+}
+export interface BlockDetailInfo {
+  ok: boolean; error?: string; node: string; label: string; kind: string; params: number;
+  input_shape?: number[] | null; output_shape?: number[] | null; explain: string; panels: DetailPanel[];
+}
+
+/** 블록 상세(§6.3). L1 커널의 마지막 probe 값으로 그린다. */
+export async function fetchDetail(node: string): Promise<BlockDetailInfo> {
+  const response = await fetch("/api/detail", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ node }),
+  });
+  return response.json();
+}
+
 export async function runProbe(batch = 4) {
   const response = await fetch("/api/probe", {
     method: "POST",
