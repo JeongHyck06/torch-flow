@@ -1,7 +1,9 @@
 // 상단 바 - Figma Screens 기준. 크롬은 무채색이고 색은 그래프에서만 나온다.
 
-import { useEffect } from "react";
-import { estimateMemory, runProbe } from "../api";
+import { useEffect, useState } from "react";
+import { closeGraph, estimateMemory, runProbe, saveGraph } from "../api";
+import { applyEdit } from "../edit";
+import { op } from "../graph/ops";
 import { useStore } from "../store";
 import { formatCount } from "../theme";
 
@@ -20,6 +22,30 @@ export function TopBar() {
   const toggleGradOverlay = useStore((state) => state.toggleGradOverlay);
   const setProbing = useStore((state) => state.setProbing);
   const token = useStore((state) => state.token);
+  const dirty = useStore((state) => state.dirty);
+  const setDirty = useStore((state) => state.setDirty);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const home = async () => {
+    if (dirty && !window.confirm("저장하지 않은 편집이 있습니다. 첫 화면으로 나갈까요?")) return;
+    await closeGraph();
+    useStore.getState().closeGraph();
+  };
+
+  const name = graph?.graph.name ?? "";
+  const rename = (next: string) => {
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === name) return;
+    // 역 op가 이전 이름을 알아야 되돌릴 수 있다(§8.2.3).
+    void applyEdit(op("rename", { name: trimmed, previous: name }));
+  };
+
+  const save = async () => {
+    setSaving("…");
+    const result = await saveGraph();
+    setSaving(result.error ? result.error : null);
+    if (!result.error) setDirty(false);
+  };
 
   const probe = async () => {
     setProbing(true);
@@ -43,14 +69,36 @@ export function TopBar() {
 
   return (
     <header className="topbar">
-      <span className="wordmark">
+      <button className="wordmark wordmark--home" onClick={home} title="첫 화면으로">
         <span className="wordmark__dot" aria-hidden />
         torchflow
         <span className="wordmark__version">0.0.1</span>
+      </button>
+
+      <input
+        className="graphname"
+        defaultValue={name}
+        key={name}
+        aria-label="그래프 이름"
+        spellCheck={false}
+        onBlur={(event) => rename(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+          if (event.key === "Escape") (event.target as HTMLInputElement).value = name;
+        }}
+      />
+
+      <span className="savestate">
+        <button className="savestate__button" onClick={save} disabled={saving === "…"}>
+          저장
+        </button>
+        <span className="savestate__label">
+          {saving && saving !== "…" ? saving : dirty ? "저장 안 됨" : "저장됨"}
+        </span>
       </span>
 
       <nav className="crumbs" aria-label="그래프 경로">
-        {scopes.map((scope, index) => (
+        {(scopes.length > 1 ? scopes : []).map((scope, index) => (
           <span key={scope.callPath || scope.name}>
             {index > 0 && <span className="crumbs__sep">›</span>}
             <button

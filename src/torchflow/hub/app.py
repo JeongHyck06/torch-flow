@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__, paper, protocol as proto
-from ..ir import ModuleGraph, canonical_json, load
+from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
 from .engine import Engine
@@ -104,6 +104,28 @@ class Hub:
             entry["path"] = str(found) if found else ""
             entry["available"] = found is not None
         return catalogue
+
+    def recent(self, limit: int = 8) -> list[dict[str, Any]]:
+        """열 수 있는 내 그래프들. 프로젝트 graph/ 와 작업 폴더를 훑는다(§10.1).
+
+        제목은 파일 이름이 아니라 **그래프 이름**이다 - 이름을 바꿔도 파일 이름은
+        따라가지 않으므로, 파일 이름만 보여 주면 바꾼 이름이 어디에도 안 보인다.
+        """
+        seen: dict[str, dict[str, Any]] = {}
+        for root in (Path.cwd() / "graph", Path.cwd(), self.state_dir):
+            if not root.is_dir():
+                continue
+            for path in sorted(root.glob("*.tfg.json")):
+                resolved = str(path.resolve())
+                if resolved in seen:
+                    continue
+                seen[resolved] = {"path": resolved,
+                                  "name": _graph_name(path),
+                                  "file": path.name,
+                                  "modified": path.stat().st_mtime,
+                                  "where": str(root.resolve())}
+        entries = sorted(seen.values(), key=lambda entry: entry["modified"], reverse=True)
+        return entries[:limit]
 
     def registry(self) -> dict[str, Any]:
         path = self.state_dir / "registry.json"
@@ -199,6 +221,14 @@ class Hub:
                 self.clients.remove(client)
 
 
+def _graph_name(path: Path) -> str:
+    """파일에서 그래프 이름만 꺼낸다. 깨진 파일이면 파일 이름으로 대신한다."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))["graph"]["name"]
+    except Exception:
+        return path.name.removesuffix(".tfg.json")
+
+
 def create_app(
     graph_path: Path | str | None = None,
     *,
@@ -252,8 +282,12 @@ def create_app(
         return JSONResponse(hub.registry())
 
     @app.post("/api/ops")
-    def ops(op: dict[str, Any]) -> JSONResponse:
-        """WebSocket 폴백 경로. seq 규약은 WS와 동일하다(§8.2.2)."""
+    async def ops(op: dict[str, Any]) -> JSONResponse:
+        """편집 op 하나. seq 규약은 WS와 동일하다(§8.2.2).
+
+        보낸 클라이언트는 응답으로 결과를 받고, 붙어 있는 다른 클라이언트는
+        WebSocket 브로드캐스트로 같은 편집을 본다.
+        """
         if hub.store is None:
             return no_graph()
         try:
@@ -261,6 +295,9 @@ def create_app(
         except OpError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         states = hub.run_l0()
+        await hub.broadcast(proto.OpBroadcast(seq=seq, op=op))
+        for state in states:
+            await hub.broadcast(state)
         return JSONResponse(
             {"seq": seq, "node_states": [s.model_dump(mode="json") for s in states]}
         )
@@ -287,6 +324,7 @@ def create_app(
             "torch_version": ready.torch_version if ready else None,
             "devices": hub.devices(),
             "templates": hub.templates(),
+            "recent": hub.recent(),
         })
 
     @app.post("/api/inspect")
@@ -369,6 +407,48 @@ def create_app(
             media_type="image/svg+xml" if format == "svg" else "application/pdf",
             headers={"Content-Disposition": f'attachment; filename="{name}.{format}"'},
         )
+
+    @app.post("/api/new")
+    def new_graph(request: dict[str, Any] | None = None) -> JSONResponse:
+        """빈 그래프에서 시작한다(§2.2의 진입점 다섯 중 하나)."""
+        from ..ir import Graph
+
+        name = ((request or {}).get("name") or "untitled").strip() or "untitled"
+        hub.open(ModuleGraph(graph=Graph(name=name)))
+        return JSONResponse({"ok": True, "name": name})
+
+    @app.post("/api/close")
+    def close_graph() -> JSONResponse:
+        """그래프를 닫고 첫 화면으로 돌아간다(§2.2).
+
+        커널은 살려 둔다 - 다음 그래프를 열 때 다시 기동하는 비용(콜드 <5 s)을
+        치를 이유가 없다.
+        """
+        hub.store = None
+        hub.engine = None
+        hub.graph_path = None
+        hub.node_states.clear()
+        hub.total_params = 0
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/save")
+    def save_graph(request: dict[str, Any] | None = None) -> JSONResponse:
+        """그래프를 파일로 쓴다. 경로가 없으면 state-dir 안에 만든다."""
+        if hub.store is None:
+            return no_graph()
+        given = (request or {}).get("path")
+        # 그래프는 프로젝트의 graph/ 에 산다(§10.1). state-dir는 캐시·journal·runs.db 자리다.
+        # 이름을 바꿨으면 바꾼 이름의 파일로 간다 - 열려 있던 파일을 말없이 옮기지는 않는다.
+        name = hub.store.ir.graph.name
+        keep = hub.graph_path if (hub.graph_path
+                                  and hub.graph_path.name == f"{name}.tfg.json") else None
+        path = Path(given).expanduser() if given else (
+            keep or Path.cwd() / "graph" / f"{name}.tfg.json")
+        problems = ir_problems(hub.store.ir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        hub.store.save(path)
+        hub.graph_path = path
+        return JSONResponse({"ok": True, "path": str(path), "problems": problems})
 
     @app.get("/api/layout")
     def read_layout() -> JSONResponse:

@@ -8,8 +8,8 @@
 // 일이 없는 버튼은 없는 버튼보다 나쁘다.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchStart, importSource, inspectSource, openGraph } from "../api";
-import type { Candidate, StartInfo, Template } from "../api";
+import { fetchStart, importSource, inspectSource, newGraph, openGraph } from "../api";
+import type { Candidate, RecentGraph, StartInfo, Template } from "../api";
 
 interface Dropped {
   filename: string;
@@ -29,10 +29,19 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
 
   useEffect(() => { fetchStart().then(setInfo).catch(() => undefined); }, []);
 
-  const open = async (template: Template) => {
-    setBusy(template.id);
+  const startEmpty = async () => {
+    setBusy("empty");
     setError(null);
-    const result = await openGraph(template.path);
+    const result = await newGraph();
+    setBusy(null);
+    if (result.error) setError(result.error);
+    else onOpened();
+  };
+
+  const open = async (target: Template | RecentGraph, id?: string) => {
+    setBusy(id ?? target.path);
+    setError(null);
+    const result = await openGraph(target.path);
     setBusy(null);
     if (result.error) setError(result.error);
     else onOpened();
@@ -173,7 +182,7 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                   <button
                     className="templates__row"
                     disabled={!template.available || busy !== null}
-                    onClick={() => open(template)}
+                    onClick={() => open(template, template.id)}
                   >
                     <span className="templates__left">
                       <span className="templates__name">{template.name}</span>
@@ -187,6 +196,32 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                 </li>
               ))}
             </ul>
+          </section>
+
+          <section>
+            <h3>내 그래프</h3>
+            {info?.recent?.length ? (
+              <ul className="templates">
+                {info.recent.map((entry) => (
+                  <li key={entry.path}>
+                    <button className="templates__row" disabled={busy !== null}
+                            onClick={() => open(entry)} title={entry.path}>
+                      <span className="templates__left">
+                        <span className="templates__name">{entry.name}</span>
+                        <span className="templates__recipe mono">{entry.file}</span>
+                      </span>
+                      <span className="templates__metric mono">
+                        {busy === entry.path ? "여는 중"
+                          : new Date(entry.modified * 1000).toLocaleDateString("ko-KR",
+                              { month: "numeric", day: "numeric" })}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mono muted">아직 저장한 그래프가 없습니다. 저장하면 graph/ 에 쌓입니다</p>
+            )}
           </section>
 
           <section>
@@ -212,8 +247,9 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
               <p>아무것도 없이 시작합니다. 블록을 놓으면 포트 타입이 연결 가능한
                 것만 제안하고, 필수 포트가 비면 그 자리에서 알려줍니다.</p>
             </div>
-            <button className="ghost" disabled title="블록을 놓으려면 IR 편집이 필요합니다">
-              빈 캔버스 열기
+            <button className="ghost" onClick={startEmpty} disabled={busy !== null}
+                    title="Tab 으로 팔레트를 열어 첫 블록을 놓습니다">
+              {busy === "empty" ? "여는 중" : "빈 캔버스 열기"}
             </button>
           </div>
           <p className="mono muted scratch__hint">

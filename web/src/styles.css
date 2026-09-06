@@ -65,6 +65,31 @@ body {
 .totals { display: flex; align-items: center; gap: 14px; margin-left: auto; color: var(--text-secondary); }
 .totals__item { font-family: var(--font-mono); font-size: 11px; }
 
+.graphname {
+  border: 1px solid transparent; border-radius: 5px; padding: 2px 6px; background: none;
+  font: 600 13px var(--font-sans); color: var(--text-primary); width: 150px; letter-spacing: -0.01em;
+}
+.graphname:hover { border-color: var(--border-subtle); }
+.graphname:focus { outline: none; border-color: var(--text-primary); }
+
+.wordmark--home { background: none; border: 0; cursor: pointer; padding: 0; }
+.wordmark--home:hover { color: var(--text-primary); }
+
+.savestate { display: flex; align-items: center; gap: 8px; }
+.savestate__button {
+  background: none; border: 1px solid var(--border-default); border-radius: 6px;
+  padding: 3px 9px; cursor: pointer; font: 500 11px var(--font-sans); color: var(--text-secondary);
+}
+.savestate__button:hover { color: var(--text-primary); border-color: var(--text-primary); }
+.savestate__label { font-size: 10.5px; color: var(--text-muted); }
+.field {
+  width: 96px; text-align: right; border: 1px solid transparent; border-radius: 4px;
+  padding: 1px 4px; background: none; color: var(--text-primary);
+}
+.field--wide { width: 150px; }
+.field:hover { border-color: var(--border-subtle); }
+.field:focus { outline: none; border-color: var(--text-primary); background: var(--surface-panel); }
+
 .export { display: flex; align-items: center; gap: 8px; }
 .export__label { font-size: 11px; color: var(--text-muted); }
 .export__link {
@@ -319,6 +344,51 @@ body {
   margin-top: auto; padding: 24px 0 28px;
   display: flex; justify-content: center; gap: 20px;
   font-size: 10px; color: var(--text-muted);
+}
+
+/* ── 팔레트 · 빈 캔버스 (Figma 06 Empty canvas) ──────────────────── */
+
+.palette__scrim { position: absolute; inset: 0; z-index: 8; }
+.palette {
+  position: absolute; z-index: 9; left: 50%; top: 140px; transform: translateX(-50%);
+  width: 392px; background: var(--surface-panel);
+  border: 1px solid var(--border-default); border-radius: 12px; overflow: hidden;
+}
+.palette__search {
+  display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.palette__input {
+  flex: 1; border: 0; outline: none; background: none;
+  font-size: 12px; color: var(--text-primary);
+}
+.palette__count { font-size: 10.5px; color: var(--text-muted); }
+.palette__list { list-style: none; margin: 0; padding: 4px 0; max-height: 280px; overflow: auto; }
+.palette__row {
+  display: block; width: 100%; text-align: left; background: none; border: 0; cursor: pointer;
+  padding: 7px 14px 7px 12px; border-left: 2px solid transparent;
+}
+.palette__row--on { background: var(--surface-dock); border-left-color: var(--text-primary); }
+.palette__head { display: flex; align-items: baseline; gap: 8px; }
+.palette__name { font: 600 12px var(--font-sans); color: var(--text-primary); }
+.palette__category { font-size: 10px; color: var(--text-muted); }
+.palette__ports { display: block; font-size: 10px; color: var(--text-secondary); margin-top: 2px; }
+.palette__empty { padding: 10px 14px; }
+.palette__footer {
+  padding: 8px 14px; border-top: 1px solid var(--border-subtle); font-size: 10px;
+  display: flex; gap: 10px;
+}
+
+.emptycanvas {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 6px; pointer-events: none;
+}
+.emptycanvas__title { margin: 0; font: 600 15px var(--font-sans); color: var(--text-primary); }
+.emptycanvas__sub { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.emptycanvas__keys { display: flex; gap: 14px; margin: 10px 0 0; font-size: 10px; color: var(--text-muted); }
+.emptycanvas__keys kbd {
+  font: inherit; border: 1px solid var(--border-default); border-radius: 4px;
+  padding: 1px 5px; margin-right: 4px; color: var(--text-secondary);
 }
 
 /* ── 하단 Run 패널 ───────────────────────────────────────────────── */
