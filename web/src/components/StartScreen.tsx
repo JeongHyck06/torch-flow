@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchStart, importSource, inspectSource, newGraph, openGraph } from "../api";
-import type { Candidate, StartInfo, Template } from "../api";
+import type { Candidate, RecentGraph, StartInfo, Template } from "../api";
 
 interface Dropped {
   filename: string;
@@ -38,10 +38,10 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
     else onOpened();
   };
 
-  const open = async (template: Template) => {
-    setBusy(template.id);
+  const open = async (target: Template | RecentGraph, id?: string) => {
+    setBusy(id ?? target.path);
     setError(null);
-    const result = await openGraph(template.path);
+    const result = await openGraph(target.path);
     setBusy(null);
     if (result.error) setError(result.error);
     else onOpened();
@@ -182,7 +182,7 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                   <button
                     className="templates__row"
                     disabled={!template.available || busy !== null}
-                    onClick={() => open(template)}
+                    onClick={() => open(template, template.id)}
                   >
                     <span className="templates__left">
                       <span className="templates__name">{template.name}</span>
@@ -196,6 +196,32 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                 </li>
               ))}
             </ul>
+          </section>
+
+          <section>
+            <h3>내 그래프</h3>
+            {info?.recent?.length ? (
+              <ul className="templates">
+                {info.recent.map((entry) => (
+                  <li key={entry.path}>
+                    <button className="templates__row" disabled={busy !== null}
+                            onClick={() => open(entry)} title={entry.path}>
+                      <span className="templates__left">
+                        <span className="templates__name">{entry.name}</span>
+                        <span className="templates__recipe mono">{entry.where}</span>
+                      </span>
+                      <span className="templates__metric mono">
+                        {busy === entry.path ? "여는 중"
+                          : new Date(entry.modified * 1000).toLocaleDateString("ko-KR",
+                              { month: "numeric", day: "numeric" })}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mono muted">아직 저장한 그래프가 없습니다. 저장하면 graph/ 에 쌓입니다</p>
+            )}
           </section>
 
           <section>

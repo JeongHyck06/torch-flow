@@ -40,12 +40,15 @@ export interface Candidate {
   params: { name: string; annotation: string | null; default: unknown }[];
 }
 
+export interface RecentGraph { path: string; name: string; modified: number; where: string }
+
 export interface StartInfo {
   graph_open: boolean;
   state_dir: string;
   torch_version: string | null;
   devices: { name: string; label: string }[];
   templates: Template[];
+  recent: RecentGraph[];
 }
 
 export async function fetchStart(): Promise<StartInfo> {

@@ -105,6 +105,22 @@ class Hub:
             entry["available"] = found is not None
         return catalogue
 
+    def recent(self, limit: int = 8) -> list[dict[str, Any]]:
+        """열 수 있는 내 그래프들. 프로젝트 graph/ 와 작업 폴더를 훑는다(§10.1)."""
+        seen: dict[str, dict[str, Any]] = {}
+        for root in (Path.cwd() / "graph", Path.cwd(), self.state_dir):
+            if not root.is_dir():
+                continue
+            for path in sorted(root.glob("*.tfg.json")):
+                resolved = str(path.resolve())
+                if resolved in seen:
+                    continue
+                seen[resolved] = {"path": resolved, "name": path.stem,
+                                  "modified": path.stat().st_mtime,
+                                  "where": str(root.resolve())}
+        entries = sorted(seen.values(), key=lambda entry: entry["modified"], reverse=True)
+        return entries[:limit]
+
     def registry(self) -> dict[str, Any]:
         path = self.state_dir / "registry.json"
         if not path.exists():
@@ -294,6 +310,7 @@ def create_app(
             "torch_version": ready.torch_version if ready else None,
             "devices": hub.devices(),
             "templates": hub.templates(),
+            "recent": hub.recent(),
         })
 
     @app.post("/api/inspect")
@@ -406,9 +423,11 @@ def create_app(
         if hub.store is None:
             return no_graph()
         given = (request or {}).get("path")
+        # 그래프는 프로젝트의 graph/ 에 산다(§10.1). state-dir는 캐시·journal·runs.db 자리다.
         path = Path(given).expanduser() if given else (
-            hub.graph_path or hub.state_dir / f"{hub.store.ir.graph.name}.tfg.json")
+            hub.graph_path or Path.cwd() / "graph" / f"{hub.store.ir.graph.name}.tfg.json")
         problems = ir_problems(hub.store.ir)
+        path.parent.mkdir(parents=True, exist_ok=True)
         hub.store.save(path)
         hub.graph_path = path
         return JSONResponse({"ok": True, "path": str(path), "problems": problems})
