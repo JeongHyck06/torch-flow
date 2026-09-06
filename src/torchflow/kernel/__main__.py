@@ -53,6 +53,8 @@ class Kernel:
     def announce(self) -> None:
         import torch
 
+        from .devices import available_devices
+
         registry_path = None
         if self.level == "L0":
             from .registry import write
@@ -63,7 +65,9 @@ class Kernel:
                 level=self.level,
                 pid=os.getpid(),
                 torch_version=torch.__version__,
-                device="cpu" if self.level == "L0" else "cuda" if torch.cuda.is_available() else "cpu",
+                # 첫 화면의 디바이스 칩이 읽는 값. L0 자체는 CPU에서 돌지만 칩은 이 컴퓨터에
+                # 어떤 가속기가 있는지를 말해야 한다.
+                device=(available_devices(torch) or ["cpu"])[0],
                 registry_path=registry_path,
             )
         )
