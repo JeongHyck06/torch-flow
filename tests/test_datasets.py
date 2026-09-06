@@ -35,3 +35,55 @@ def test_mnist_loads_normalised_tensors(tmp_path):
     assert y.tolist() == [0, 1, 2, 3, 4, 5, 6, 7]
     # 픽셀 0은 정규화 뒤 -mean/std다.
     assert abs(float(x[0, 0, 0, 0]) - (-0.1307 / 0.3081)) < 1e-4
+
+
+def write_image_folder(base: Path, side: int = 20, per_class: int = 3) -> Path:
+    from PIL import Image
+
+    folder = base / "shapes"
+    for label, color in (("red", (220, 40, 40)), ("blue", (40, 40, 220))):
+        (folder / label).mkdir(parents=True)
+        for index in range(per_class):
+            Image.new("RGB", (side + index, side), color).save(folder / label / f"{index}.png")
+    return folder
+
+
+def test_image_folder_is_recognised_and_loaded(tmp_path):
+    folder = write_image_folder(tmp_path)
+    spec = datasets.inspect(folder)
+    assert spec["kind"] == "image_folder" and spec["shape"] == [3, 20, 20]
+    assert spec["classes"] == 2 and spec["class_names"] == ["blue", "red"] and spec["count"] == 6
+
+    splits = datasets.load_any("shapes", tmp_path)
+    x, y = splits["train"]
+    assert x.shape[1:] == (3, 20, 20) and len(x) + len(splits["test"][0]) == 6
+    assert set(y.tolist()) <= {0, 1}
+
+
+def test_csv_table_is_recognised_and_standardised(tmp_path):
+    folder = tmp_path / "table"
+    folder.mkdir()
+    rows = ["height,weight,label"] + [f"{170 + i},{60 + 2 * i},{'a' if i % 2 else 'b'}" for i in range(10)]
+    (folder / "people.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    spec = datasets.inspect(folder)
+    assert spec["kind"] == "csv" and spec["shape"] == [2] and spec["class_names"] == ["a", "b"]
+    assert spec["label_column"] == "label" and spec["count"] == 10
+
+    x, y = datasets.load_any("table", tmp_path)["train"]
+    assert x.shape[1] == 2 and abs(float(x.mean())) < 0.5   # train 통계로 표준화됐다
+    assert y.dtype == torch.int64
+
+
+def test_npy_pair_is_recognised_without_numpy_in_the_hub(tmp_path):
+    import numpy
+
+    folder = tmp_path / "arrays"
+    folder.mkdir()
+    numpy.save(folder / "x.npy", numpy.zeros((8, 4), dtype=numpy.float32))
+    numpy.save(folder / "y.npy", numpy.array([0, 1, 2] * 2 + [0, 1], dtype=numpy.int64))
+    spec = datasets.inspect(folder)
+    assert spec["kind"] == "arrays" and spec["shape"] == [4] and spec["classes"] == 3 and spec["count"] == 8
+
+    listed = [entry["name"] for entry in datasets.scan(tmp_path)]
+    assert listed == ["mnist", "arrays"]
+    assert datasets.load_any("arrays", tmp_path)["train"][0].shape[1] == 4

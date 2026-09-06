@@ -25,7 +25,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from ..datasets import CATALOGUE, load as load_dataset
+from ..datasets import load_any
 
 HEARTBEAT_EVERY = 2.0      # 초. hub가 이 파일의 mtime으로 생존을 본다(§5.5.3).
 
@@ -83,15 +83,15 @@ def build_data(job: dict[str, Any], device, generator, rng_state=None):
     구분되지 않는다. 네트워크도 디스크도 건드리지 않는다(§3.1: 다운로드는 명시
     버튼으로만).
 
-    ``dataset``이 내장 데이터셋 이름이면(``datasets.CATALOGUE``) 내려받아 둔 train
-    분할을 epoch마다 섞어 돌고, test 분할로 검증한다.
+    ``dataset``이 ``teacher``/``noise``가 아니면 데이터셋 이름이다 - 내장(MNIST)이거나
+    ``data/<이름>/``의 사용자 데이터. train 분할을 epoch마다 섞어 돌고 test 분할로 검증한다.
     """
     import torch
 
     name = job.get("dataset", "teacher")
     batch = int(job.get("batch", 32))
-    if name in CATALOGUE:
-        splits = load_dataset(name, Path(job.get("data_dir", "data")))
+    if name not in ("teacher", "noise"):
+        splits = load_any(name, Path(job.get("data_dir", "data")))
         if rng_state is not None:
             generator.set_state(rng_state)
         # ponytail: 재개하면 epoch의 첫 배치부터 다시 본다. epoch 안 위치는 ckpt에 없다.
