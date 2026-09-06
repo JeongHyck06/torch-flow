@@ -214,3 +214,21 @@ def test_shared_instances_are_counted_once(minivit):
     pass_.probe_once()
     modules = pass_._probe_modules()
     assert len({id(module) for module in modules.values()}) <= len(modules)
+
+
+def test_forward_only_reports_no_gradient_rather_than_zero(minivit):
+    """backward가 안 돌았으면 grad는 없는 것이다. 0으로 적으면 ratio 밴드가 전부 앰버가 된다."""
+    result = run(minivit, probe=ProbeConfig(batch=2, backward=False, objective="random_target_ce"))
+    assert all(node.grad_norm is None for node in result.nodes)
+    assert not any(node.warn for node in result.nodes)
+
+
+def test_probe_without_an_output_node_targets_the_last_node(minivit):
+    """Output 노드를 아직 안 놓은 그래프도 프로브된다 - 생성 코드가 마지막 노드를 반환하듯."""
+    graph = minivit.graph
+    outputs = {node.id for node in graph.nodes if node.type == "torchflow.Output"}
+    graph.nodes = [node for node in graph.nodes if node.id not in outputs]
+    graph.edges = [edge for edge in graph.edges if edge[1].split(".")[0] not in outputs]
+    result = run(minivit, probe=ProbeConfig(batch=2, objective="random_target_ce"))
+    assert result.ok and result.loss is not None
+    assert result.node("head").grad_norm > 0

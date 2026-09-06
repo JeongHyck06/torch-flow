@@ -241,8 +241,9 @@ class L1Pass(L0Pass):
         for module in modules.values():
             module.zero_grad(set_to_none=True)
 
-        # 최상위 그래프는 Output 노드로 끝나고, 컴포지트는 $out 엣지로 끝난다.
-        targets = self.outputs or graph_outputs
+        # 최상위 그래프는 Output 노드로 끝나고, 컴포지트는 $out 엣지로 끝난다. 둘 다 없으면
+        # 마지막 노드의 출력이 표적이다 - 생성 코드가 마지막 노드를 반환하는 것과 같은 규칙.
+        targets = self.outputs or graph_outputs or dict(list(self.activations.items())[-1:])
         loss_value, forward_only = None, not self.probe.backward
         try:
             if self.probe.backward:
@@ -349,14 +350,19 @@ def node_stats(torch, key: str, label: str, activation, module, probe: ProbeConf
     if module is not None:
         grads = weights = 0.0
         count = 0
+        seen_grad = False
         for param in module.parameters():
             count += param.numel()
             weights += float(param.detach().float().pow(2).sum())
             if param.grad is not None:
+                seen_grad = True
                 grads += float(param.grad.detach().float().pow(2).sum())
         result.params = count
         if count:
             result.weight_norm = math.sqrt(weights)
+        # backward가 안 돌았으면(forward-only, 목적함수 실패) grad는 없는 것이지 0이 아니다.
+        # 0으로 보고하면 ratio 밴드가 모든 레이어를 앰버로 만든다.
+        if count and seen_grad:
             result.grad_norm = math.sqrt(grads)
             if result.weight_norm > 0:
                 result.grad_ratio = result.grad_norm / result.weight_norm
