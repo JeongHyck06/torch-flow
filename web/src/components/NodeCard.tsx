@@ -81,8 +81,12 @@ export function NodeCard({ data }: NodeProps) {
 
           {showNear ? (
             <div className="node__mid">
-              <div className="node__thumb" style={node.gradColor
-                ? { background: node.gradColor, borderColor: "transparent" } : undefined} />
+              {/* 썸네일은 채울 것이 있을 때만 - 빈 회색 박스는 확대할 때마다 눈에 걸린다.
+                  프로브 결과(Grad-Flow 색, Feature Map)가 들어오면 나타난다(§6.1). */}
+              {node.gradColor && (
+                <div className="node__thumb"
+                     style={{ background: node.gradColor, borderColor: "transparent" }} />
+              )}
               <span className="node__shape">{formatShape(node.shape)}</span>
             </div>
           ) : showBody ? (
