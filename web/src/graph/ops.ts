@@ -144,6 +144,11 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
         value: (instance.args ?? {})[payload.path as string] ?? null,
       });
     }
+    case "set_ports": {
+      const node = (scope.nodes ?? []).find((entry) => entry.id === payload.node);
+      if (!node) return null;
+      return op("set_ports", { ...scoped, node: payload.node, ports_out: node.ports_out ?? [] });
+    }
     case "set_switch_active": {
       const instance = scope.instances?.[payload.instance as string];
       if (!instance) return null;

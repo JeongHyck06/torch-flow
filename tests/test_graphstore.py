@@ -160,3 +160,16 @@ def test_set_param_reaches_node_args_too(minivit):
     # null은 삭제다 - 기본값으로 되돌리는 역 op가 성립해야 한다(§8.2.3).
     store.apply({"kind": "set_param", "payload": {"node": "01J9Q4B4", "path": "dim", "value": None}})
     assert "dim" not in next(n for n in store.ir.graph.nodes if n.id == "01J9Q4B4").args
+
+
+def test_set_ports_changes_the_graph_input_spec(minivit):
+    """Input 노드의 shape는 args가 아니라 ports_out에 있다(§5.1.6)."""
+    store = GraphStore(minivit)
+    store.apply({"kind": "set_ports", "payload": {
+        "node": "01J9Q4B1",
+        "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 3, 64, 64],
+                       "dtype": "float32"}]}})
+
+    node = next(node for node in store.ir.graph.nodes if node.id == "01J9Q4B1")
+    assert node.ports_out[0].shape == ["B", 3, 64, 64]
+    assert validate(store.ir) == []

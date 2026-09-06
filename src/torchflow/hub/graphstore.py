@@ -22,7 +22,7 @@ from typing import Any
 
 from ..ir import ModuleGraph, canonical_json, save, split_endpoint
 
-APPLIED_KINDS = {"add_node", "remove_node", "set_param", "set_switch_active",
+APPLIED_KINDS = {"add_node", "remove_node", "set_param", "set_ports", "set_switch_active",
                  "connect", "disconnect"}
 
 
@@ -62,6 +62,8 @@ class GraphStore:
             self._add_node(scope, payload)
         elif kind == "remove_node":
             self._remove_node(scope, payload)
+        elif kind == "set_ports":
+            self._set_ports(scope, payload)
         elif kind == "set_param":
             # 인자는 인스턴스(모듈 생성 인자)나 노드(호출 인자) 어느 쪽에도 있다.
             target = self._param_target(scope, payload)
@@ -84,6 +86,22 @@ class GraphStore:
             edge = (payload["src"], payload["dst"])
             if edge in scope.edges:
                 scope.edges.remove(edge)
+
+    def _set_ports(self, scope, payload: dict[str, Any]) -> None:
+        """노드의 출력 포트 규격을 바꾼다.
+
+        ``Input`` 노드에서는 이것이 곧 그래프의 입력 규격이다(§5.1.6) - shape와
+        dtype이 여기 있고 ``args``에는 없다.
+        """
+        from ..ir import Port
+
+        node = next((n for n in scope.nodes if n.id == payload.get("node")), None)
+        if node is None:
+            raise OpError(f"unknown node {payload.get('node')}")
+        try:
+            node.ports_out = [Port.model_validate(port) for port in payload.get("ports_out") or []]
+        except Exception as exc:
+            raise OpError(f"invalid ports: {exc}") from exc
 
     def _param_target(self, scope, payload: dict[str, Any]):
         if payload.get("instance"):

@@ -94,6 +94,43 @@ export function Inspector() {
         ) : null}
       </dl>
 
+      {node?.ports_out?.length ? (
+        <>
+          <h3>입력 규격</h3>
+          <dl className="rows">
+            {node.ports_out.map((port, index) => (
+              <div key={port.name}>
+                <dt>{port.name}</dt>
+                <dd>
+                  <input
+                    className="mono field field--wide"
+                    defaultValue={(port.shape ?? []).join(", ")}
+                    placeholder="B, 3, 32, 32"
+                    spellCheck={false}
+                    aria-label={`${port.name} shape`}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      (event.target as HTMLInputElement).blur();
+                    }}
+                    onBlur={(event) => {
+                      const shape = parseShape(event.target.value);
+                      if (!shape) return;
+                      const ports = node.ports_out!.map((entry, at) =>
+                        at === index ? { ...entry, shape } : entry);
+                      void applyEdit(op("set_ports", {
+                        ...(composite ? { composite } : {}),
+                        node: selected, ports_out: ports,
+                      }));
+                    }}
+                  />
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mono muted">B는 배치 심볼입니다. 숫자와 심볼을 쉼표로 씁니다</p>
+        </>
+      ) : null}
+
       {Object.keys(fields).length > 0 && (
         <>
           <h3>Parameters</h3>
@@ -220,6 +257,13 @@ function ParamField({ name, value, schema, onCommit }: {
       }}
     />
   );
+}
+
+/** ``"B, 3, 32, 32"`` -> ``["B", 3, 32, 32]``. 숫자는 숫자로, 나머지는 심볼로 남긴다. */
+function parseShape(text: string): (string | number)[] | null {
+  const parts = text.split(",").map((piece) => piece.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  return parts.map((piece) => (/^-?\d+$/.test(piece) ? Number(piece) : piece));
 }
 
 function refOf(value: unknown): string | null {
