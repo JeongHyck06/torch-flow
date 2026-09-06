@@ -123,7 +123,7 @@ export interface Op {
   type?: "Op";
   client_id: string;
   tmp_seq: number;
-  kind: "add_node" | "remove_node" | "set_param" | "connect" | "disconnect" | "move" | "group" | "set_code" | "set_switch_active" | "promote_hp" | "save_variant" | "add_probe" | "remove_probe" | "batch";
+  kind: "add_node" | "remove_node" | "set_param" | "set_ports" | "rename" | "connect" | "disconnect" | "move" | "group" | "set_code" | "set_switch_active" | "promote_hp" | "save_variant" | "add_probe" | "remove_probe" | "batch";
   payload?: Record<string, unknown>;
   inverse_of?: number;
   ops?: Record<string, unknown>[];
@@ -180,7 +180,7 @@ export interface Resync {
 export interface Error {
   type?: "Error";
   req_id: string;
-  kind: "shape" | "exception" | "oom" | "export" | "kernel" | "timeout";
+  kind: "shape" | "exception" | "oom" | "export" | "kernel" | "timeout" | "input" | "args";
   node_id?: string;
   message?: string;
   mapping?: Record<string, unknown>;

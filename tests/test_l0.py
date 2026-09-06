@@ -131,3 +131,20 @@ def test_unresolved_hparam_is_attributed_to_a_node(minivit):
 def test_missing_runtime_constant_does_not_crash(minivit):
     result = run_pass(minivit)  # rt 없음 -> rt.num_classes 미해소
     assert not result.ok and "num_classes" in result.error["message"]
+
+
+def test_unconnected_port_and_missing_args_are_reported_in_graph_terms(minivit):
+    """파이썬 TypeError 원문 대신 무엇을 잇고 무엇을 채울지 말한다."""
+    import copy
+
+    cut = copy.deepcopy(minivit)
+    cut.graph.edges = [edge for edge in cut.graph.edges if edge[1].split(".")[0] != "01J9Q4B5"]
+    result = run_pass(cut, rt=RT)
+    assert result.error["node_id"] == "01J9Q4B5" and result.error["kind"] == "input"
+    assert "연결되지 않았습니다: input" in result.error["message"]
+
+    empty = copy.deepcopy(minivit)
+    empty.graph.instances["01J9I103"].args = {}
+    result = run_pass(empty, rt=RT)
+    assert result.error["node_id"] == "01J9Q4B5" and result.error["kind"] == "args"
+    assert "in_features, out_features" in result.error["message"]

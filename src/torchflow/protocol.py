@@ -173,7 +173,8 @@ class Done(_Msg):
     frames: list[dict[str, Any]] = Field(default_factory=list)
 
 
-ErrorKind = Literal["shape", "exception", "oom", "export", "kernel", "timeout"]
+# input: 이어지지 않은 포트, args: 비어 있는 필수 인자 - 편집 중 가장 흔한 둘이라 이름을 준다.
+ErrorKind = Literal["shape", "exception", "oom", "export", "kernel", "timeout", "input", "args"]
 
 
 class Error(_Msg):
