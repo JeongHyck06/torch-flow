@@ -27,6 +27,7 @@ export function TopBar() {
   const dirty = useStore((state) => state.dirty);
   const setDirty = useStore((state) => state.setDirty);
   const [saving, setSaving] = useState<string | null>(null);
+  const [probeNote, setProbeNote] = useState<string | null>(null);
 
   const home = async () => {
     if (dirty && !window.confirm("저장하지 않은 편집이 있습니다. 첫 화면으로 나갈까요?")) return;
@@ -135,6 +136,7 @@ export function TopBar() {
           {probing ? "Probe…" : "Probe"}
         </button>
         {probeObjective && <span className="probe__obj">obj: {probeObjective}</span>}
+        {probeNote && <span className="probe__note warn mono">{probeNote}</span>}
         <label className="probe__toggle">
           <input type="checkbox" checked={gradOverlay} onChange={toggleGradOverlay} />
           Grad-Flow

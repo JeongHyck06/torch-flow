@@ -59,6 +59,9 @@ body {
 .probe__run:hover:not(:disabled) { opacity: 0.88; }
 .probe__run:disabled { background: var(--surface-active); color: var(--text-muted); cursor: default; }
 .probe__obj, .probe__toggle { color: var(--text-muted); font-size: 12px; }
+.probe { min-width: 0; }
+/* 안내문은 줄어드는 쪽이다. 오른쪽 총계와 상태 점이 화면 밖으로 밀리면 안 된다. */
+.probe__note { font-size: 12px; min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .probe__obj { font-family: var(--font-mono); }
 .probe__toggle { display: flex; align-items: center; gap: 5px; }
 

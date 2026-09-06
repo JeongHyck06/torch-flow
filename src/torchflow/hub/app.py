@@ -668,14 +668,20 @@ def create_app(
 
         for state in states:
             await hub.broadcast(state)
-        # 어느 디바이스에서 돌았는지 돌려준다. 학습이 GPU를 잡고 있으면 L1은 CPU
-        # forward-only로 내려가는데(§5.1.5), 그 사실이 화면에 안 보이면 사람은
-        # 배지가 사라진 것을 버그로 읽는다.
+        # 어느 디바이스에서 돌았는지, 무엇이 실패했는지 돌려준다. 학습이 GPU를 잡고 있으면
+        # L1은 CPU forward-only로 내려가고(§5.1.5) backward가 실패해도 forward 결과는
+        # 남는데, 그 사실이 화면에 안 보이면 사람은 배지가 사라진 것을 고장으로 읽는다.
+        failure = next((r for r in replies if r.type == "Error"), None)
         last = next((r for r in reversed(replies) if r.type == "Done"), None)
-        badge = (last.grad or {}) if last is not None else {}
+        if last is None:
+            return JSONResponse({"ok": False, "nodes": 0,
+                                 "error": failure.message if failure else "probe returned nothing",
+                                 "node": failure.node_id if failure else None})
+        badge = last.grad or {}
         return JSONResponse({"ok": True, "nodes": len(states),
                              "device": badge.get("device"),
-                             "forward_only": badge.get("forward_only")})
+                             "forward_only": badge.get("forward_only"),
+                             **({"error": failure.message} if failure else {})})
 
     @app.post("/api/l1")
     async def ingest_l1(payload: dict[str, Any]) -> JSONResponse:

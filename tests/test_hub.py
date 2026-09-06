@@ -628,3 +628,14 @@ def test_save_refuses_to_overwrite_another_graph(tmp_path):
     finally:
         app.state.hub.kernel.stop()
         app.state.hub.l1.stop()
+
+
+def test_probe_reports_a_kernel_failure(client):
+    """probe가 실패하면 응답에 실린다 - 배지만 조용히 비면 사람은 고장으로 읽는다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    client.post("/api/ops", headers=auth, json={
+        "client_id": "c-1", "tmp_seq": 1, "kind": "set_param",
+        "payload": {"instance": "01J9I103", "path": "in_features", "value": 768}})
+    body = client.post("/api/probe", headers=auth, json={}).json()
+    assert body["ok"] is False and body["node"] == "01J9Q4B5"
+    assert body["error"]
