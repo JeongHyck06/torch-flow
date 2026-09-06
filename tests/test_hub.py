@@ -5,6 +5,8 @@ import subprocess
 import sys
 
 import pytest
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from conftest import MINIVIT
@@ -307,3 +309,30 @@ def test_export_returns_a_downloadable_figure(client):
     assert b"TorchFlow" not in pdf.content
 
     assert client.get("/api/export?format=png", headers=auth).status_code == 400
+
+
+def test_new_graph_starts_empty_and_saves(tmp_path):
+    """빈 캔버스 진입점(§2.2). 노드 0으로 열리고 편집 op를 받는다."""
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        assert client.post("/api/new", headers=auth, json={"name": "scratch"}).status_code == 200
+
+        graph = client.get("/api/graph", headers=auth).json()["graph"]
+        # 빈 컬렉션은 정본 직렬화에서 빠진다(exclude_defaults) - 노드 0의 모습이다.
+        assert graph["graph"]["name"] == "scratch" and "nodes" not in graph["graph"]
+
+        added = client.post("/api/ops", headers=auth, json={
+            "client_id": "c", "tmp_seq": 1, "kind": "add_node",
+            "payload": {"node": {"id": "n1", "label": "x", "type": "torchflow.Input",
+                                 "ports_out": [{"name": "x", "type": "Tensor",
+                                                "shape": ["B", 8], "dtype": "float32"}]}}})
+        assert added.status_code == 200 and added.json()["seq"] == 1
+
+        saved = client.post("/api/save", headers=auth).json()
+        assert saved["ok"] and saved["problems"] == []
+        assert Path(saved["path"]).is_file()
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()

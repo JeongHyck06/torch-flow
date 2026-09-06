@@ -171,8 +171,11 @@ class Engine:
             return set().union(*(self._touched_nodes(inner) for inner in op.get("ops") or [{}]))
         payload = op.get("payload") or {}
         scope = payload.get("composite") or "$graph"
-        if "node" in payload:
-            return {payload["node"]}
+        node = payload.get("node")
+        if isinstance(node, dict):   # add_node는 노드 명세를 통째로 싣는다
+            node = node.get("id")
+        if node:
+            return {node}
         if "instance" in payload:
             # 인스턴스 편집은 그 인스턴스를 호출하는 노드 전부를 건드린다(공유 인스턴스 포함).
             return self._callers.get((scope, payload["instance"]), set())

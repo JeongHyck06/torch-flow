@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__, paper, protocol as proto
-from ..ir import ModuleGraph, canonical_json, load
+from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
 from .engine import Engine
@@ -369,6 +369,28 @@ def create_app(
             media_type="image/svg+xml" if format == "svg" else "application/pdf",
             headers={"Content-Disposition": f'attachment; filename="{name}.{format}"'},
         )
+
+    @app.post("/api/new")
+    def new_graph(request: dict[str, Any] | None = None) -> JSONResponse:
+        """빈 그래프에서 시작한다(§2.2의 진입점 다섯 중 하나)."""
+        from ..ir import Graph
+
+        name = ((request or {}).get("name") or "untitled").strip() or "untitled"
+        hub.open(ModuleGraph(graph=Graph(name=name)))
+        return JSONResponse({"ok": True, "name": name})
+
+    @app.post("/api/save")
+    def save_graph(request: dict[str, Any] | None = None) -> JSONResponse:
+        """그래프를 파일로 쓴다. 경로가 없으면 state-dir 안에 만든다."""
+        if hub.store is None:
+            return no_graph()
+        given = (request or {}).get("path")
+        path = Path(given).expanduser() if given else (
+            hub.graph_path or hub.state_dir / f"{hub.store.ir.graph.name}.tfg.json")
+        problems = ir_problems(hub.store.ir)
+        hub.store.save(path)
+        hub.graph_path = path
+        return JSONResponse({"ok": True, "path": str(path), "problems": problems})
 
     @app.get("/api/layout")
     def read_layout() -> JSONResponse:
