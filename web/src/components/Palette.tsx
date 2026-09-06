@@ -112,12 +112,11 @@ export function Palette() {
   );
 }
 
-/** 이미 노드가 있는 자리면 대각선으로 비켜 간다. */
+/** 이미 노드가 있는 자리면 오른쪽으로 비켜 간다. 간격은 노드 폭(216)을 넘겨야 겹치지 않는다. */
 function freeSpot(at: { x: number; y: number }, taken: { x: number; y: number }[]) {
   const spot = { ...at };
-  while (taken.some((other) => Math.abs(other.x - spot.x) < 48 && Math.abs(other.y - spot.y) < 48)) {
-    spot.x += 56;
-    spot.y += 56;
+  while (taken.some((other) => Math.abs(other.x - spot.x) < 240 && Math.abs(other.y - spot.y) < 96)) {
+    spot.x += 260;
   }
   return spot;
 }
