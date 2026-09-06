@@ -353,3 +353,11 @@ def test_close_returns_to_the_start_screen(app, client):
     # 다시 열 수 있어야 한다 - 닫기가 종착역이 아니다.
     assert client.post("/api/new", headers=auth, json={"name": "next"}).status_code == 200
     assert client.get("/api/health", headers=auth).json()["graph_open"] is True
+
+
+def test_code_route_renders_the_model(client):
+    """Code 탭은 디스크에 쓰지 않고 메모리에서 렌더한다(§7.6.2)."""
+    body = client.get("/api/code", headers={"Authorization": f"token {TOKEN}"}).json()
+    assert body["lines"] > 50
+    assert "class MiniViT(nn.Module):" in body["code"]
+    assert body["ir_sha256"]

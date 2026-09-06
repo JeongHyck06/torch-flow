@@ -16,7 +16,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, paper, protocol as proto
+from .. import __version__, codegen, paper, protocol as proto
 from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
@@ -383,6 +383,21 @@ def create_app(
         except Exception as exc:
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
         return JSONResponse({"ok": True, "name": hub.store.ir.graph.name})
+
+    @app.get("/api/code")
+    def read_code() -> JSONResponse:
+        """Code 탭(§7.3 model-only). 디스크에 쓰지 않고 메모리에서 렌더한다(§7.6.2)."""
+        if hub.store is None:
+            return no_graph()
+        try:
+            code = codegen.generate(
+                hub.store.ir, version=__version__,
+                source=str(hub.graph_path) if hub.graph_path else "graph/model.tfg.json",
+                specs=hub.node_states)
+        except codegen.CodegenError as exc:
+            return JSONResponse({"error": str(exc), "node": exc.node_id}, status_code=400)
+        return JSONResponse({"code": code, "ir_sha256": codegen.ir_hash(hub.store.ir),
+                             "lines": len(code.splitlines())})
 
     @app.get("/api/export")
     def export_figure(format: str = "svg", preset: str = paper.DEFAULT_PRESET,
