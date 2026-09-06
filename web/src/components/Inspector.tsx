@@ -50,6 +50,7 @@ export function Inspector() {
           <div><dt>나가기</dt><dd>Esc</dd></div>
           <div><dt>전체 보기</dt><dd>f</dd></div>
           <div><dt>위치 조정</dt><dd>드래그</dd></div>
+          <div><dt>연결 끊기</dt><dd>선 클릭 후 Delete</dd></div>
         </dl>
       </aside>
     );

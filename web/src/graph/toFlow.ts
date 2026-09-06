@@ -149,6 +149,8 @@ export function toFlow(
         id: `${src}->${dst}`,
         source,
         target,
+        // 끊을 때 disconnect op에 그대로 실린다.
+        data: { src, dst },
         // 굵기 = log(원소 수), 색 = dtype, 라벨 = shape (§6.1).
         style: {
           strokeWidth: edgeWidth(spec?.shape),

@@ -23,6 +23,9 @@ const TAB_LABELS: Record<Tab, string> = {
 
 const COLORS = ["var(--dtype-f32)", "#4a86c9", "#7c8898", "#2a558d", "#5e93d1"];
 
+const DEFAULT_HEIGHT = 232;
+const MIN_HEIGHT = 160;
+
 export function RunPanel() {
   const [tab, setTab] = useState<Tab>("curves");
   const [runs, setRuns] = useState<RunInfo[]>([]);
@@ -36,6 +39,29 @@ export function RunPanel() {
   const setData = useStore((state) => state.setData);
   const openData = useStore((state) => state.openData);
   const [applied, setApplied] = useState<string | null>(null);
+  // 위쪽 경계를 끌어 높이를 바꾼다. 곡선을 크게 보려는 것이라 브라우저에 기억해 둔다.
+  const [height, setHeight] = useState(() => {
+    try { return Number(localStorage.getItem("torchflow.runpanel.height")) || DEFAULT_HEIGHT; }
+    catch { return DEFAULT_HEIGHT; }
+  });
+  const resize = (next: number) => {
+    const clamped = Math.max(MIN_HEIGHT, Math.min(next, window.innerHeight - 160));
+    setHeight(clamped);
+    try { localStorage.setItem("torchflow.runpanel.height", String(clamped)); } catch { /* 저장 못 해도 동작한다 */ }
+  };
+  const onGrip = (event: React.PointerEvent<HTMLDivElement>) => {
+    const startY = event.clientY;
+    const startHeight = height;
+    const grip = event.currentTarget;
+    grip.setPointerCapture(event.pointerId);
+    const move = (moving: PointerEvent) => resize(startHeight + (startY - moving.clientY));
+    const stop = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", stop);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", stop);
+  };
 
   // 레시피를 그래프에 붙인다. hub가 Input을 set_ports op로 맞추고 브로드캐스트한다.
   const apply = async () => {
@@ -77,7 +103,13 @@ export function RunPanel() {
   const keys = [...new Set(runs.flatMap((run) => run.keys))];
 
   return (
-    <section className="runpanel" aria-label="Run 패널">
+    <section className="runpanel" aria-label="Run 패널" style={{ height }}>
+      <div
+        className="runpanel__grip" role="separator" aria-label="패널 높이"
+        title="끌어서 높이 조절 · 더블클릭으로 크게/원래대로"
+        onPointerDown={onGrip}
+        onDoubleClick={() => resize(height > DEFAULT_HEIGHT ? DEFAULT_HEIGHT : Math.round(window.innerHeight * 0.6))}
+      />
       <div className="runpanel__tabs">
         {(Object.keys(TAB_LABELS) as Tab[]).map((name) => (
           <button
