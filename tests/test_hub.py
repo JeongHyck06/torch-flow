@@ -231,6 +231,8 @@ def test_open_loads_a_template(tmp_path):
         response = client.post("/api/open", headers=auth, json={"path": template["path"]})
         assert response.status_code == 200 and response.json()["name"] == "ResNet18"
         assert client.get("/api/graph", headers=auth).status_code == 200
+        # 템플릿의 fc는 rt.num_classes를 참조한다. 첫 화면에는 --rt를 칠 자리가 없다.
+        assert app.state.hub.rt == {"num_classes": 10}
     finally:
         app.state.hub.kernel.stop()
         app.state.hub.l1.stop()

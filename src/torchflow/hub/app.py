@@ -99,10 +99,10 @@ class Hub:
         catalogue = [
             {"id": "resnet18", "name": "ResNet-18 / CIFAR-10",
              "recipe": "200 ep · SGD 0.1 + cosine", "metric": "≈95.0 % top-1",
-             "file": "resnet18.tfg.json"},
+             "file": "resnet18.tfg.json", "rt": {"num_classes": 10}},
             {"id": "minivit", "name": "MiniViT / CIFAR-10",
              "recipe": "설계 예제 · 검증 전", "metric": "—",
-             "file": "minivit.tfg.json"},
+             "file": "minivit.tfg.json", "rt": {"num_classes": 10}},
             {"id": "nanogpt", "name": "nanoGPT char / Shakespeare",
              "recipe": "5,000 iter · 6층 384 dim", "metric": "val loss ≈1.47",
              "file": "nanogpt.tfg.json"},
@@ -505,9 +505,12 @@ def create_app(
     def open_graph(request: dict[str, Any]) -> JSONResponse:
         """템플릿 또는 경로를 연다. 첫 화면의 진입점 하나."""
         path = Path(request["path"]).expanduser()
-        allowed = {entry["path"] for entry in hub.templates()}
-        if str(path) not in allowed and not path.is_file():
+        templates = {entry["path"]: entry for entry in hub.templates()}
+        if str(path) not in templates and not path.is_file():
             return JSONResponse({"error": f"not found: {path}"}, status_code=404)
+        # 템플릿은 런타임 상수를 스스로 들고 온다. IR에는 그 자리가 없고 첫 화면에는
+        # --rt를 칠 곳이 없어서, 안 채우면 fc에서 "unresolved rt.num_classes"로 끝난다.
+        hub.rt.update((templates.get(str(path)) or {}).get("rt") or {})
         try:
             hub.open(load(path), path)
         except Exception as exc:
