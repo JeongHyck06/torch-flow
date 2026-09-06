@@ -16,6 +16,7 @@ src/torchflow/hub/static/
 
 # 로컬 상태 (--state-dir 기본값): 캐시·journal·layout·registry
 .torchflow/
+runs/
 
 # 빌드 산출물
 web/tsconfig.tsbuildinfo
