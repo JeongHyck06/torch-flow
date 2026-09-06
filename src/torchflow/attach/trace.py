@@ -13,6 +13,8 @@ hook에 걸리지 않으므로 그 자리의 엣지가 비어 있다. 노드는 
 
 from __future__ import annotations
 
+import ast
+import inspect
 from typing import Any
 
 from ..ir import Graph, Instance, ModuleGraph, Node, Port
@@ -48,24 +50,41 @@ def _module_args(module) -> dict[str, Any]:
     extra = module.extra_repr()
     if not extra:
         return {}
+    # 이름 없는 앞쪽 값은 __init__ 인자 순서를 따른다 - torch.nn의 extra_repr 관례다.
+    try:
+        names = [name for name in inspect.signature(type(module).__init__).parameters
+                 if name != "self"]
+    except (TypeError, ValueError):
+        names = []
     args: dict[str, Any] = {}
-    for index, chunk in enumerate(part.strip() for part in extra.split(",")):
-        if not chunk:
-            continue
+    for index, chunk in enumerate(_split_top_level(extra)):
         key, sep, value = chunk.partition("=")
-        args[key.strip() if sep else f"arg{index}"] = _literal(value.strip() if sep else chunk)
+        if not sep or not key.strip().isidentifier():
+            key, value = (names[index] if index < len(names) else f"arg{index}"), chunk
+        args[key.strip()] = _literal(value.strip())
     return args
 
 
+def _split_top_level(text: str) -> list[str]:
+    """최상위 쉼표에서만 자른다. ``kernel_size=(8, 8)`` 안의 쉼표는 지나간다."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts if part.strip()]
+
+
 def _literal(text: str) -> Any:
-    for cast in (int, float):
-        try:
-            return cast(text)
-        except ValueError:
-            continue
-    if text in ("True", "False"):
-        return text == "True"
-    return text
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return text
 
 
 def trace_module(model, example_input, *, name: str | None = None) -> ModuleGraph:

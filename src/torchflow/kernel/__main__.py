@@ -21,7 +21,8 @@ from ..ir import ModuleGraph, canonical_json
 
 
 class Kernel:
-    def __init__(self, endpoint: str, level: str, identity: str, state_dir: Path):
+    def __init__(self, endpoint: str, level: str, identity: str, state_dir: Path,
+                 parent: int | None = None):
         self.level = level
         self.state_dir = state_dir
         self.graph: ModuleGraph | None = None
@@ -31,6 +32,9 @@ class Kernel:
         self.l1_pass = None      # 마지막 probe 패스 - Debug Console이 여기서 값을 읽는다.
         self.l1_device = None    # 모듈 트리가 지금 올라가 있는 디바이스
         self.budget = None       # ProbeBudget
+        # hub의 pid. ppid를 스스로 읽으면 hub가 이미 죽은 뒤에 뜬 커널은 바뀐 값을 원래
+        # 부모로 알고 영영 살아남는다 - 그래서 띄우는 쪽이 자기 pid를 넘긴다.
+        self.parent = parent if parent is not None else os.getppid()
         context = zmq.Context.instance()
         self.socket = context.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.IDENTITY, identity.encode())
@@ -49,6 +53,8 @@ class Kernel:
     def announce(self) -> None:
         import torch
 
+        from .devices import available_devices
+
         registry_path = None
         if self.level == "L0":
             from .registry import write
@@ -59,7 +65,9 @@ class Kernel:
                 level=self.level,
                 pid=os.getpid(),
                 torch_version=torch.__version__,
-                device="cpu" if self.level == "L0" else "cuda" if torch.cuda.is_available() else "cpu",
+                # 첫 화면의 디바이스 칩이 읽는 값. L0 자체는 CPU에서 돌지만 칩은 이 컴퓨터에
+                # 어떤 가속기가 있는지를 말해야 한다.
+                device=(available_devices(torch) or ["cpu"])[0],
                 registry_path=registry_path,
             )
         )
@@ -67,6 +75,11 @@ class Kernel:
     def serve(self) -> None:
         self.announce()
         while True:
+            # hub가 어떻게 죽든(SIGKILL 포함) 커널이 고아로 남지 않는다 - 부모가 바뀌면 나간다.
+            if not self.socket.poll(1000):
+                if os.getppid() != self.parent:
+                    return
+                continue
             try:
                 message, _ = proto.decode_to_kernel(self.socket.recv_multipart())
             except Exception as exc:  # 손상된 프레임에 커널이 죽지 않는다.
@@ -77,14 +90,13 @@ class Kernel:
             try:
                 self.dispatch(message)
             except Exception as exc:
-                self.send(
-                    proto.Error(
-                        req_id=getattr(message, "req_id", "?"),
-                        kind="kernel",
-                        message=f"{type(exc).__name__}: {exc}",
-                        traceback=traceback.format_exc(),
-                    )
-                )
+                req_id = getattr(message, "req_id", "?")
+                self.send(proto.Error(req_id=req_id, kind="kernel",
+                                      message=f"{type(exc).__name__}: {exc}",
+                                      traceback=traceback.format_exc()))
+                # 요청은 Progress로 끝나야 한다. 안 보내면 hub가 타임아웃(120 s)까지 기다리고,
+                # 그 사이 이벤트 루프가 서서 화면 전체가 멈춘다.
+                self.send(proto.Progress(req_id=req_id, done=0, total=0))
 
     def dispatch(self, message) -> None:
         if message.type == "Ping":
@@ -281,10 +293,11 @@ def main() -> None:
     parser.add_argument("--level", default="L0", choices=["L0", "L1"])
     parser.add_argument("--identity", default="kernel")
     parser.add_argument("--state-dir", default=".torchflow")
+    parser.add_argument("--parent", type=int, default=None, help="띄운 hub의 pid. 죽으면 따라 나간다")
     args = parser.parse_args()
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
-    Kernel(args.endpoint, args.level, args.identity, state_dir).serve()
+    Kernel(args.endpoint, args.level, args.identity, state_dir, parent=args.parent).serve()
 
 
 if __name__ == "__main__":

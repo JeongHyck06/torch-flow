@@ -159,3 +159,46 @@ def test_concurrent_requests_start_one_kernel(tmp_path):
         assert len(set(pids)) == 1
     finally:
         manager.stop()
+
+
+def test_kernel_exits_when_its_parent_dies(tmp_path):
+    """hub가 어떻게 죽든(SIGKILL 포함) 커널이 고아로 남지 않는다."""
+    import subprocess
+    import sys
+    import textwrap
+
+    parent = subprocess.Popen([sys.executable, "-c", textwrap.dedent(f"""
+        import os, subprocess, sys, time
+        child = subprocess.Popen([sys.executable, "-m", "torchflow.kernel",
+                                  "--endpoint", "tcp://127.0.0.1:1",
+                                  "--state-dir", {str(tmp_path / "state")!r},
+                                  "--parent", str(os.getpid())])
+        print(child.pid, flush=True)
+        time.sleep(60)
+    """)], stdout=subprocess.PIPE, text=True)
+    kernel_pid = int(parent.stdout.readline())
+    parent.kill()
+    parent.wait()
+
+    def alive() -> bool:
+        try:
+            os.kill(kernel_pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    deadline = time.time() + 20
+    while time.time() < deadline and alive():
+        time.sleep(0.2)
+    assert not alive(), "커널이 부모 없이 살아남았다"
+
+
+def test_a_dispatch_failure_still_ends_the_request(kernel):
+    """커널 안에서 예외가 나도 요청은 Progress로 끝난다 - hub가 타임아웃까지 서 있으면 안 된다."""
+    started = time.perf_counter()
+    replies = kernel.request(
+        proto.RunNodes(req_id="r-bad", graph={"graph": {"nodes": "not-a-list"}}, batch=[]),
+        timeout=10)
+    assert time.perf_counter() - started < 5
+    assert replies[0].type == "Error" and replies[0].kind == "kernel"
+    assert replies[-1].type == "Progress"

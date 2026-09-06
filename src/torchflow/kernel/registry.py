@@ -33,8 +33,8 @@ NN_BLOCKS: dict[str, list[str]] = {
 BUILTIN_BLOCKS: list[dict[str, Any]] = [
     {"type": "torchflow.Input", "category": "구조/제어", "params": {}, "ports": {"in": [], "out": ["x"]}},
     {"type": "torchflow.Output", "category": "구조/제어", "params": {}, "ports": {"in": ["input"], "out": []}},
-    {"type": "torchflow.Repeat", "category": "구조/제어", "params": {}, "ports": {"in": [], "out": []}},
-    {"type": "torchflow.Switch", "category": "구조/제어", "params": {}, "ports": {"in": [], "out": []}},
+    # Repeat와 Switch는 노드가 아니라 인스턴스 종류다(§4.4) - 본문 컴포지트 없이는 놓을 수 없어
+    # 팔레트에 두면 "module 'torchflow' has no attribute 'Repeat'"로 끝난다. 컴포지트 승격과 함께 온다.
     {"type": "torch.add", "category": "텐서 연산", "params": {}, "ports": {"in": ["input", "other"], "out": ["output"]}},
     {"type": "torch.sub", "category": "텐서 연산", "params": {}, "ports": {"in": ["input", "other"], "out": ["output"]}},
     {"type": "torch.mul", "category": "텐서 연산", "params": {}, "ports": {"in": ["input", "other"], "out": ["output"]}},

@@ -231,6 +231,8 @@ def test_open_loads_a_template(tmp_path):
         response = client.post("/api/open", headers=auth, json={"path": template["path"]})
         assert response.status_code == 200 and response.json()["name"] == "ResNet18"
         assert client.get("/api/graph", headers=auth).status_code == 200
+        # 템플릿의 fc는 rt.num_classes를 참조한다. 첫 화면에는 --rt를 칠 자리가 없다.
+        assert app.state.hub.rt == {"num_classes": 10}
     finally:
         app.state.hub.kernel.stop()
         app.state.hub.l1.stop()
@@ -606,3 +608,72 @@ def test_training_refuses_a_graph_without_an_input(app, client):
 
     response = client.post("/api/train", headers=auth, json={})
     assert response.status_code == 400 and "Input" in response.json()["error"]
+
+
+def test_save_refuses_to_overwrite_another_graph(tmp_path):
+    """같은 이름의 새 그래프가 기존 파일을 말없이 지우면 안 된다."""
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    target = tmp_path / "graph" / "scratch.tfg.json"
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        client.post("/api/new", headers=auth, json={"name": "scratch"})
+        assert client.post("/api/save", headers=auth, json={"path": str(target)}).status_code == 200
+        # 열려 있는 파일에 다시 저장하는 것은 된다.
+        assert client.post("/api/save", headers=auth, json={"path": str(target)}).status_code == 200
+
+        client.post("/api/new", headers=auth, json={"name": "scratch"})
+        response = client.post("/api/save", headers=auth, json={"path": str(target)})
+        assert response.status_code == 409 and "이미 있습니다" in response.json()["error"]
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()
+
+
+def test_probe_reports_a_kernel_failure(client):
+    """probe가 실패하면 응답에 실린다 - 배지만 조용히 비면 사람은 고장으로 읽는다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    client.post("/api/ops", headers=auth, json={
+        "client_id": "c-1", "tmp_seq": 1, "kind": "set_param",
+        "payload": {"instance": "01J9I103", "path": "in_features", "value": 768}})
+    body = client.post("/api/probe", headers=auth, json={}).json()
+    assert body["ok"] is False and body["node"] == "01J9Q4B5"
+    assert body["error"]
+
+
+def test_merge_survives_concurrent_polling(tmp_path):
+    """이벤트 병합은 스레드풀에서 동시에 불린다. 커서가 파일 끝을 넘으면 이벤트를 영영 잃는다."""
+    import threading
+    import time
+
+    from torchflow.hub.tracker import Tracker
+
+    directory = tmp_path / "run"
+    directory.mkdir()
+    events = directory / "events.jsonl"
+    tracker = Tracker(tmp_path / "runs.db")
+    tracker.ensure_run("r")
+    handle = l2.RunHandle(run_id="r", directory=directory)
+    running = True
+
+    def poll():
+        while running:
+            l2.merge(handle, tracker)
+
+    threads = [threading.Thread(target=poll) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    with events.open("a", encoding="utf-8") as stream:
+        for step in range(1500):
+            stream.write(json.dumps({"kind": "scalar", "step": step, "loss": 1.0}) + "\n")
+            stream.flush()
+            time.sleep(0.0005)
+        stream.write(json.dumps({"kind": "status", "state": "stopped", "step": 1499}) + "\n")
+    running = False
+    for thread in threads:
+        thread.join()
+    l2.merge(handle, tracker)
+    tracker.close()
+
+    assert handle.cursor == events.stat().st_size
+    assert handle.state == "stopped" and handle.step == 1499

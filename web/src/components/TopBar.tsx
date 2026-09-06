@@ -27,6 +27,7 @@ export function TopBar() {
   const dirty = useStore((state) => state.dirty);
   const setDirty = useStore((state) => state.setDirty);
   const [saving, setSaving] = useState<string | null>(null);
+  const [probeNote, setProbeNote] = useState<string | null>(null);
 
   const home = async () => {
     if (dirty && !window.confirm("저장하지 않은 편집이 있습니다. 첫 화면으로 나갈까요?")) return;
@@ -51,8 +52,12 @@ export function TopBar() {
 
   const probe = async () => {
     setProbing(true);
+    setProbeNote(null);
     try {
-      await runProbe();
+      // 실패와 forward-only는 배지가 비는 이유다 - 말해 주지 않으면 고장으로 읽힌다.
+      const result = await runProbe();
+      if (result.error) setProbeNote(result.error);
+      else if (result.forward_only) setProbeNote(`${result.device ?? ""} · forward only`);
     } finally {
       setProbing(false);
     }
@@ -135,6 +140,7 @@ export function TopBar() {
           {probing ? "Probe…" : "Probe"}
         </button>
         {probeObjective && <span className="probe__obj">obj: {probeObjective}</span>}
+        {probeNote && <span className="probe__note warn mono">{probeNote}</span>}
         <label className="probe__toggle">
           <input type="checkbox" checked={gradOverlay} onChange={toggleGradOverlay} />
           Grad-Flow
@@ -160,7 +166,8 @@ export function TopBar() {
       <div className="totals">
         <span className="totals__item">Σ {formatCount(totals.params)} params</span>
         {totals.band && (
-          <span className="totals__item" title="cuDNN workspace·할당자 파편화를 포함한 밴드">
+          <span className="totals__item totals__item--band"
+                title="cuDNN workspace·할당자 파편화를 포함한 밴드">
             est. {totals.band[0].toFixed(2)}–{totals.band[1].toFixed(2)} GB @B={totals.batch}
           </span>
         )}

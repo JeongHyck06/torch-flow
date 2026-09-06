@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
@@ -576,6 +577,13 @@ class L0Pass:
         return outputs
 
     def _fail(self, node_id: str, exc: Exception) -> L0Error:
+        text = str(exc)
+        # 파이썬 원문 대신 그래프의 말로 - 편집 중 가장 흔한 두 실패다.
+        if isinstance(exc, TypeError) and "required positional argument" in text:
+            names = ", ".join(re.findall(r"'([^']+)'", text))
+            if ".__init__()" in text:
+                return L0Error(node_id, f"필수 인자가 비어 있습니다: {names}", "args")
+            return L0Error(node_id, f"입력 포트가 연결되지 않았습니다: {names}", "input")
         return L0Error(node_id, self._demangle(f"{type(exc).__name__}: {exc}"), self._kind_of(exc))
 
     def _invoke(self, node_id: str, target, kwargs: dict, args: dict):

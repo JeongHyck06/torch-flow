@@ -99,10 +99,10 @@ class Hub:
         catalogue = [
             {"id": "resnet18", "name": "ResNet-18 / CIFAR-10",
              "recipe": "200 ep · SGD 0.1 + cosine", "metric": "≈95.0 % top-1",
-             "file": "resnet18.tfg.json"},
+             "file": "resnet18.tfg.json", "rt": {"num_classes": 10}},
             {"id": "minivit", "name": "MiniViT / CIFAR-10",
              "recipe": "설계 예제 · 검증 전", "metric": "—",
-             "file": "minivit.tfg.json"},
+             "file": "minivit.tfg.json", "rt": {"num_classes": 10}},
             {"id": "nanogpt", "name": "nanoGPT char / Shakespeare",
              "recipe": "5,000 iter · 6층 384 dim", "metric": "val loss ≈1.47",
              "file": "nanogpt.tfg.json"},
@@ -283,6 +283,10 @@ class Hub:
 
 # 재시작이 필요한 변경을 사람 말로 옮긴 것. Phase B는 **표시만** 한다 - 자동
 # 재시작은 신뢰를 깨므로 사람이 Stop하고 다시 누른다(ADR-05).
+# 트레이스 그래프의 인자는 extra_repr에서 건진 표시용 문자열이라 모듈을 다시 만들 수 없고,
+# 함수형 연산이 빠진 엣지로 forward를 쓰면 틀린 모델이 된다. 코드도 학습도 원본 .py의 몫이다.
+TRACED_IS_READ_ONLY = "트레이스로 가져온 그래프는 코드를 만들지 않습니다. 원본 .py가 정본입니다"
+
 RESTART_REASON = {
     "scheduler": "스케줄러 변경은 재생성이 필요합니다. Stop 후 다시 Run하세요",
     "restart": "가중치는 유지되지만 재시작이 필요합니다. Stop 후 다시 Run하세요",
@@ -501,9 +505,12 @@ def create_app(
     def open_graph(request: dict[str, Any]) -> JSONResponse:
         """템플릿 또는 경로를 연다. 첫 화면의 진입점 하나."""
         path = Path(request["path"]).expanduser()
-        allowed = {entry["path"] for entry in hub.templates()}
-        if str(path) not in allowed and not path.is_file():
+        templates = {entry["path"]: entry for entry in hub.templates()}
+        if str(path) not in templates and not path.is_file():
             return JSONResponse({"error": f"not found: {path}"}, status_code=404)
+        # 템플릿은 런타임 상수를 스스로 들고 온다. IR에는 그 자리가 없고 첫 화면에는
+        # --rt를 칠 곳이 없어서, 안 채우면 fc에서 "unresolved rt.num_classes"로 끝난다.
+        hub.rt.update((templates.get(str(path)) or {}).get("rt") or {})
         try:
             hub.open(load(path), path)
         except Exception as exc:
@@ -515,6 +522,8 @@ def create_app(
         """Code 탭(§7.3 model-only). 디스크에 쓰지 않고 메모리에서 렌더한다(§7.6.2)."""
         if hub.store is None:
             return no_graph()
+        if hub.traced:
+            return JSONResponse({"error": TRACED_IS_READ_ONLY}, status_code=400)
         try:
             code = codegen.generate(
                 hub.store.ir, version=__version__,
@@ -587,6 +596,11 @@ def create_app(
                                   and hub.graph_path.name == f"{name}.tfg.json") else None
         path = Path(given).expanduser() if given else (
             keep or Path.cwd() / "graph" / f"{name}.tfg.json")
+        # 열려 있는 파일이 아닌데 이미 있으면 덮어쓰지 않는다 - 다른 그래프가 지워진다.
+        if path.is_file() and (hub.graph_path is None
+                               or path.resolve() != hub.graph_path.resolve()):
+            return JSONResponse({"error": f"{path.name}이 이미 있습니다. 이름을 바꿔 저장하세요"},
+                                status_code=409)
         problems = ir_problems(hub.store.ir)
         path.parent.mkdir(parents=True, exist_ok=True)
         hub.store.save(path)
@@ -654,14 +668,20 @@ def create_app(
 
         for state in states:
             await hub.broadcast(state)
-        # 어느 디바이스에서 돌았는지 돌려준다. 학습이 GPU를 잡고 있으면 L1은 CPU
-        # forward-only로 내려가는데(§5.1.5), 그 사실이 화면에 안 보이면 사람은
-        # 배지가 사라진 것을 버그로 읽는다.
+        # 어느 디바이스에서 돌았는지, 무엇이 실패했는지 돌려준다. 학습이 GPU를 잡고 있으면
+        # L1은 CPU forward-only로 내려가고(§5.1.5) backward가 실패해도 forward 결과는
+        # 남는데, 그 사실이 화면에 안 보이면 사람은 배지가 사라진 것을 고장으로 읽는다.
+        failure = next((r for r in replies if r.type == "Error"), None)
         last = next((r for r in reversed(replies) if r.type == "Done"), None)
-        badge = (last.grad or {}) if last is not None else {}
+        if last is None:
+            return JSONResponse({"ok": False, "nodes": 0,
+                                 "error": failure.message if failure else "probe returned nothing",
+                                 "node": failure.node_id if failure else None})
+        badge = last.grad or {}
         return JSONResponse({"ok": True, "nodes": len(states),
                              "device": badge.get("device"),
-                             "forward_only": badge.get("forward_only")})
+                             "forward_only": badge.get("forward_only"),
+                             **({"error": failure.message} if failure else {})})
 
     @app.post("/api/l1")
     async def ingest_l1(payload: dict[str, Any]) -> JSONResponse:
@@ -719,6 +739,8 @@ def create_app(
         """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
         if hub.store is None:
             return no_graph()
+        if hub.traced:
+            return JSONResponse({"error": TRACED_IS_READ_ONLY}, status_code=400)
         options = request or {}
 
         graph = hub.store.ir.graph
