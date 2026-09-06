@@ -355,9 +355,7 @@ body {
 .snippet__notes .mono { font-size: 12px; color: var(--text-secondary); }
 
 .templates__row--on .templates__name { color: var(--state-ok); }
-.datacard-wrap { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border-subtle); }
-.datacard-wrap .scratch__row { margin-bottom: 14px; }
-.datacard { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.datacard { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
 .datacard h3 {
   margin: 12px 0 6px; font-size: 11px; font-weight: 500; letter-spacing: 0.04em;
   text-transform: uppercase; color: var(--text-muted);
@@ -369,8 +367,9 @@ body {
 .datacard__bar { display: grid; grid-template-columns: 96px 1fr 56px; align-items: center; gap: 8px; }
 .datacard__bar .muted { text-align: right; }
 .datacard__fill { display: block; height: 6px; border-radius: 2px; background: var(--dtype-f32); }
-.datacard__thumbs { display: flex; gap: 8px; margin-top: 12px; }
-.datacard__thumblabels { display: flex; flex-direction: column; font-size: 11px; }
+/* 좁은 열에서는 라벨이 눌리지 않고 격자가 가로로 넘친다(스크롤). */
+.datacard__thumbs { display: flex; gap: 8px; margin-top: 12px; overflow-x: auto; }
+.datacard__thumblabels { display: flex; flex-direction: column; font-size: 11px; flex-shrink: 0; }
 .datacard__thumblabels span { display: flex; align-items: center; }
 .datacard__thumbs img { image-rendering: pixelated; border: 1px solid var(--border-subtle); }
 .datacard__table { margin-top: 12px; overflow-x: auto; }
@@ -400,6 +399,47 @@ body {
 .blockdetail__track { position: relative; height: 8px; }
 .blockdetail__fill { position: absolute; left: 0; top: 1px; height: 6px; border-radius: 2px; background: var(--dtype-f32); }
 .blockdetail__fill--before { top: 1px; background: var(--border-default); }
+
+/* ── Input 데이터 창 · 팔레트와 같은 떠 있는 패널(헤어라인, radius 12, 그림자 없음) ── */
+
+.datadialog__scrim {
+  position: absolute; inset: 0; z-index: 8;
+  background: var(--surface-canvas); opacity: 0.6;
+}
+.datadialog {
+  position: absolute; z-index: 9; left: 50%; top: 32px; transform: translateX(-50%);
+  width: min(940px, calc(100% - 48px)); max-height: calc(100% - 64px);
+  display: flex; flex-direction: column;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-default); border-radius: var(--radius-panel); overflow: hidden;
+}
+.datadialog__head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 16px; border-bottom: 1px solid var(--border-subtle);
+}
+.datadialog__title { font: 600 14px var(--font-sans); color: var(--text-primary); }
+.datadialog__head > .mono { flex: 1; font-size: 12px; }
+.datadialog__body {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 300px 1fr;
+}
+.datadialog__side { padding: 14px; border-right: 1px solid var(--border-subtle); overflow: auto; }
+.datadialog__main { padding: 14px 18px; overflow: auto; }
+.datadialog__drop {
+  width: 100%; display: flex; flex-direction: column; gap: 5px; text-align: left;
+  padding: 16px; background: var(--surface-canvas);
+  border: 1.5px dashed var(--border-default); border-radius: 10px;
+  cursor: pointer; font: inherit; color: inherit;
+}
+.datadialog__drop--hover { border-color: var(--state-queued); background: var(--surface-dock); }
+.datadialog__drop .dropband__title { font-size: 14px; }
+.datadialog__drop .dropband__sub { font-size: 12px; }
+.datadialog__side .templates { margin-top: 12px; }
+.datadialog__error { margin: 0; padding: 8px 16px; border-top: 1px solid var(--border-subtle); }
+.datadialog__foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--border-subtle);
+}
+.inspector__action { margin-top: 10px; }
 
 .datafolder { display: flex; gap: 8px; margin-top: 10px; }
 .datafolder input {

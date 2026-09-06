@@ -3,6 +3,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 
 import { Canvas } from "./components/Canvas";
 import { CodeView } from "./components/CodeView";
+import { DataDialog } from "./components/DataDialog";
 import { Inspector } from "./components/Inspector";
 import { LayerStrip } from "./components/LayerStrip";
 import { RunPanel } from "./components/RunPanel";
@@ -18,6 +19,7 @@ export function App() {
   const setTotals = useStore((state) => state.setTotals);
   const graph = useStore((state) => state.graph);
   const tab = useStore((state) => state.tab);
+  const dataOpen = useStore((state) => state.dataOpen);
   const [checked, setChecked] = useState(false);
 
   const load = useCallback(async () => {
@@ -61,6 +63,7 @@ export function App() {
                 <Canvas />
               </ReactFlowProvider>
               <RunPanel />
+              {dataOpen && <DataDialog />}
             </div>
           </>
         )}

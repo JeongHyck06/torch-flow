@@ -46,6 +46,8 @@ interface State {
   /** 이 그래프가 배우는 데이터와 정제 설정. 그래프의 experiment.data가 정본이다. */
   dataset: string;
   recipe: Recipe | null;
+  /** Input 블록의 데이터 창이 열려 있나. */
+  dataOpen: boolean;
 
   setGraph: (graph: ModuleGraph, seq: number) => void;
   openGraph: (graph: ModuleGraph, seq: number) => void;
@@ -70,6 +72,8 @@ interface State {
   setDirty: (dirty: boolean) => void;
   openPalette: (at: { x: number; y: number }) => void;
   setData: (dataset: string, recipe: Recipe | null) => void;
+  openData: () => void;
+  closeData: () => void;
   closePalette: () => void;
   enterScope: (scope: Scope) => void;
   popToScope: (index: number) => void;
@@ -106,6 +110,7 @@ export const useStore = create<State>((set, get) => ({
   paletteAt: null,
   dataset: "teacher",
   recipe: null,
+  dataOpen: false,
 
   openGraph: (graph, seq) =>
     // **다른** 그래프를 연다. 이전 그래프에 딸린 것은 전부 비운다 - 노드 상태,
@@ -113,7 +118,7 @@ export const useStore = create<State>((set, get) => ({
     // 거기서 비우면 매 편집마다 배지가 사라진다. 그래서 둘을 나눈다.
     set({ graph, seq, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" }],
-          undoStack: [], redoStack: [], dirty: false, paletteAt: null,
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false,
           totals: { params: 0, band: null, batch: 64 },
           ...dataOf(graph) }),
   setGraph: (graph, seq) =>
@@ -127,7 +132,7 @@ export const useStore = create<State>((set, get) => ({
   closeGraph: () =>
     set({ graph: null, seq: 0, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: "Net", callPath: "" }],
-          undoStack: [], redoStack: [], dirty: false, paletteAt: null,
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false,
           totals: { params: 0, band: null, batch: 64 } }),
   applyNodeState: (state) =>
     // L1은 L0가 채운 spec 위에 grad 배지를 얹는다 - 축이 다르므로 덮어쓰지 않고 합친다.
@@ -184,6 +189,8 @@ export const useStore = create<State>((set, get) => ({
   setDirty: (dirty) => set({ dirty }),
   openPalette: (paletteAt) => set({ paletteAt }),
   setData: (dataset, recipe) => set({ dataset, recipe }),
+  openData: () => set({ dataOpen: true, paletteAt: null }),
+  closeData: () => set({ dataOpen: false }),
   closePalette: () => set({ paletteAt: null }),
   enterScope: (scope) =>
     set((prev) =>
@@ -195,6 +202,9 @@ export const useStore = create<State>((set, get) => ({
   select: (selected) => set({ selected }),
   focus: (focused) => set({ focused }),
 }));
+
+/** 데이터 없이 도는 합성 과제. Input에 데이터가 붙지 않은 상태다. */
+export const SYNTHETIC = new Set(["teacher", "noise"]);
 
 /** 그래프에 붙은 데이터. 없으면 합성 과제다. */
 function dataOf(graph: ModuleGraph): { dataset: string; recipe: Recipe | null } {

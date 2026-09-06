@@ -71,6 +71,8 @@ export interface NodeCardData extends Record<string, unknown> {
   histogram?: number[];
   feature?: { size: number; pixels: string; channels: number; shown: number };
   folded?: boolean;
+  /** Input에만 있다. 붙은 데이터 이름, 없으면 빈 문자열. */
+  dataset?: string;
   enterable: boolean;
   lod: Lod;
   selected: boolean;
@@ -114,6 +116,9 @@ export function NodeCard({ data }: NodeProps) {
               </span>
             )}
             {node.enterable && <span className="node__enter" title="더블클릭으로 진입">›</span>}
+            {node.dataset !== undefined && (
+              <span className="node__enter" title="더블클릭으로 데이터 불러오기">›</span>
+            )}
           </div>
 
           {showBody && (
@@ -144,6 +149,11 @@ export function NodeCard({ data }: NodeProps) {
 
           {showBody && (
             <div className="node__badges">
+              {node.dataset !== undefined && (
+                <span className={`badge${node.dataset ? "" : " badge--warn"}`}>
+                  {node.dataset || "데이터 없음"}
+                </span>
+              )}
               {node.paramCount ? (
                 <span className="badge"><span className="badge__glyph">↯</span>
                   {formatCount(node.paramCount)}</span>

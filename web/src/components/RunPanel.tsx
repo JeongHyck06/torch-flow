@@ -12,7 +12,7 @@ import { Console } from "./Console";
 import { DataCard } from "./DataCard";
 import { TrainLog } from "./TrainLog";
 import { Trainer } from "./Trainer";
-import { useStore } from "../store";
+import { SYNTHETIC, useStore } from "../store";
 
 type Tab = "curves" | "block" | "data" | "stdout" | "manifest" | "logs" | "console";
 
@@ -34,6 +34,7 @@ export function RunPanel() {
   const dataset = useStore((state) => state.dataset);
   const recipe = useStore((state) => state.recipe);
   const setData = useStore((state) => state.setData);
+  const openData = useStore((state) => state.openData);
   const [applied, setApplied] = useState<string | null>(null);
 
   // 레시피를 그래프에 붙인다. hub가 Input을 set_ports op로 맞추고 브로드캐스트한다.
@@ -112,8 +113,11 @@ export function RunPanel() {
         {tab === "block" && <BlockDetail />}
 
         {tab === "data" && (
-          dataset === "teacher" || dataset === "noise" ? (
-            <p className="mono muted">Run 곡선 탭의 데이터 선택에서 데이터셋을 고르면 여기서 정제합니다</p>
+          SYNTHETIC.has(dataset) ? (
+            <div className="trainer">
+              <button className="trainer__run" onClick={openData}>Input에 데이터 불러오기</button>
+              <span className="mono muted">지금은 합성 과제로 학습합니다</span>
+            </div>
           ) : (
             <>
               <div className="trainer">

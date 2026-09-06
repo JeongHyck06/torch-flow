@@ -15,7 +15,7 @@ import "@xyflow/react/dist/style.css";
 
 import { NodeCard } from "./NodeCard";
 import { Palette } from "./Palette";
-import { currentScope, useStore } from "../store";
+import { SYNTHETIC, currentScope, useStore } from "../store";
 import { saveLayout } from "../api";
 import { applyEdit, redo, undo } from "../edit";
 import { op, removeNodeOp } from "../graph/ops";
@@ -40,6 +40,8 @@ export function Canvas() {
   const setPosition = useStore((state) => state.setPosition);
   const openPalette = useStore((state) => state.openPalette);
   const paletteAt = useStore((state) => state.paletteAt);
+  const dataset = useStore((state) => state.dataset);
+  const openData = useStore((state) => state.openData);
 
   const [zoom, setZoom] = useState(1);
   // 뷰가 포커스를 따라가는 것은 키보드 탐색일 때만이다. 클릭에도 따라가면
@@ -52,8 +54,9 @@ export function Canvas() {
   const computed = useMemo(() => {
     if (!graph || !scope) return { nodes: [], edges: [] };
     return toFlow(scope, nodeStates,
-      { lod: lodOf(zoom), selected, focused, callPath, gradOverlay, positions });
-  }, [graph, scope, callPath, nodeStates, zoom, selected, focused, gradOverlay, positions]);
+      { lod: lodOf(zoom), selected, focused, callPath, gradOverlay, positions,
+        dataset: SYNTHETIC.has(dataset) ? "" : dataset });
+  }, [graph, scope, callPath, nodeStates, zoom, selected, focused, gradOverlay, positions, dataset]);
 
   // 드래그 중에는 로컬 상태가 권위를 갖는다 - 매 프레임 스토어를 때리면 끊긴다.
   const [nodes, setNodes] = useState<FlowNode[]>(computed.nodes);
@@ -105,6 +108,8 @@ export function Canvas() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      // 데이터 창이 떠 있으면 키는 그 창의 것이다 - Tab이 뒤에서 팔레트를 열면 안 된다.
+      if (useStore.getState().dataOpen) return;
       if (!order.length && event.key !== "Tab") return;
       const index = focused ? order.indexOf(focused) : -1;
 
@@ -172,7 +177,12 @@ export function Canvas() {
   }, [measured, fitView]);
 
   const onNodeClick: NodeMouseHandler = (_event, node) => { select(node.id); focus(node.id); };
-  const onNodeDoubleClick: NodeMouseHandler = (_event, node) => enter(node.id);
+  const onNodeDoubleClick: NodeMouseHandler = (_event, node) => {
+    // Input은 임포트 블록처럼 더블클릭으로 데이터 창을 연다 - 안으로 들어갈 것이 없다.
+    const kind = scope?.nodes?.find((one) => one.id === node.id)?.type?.split("@")[0];
+    if (kind === "torchflow.Input") openData();
+    else enter(node.id);
+  };
 
   const onPaneDoubleClick = (event: React.MouseEvent) => {
     // ReactFlow의 onDoubleClick은 노드 위에서도 발화한다 - 거기서는 컴포지트 진입이 맞다.
