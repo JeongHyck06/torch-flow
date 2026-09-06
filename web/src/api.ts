@@ -104,10 +104,29 @@ export async function fetchCurve(key: string, runs: string[]): Promise<CurveSeri
   return (await response.json()).series ?? [];
 }
 
-export async function fetchLogs() {
-  const response = await fetch("/api/logs", { headers: authHeaders() });
+export interface LogLine { text: string; stream: string; node_id: string | null }
+
+/** 노드를 주면 그 노드가 찍은 것만 (Inspector 출력 섹션). */
+export async function fetchLogs(node = ""): Promise<LogLine[]> {
+  const query = node ? `?node=${encodeURIComponent(node)}` : "";
+  const response = await fetch(`/api/logs${query}`, { headers: authHeaders() });
   if (!response.ok) return [];
   return (await response.json()).logs ?? [];
+}
+
+export interface EvalResult {
+  ok: boolean; text?: string; error?: string;
+  spec?: { shape: (string | number)[]; dtype: string; device: string };
+}
+
+/** Debug Console - 선택 노드의 마지막 probe 값을 표현식으로 조회한다 (§5.6.1). */
+export async function evalExpression(expr: string, node: string): Promise<EvalResult> {
+  const response = await fetch("/api/eval", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ expr, node }),
+  });
+  return response.json();
 }
 
 export async function fetchLayout(): Promise<Record<string, { x: number; y: number }>> {

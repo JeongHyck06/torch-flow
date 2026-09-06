@@ -264,3 +264,30 @@ def test_seed_group_aggregate_endpoint(client):
                          headers=auth).json()
     assert payload["aggregate"][0]["mean"] == 2.0
     assert payload["aggregate"][0]["n"] == 3
+
+
+def test_eval_needs_a_probe_before_it_can_read_values(client):
+    """Debug Console(§5.6.1)은 L1 커널의 마지막 probe 위에서만 값을 본다."""
+    response = client.post("/api/eval", headers={"Authorization": f"token {TOKEN}"},
+                           json={"expr": "y.shape", "node": "01J9Q4B4"})
+    assert response.status_code == 200
+    assert response.json() == {"ok": False, "error": "probe를 한 번 돌려 주세요"}
+
+
+def test_eval_is_refused_in_attach_mode(app, client):
+    """Attach 모드의 값은 사용자 프로세스 안에 있다 - hub가 대신 볼 수 없다(§3.5)."""
+    app.state.hub.attached = True
+    response = client.post("/api/eval", headers={"Authorization": f"token {TOKEN}"},
+                           json={"expr": "y", "node": "01J9Q4B4"})
+    assert response.status_code == 409
+
+
+def test_node_stdout_reaches_the_log_routes(app, client):
+    """커널이 올린 노드별 출력은 하단 로그 탭과 Inspector 출력이 같은 표에서 읽는다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.tracker.log_text("forward one", node_id="01J9Q4B4", stream="stdout")
+    app.state.hub.tracker.log_text("elsewhere", node_id="01J9Q4B5", stream="stdout")
+
+    assert len(client.get("/api/logs", headers=auth).json()["logs"]) == 2
+    only = client.get("/api/logs?node=01J9Q4B4", headers=auth).json()["logs"]
+    assert [line["text"] for line in only] == ["forward one"]

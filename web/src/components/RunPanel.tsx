@@ -5,10 +5,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { fetchCurve, fetchLogs, fetchRuns } from "../api";
-import type { CurveSeries, RunInfo } from "../api";
+import type { CurveSeries, LogLine, RunInfo } from "../api";
+import { Console } from "./Console";
 import { useStore } from "../store";
 
-type Tab = "curves" | "manifest" | "logs";
+type Tab = "curves" | "manifest" | "logs" | "console";
+
+const TAB_LABELS: Record<Tab, string> = {
+  curves: "Run 곡선", manifest: "run manifest", logs: "로그", console: "콘솔",
+};
 
 const COLORS = ["var(--dtype-f32)", "#4a86c9", "#7c8898", "#2a558d", "#5e93d1"];
 
@@ -17,7 +22,7 @@ export function RunPanel() {
   const [runs, setRuns] = useState<RunInfo[]>([]);
   const [key, setKey] = useState<string>("");
   const [series, setSeries] = useState<CurveSeries[]>([]);
-  const [logs, setLogs] = useState<{ text: string; stream: string; node_id?: string }[]>([]);
+  const [logs, setLogs] = useState<LogLine[]>([]);
   const open = useStore((state) => state.runPanel);
   const toggle = useStore((state) => state.toggleRunPanel);
 
@@ -52,13 +57,13 @@ export function RunPanel() {
   return (
     <section className="runpanel" aria-label="Run 패널">
       <div className="runpanel__tabs">
-        {(["curves", "manifest", "logs"] as Tab[]).map((name) => (
+        {(Object.keys(TAB_LABELS) as Tab[]).map((name) => (
           <button
             key={name}
             className={`runpanel__tab${tab === name ? " runpanel__tab--on" : ""}`}
             onClick={() => setTab(name)}
           >
-            {name === "curves" ? "Run 곡선" : name === "manifest" ? "run manifest" : "로그"}
+            {TAB_LABELS[name]}
           </button>
         ))}
         <div className="runpanel__spacer" />
@@ -98,6 +103,8 @@ export function RunPanel() {
             </pre>
           ) : <p className="mono muted">로그가 비어 있습니다</p>
         )}
+
+        {tab === "console" && <Console />}
       </div>
     </section>
   );
