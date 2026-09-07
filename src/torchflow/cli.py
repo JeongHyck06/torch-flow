@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import urllib.error
 import urllib.request
@@ -265,6 +266,9 @@ def view(graph: str | None, port: int, host: str, state_dir: str, rt: tuple[str,
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_text(json.dumps({"pid": os.getpid(), "host": host, "port": port, "token": token}),
                         encoding="utf-8")
+        # uvicorn은 다 내린 뒤 받았던 시그널을 기본 동작으로 다시 던진다 - 그러면 finally가 돌지
+        # 않아 잠금이 남는다. SIGTERM은 우리가 받아 정상 종료로 바꾼다.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         uvicorn.run(app, host=host, port=port, log_level="warning")
     finally:
