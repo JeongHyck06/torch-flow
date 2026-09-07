@@ -77,6 +77,8 @@ export function Inspector() {
 
   return (
     <aside className="inspector" aria-label="Inspector">
+      {/* 선택이 바뀌면 내용이 새로 떠오른다(key). 등록부 조회는 aside 바깥이라 다시 돌지 않는다. */}
+      <div className="inspector__body" key={selected}>
       <h2>{node?.label}</h2>
       <p className="inspector__type">{(node?.type ?? instance?.type ?? "").split("@")[0]}</p>
 
@@ -240,6 +242,7 @@ export function Inspector() {
           <p className="mono inspector__error">{String(state.error.message)}</p>
         </>
       )}
+      </div>
     </aside>
   );
 }

@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background, BackgroundVariant, Controls, MiniMap, ReactFlow, applyEdgeChanges, applyNodeChanges,
-  useNodesInitialized, useReactFlow,
+  useNodesInitialized, useReactFlow, useStore as useFlowStore,
 } from "@xyflow/react";
 import type {
   Connection, Edge, EdgeChange, EdgeMouseHandler, NodeChange, NodeMouseHandler, Node as FlowNode,
@@ -26,6 +26,7 @@ import { topologicalIds } from "../graph/layout";
 import { categoryColor, categoryOf } from "../theme";
 
 const nodeTypes = { tf: NodeCard };
+const MIN_FIT_ZOOM = 0.75;
 
 export function Canvas() {
   const graph = useStore((state) => state.graph);
@@ -53,7 +54,9 @@ export function Canvas() {
   // 뷰가 포커스를 따라가는 것은 키보드 탐색일 때만이다. 클릭에도 따라가면
   // 노드를 집으려던 손 밑에서 캔버스가 움직여 포트를 이을 수 없다.
   const followFocus = useRef(false);
-  const { fitView, screenToFlowPosition } = useReactFlow();
+  const { fitView, screenToFlowPosition, getNodesBounds, setViewport } = useReactFlow();
+  const viewWidth = useFlowStore((flow) => flow.width);
+  const viewHeight = useFlowStore((flow) => flow.height);
   const scope = currentScope({ graph, scopes });
   const callPath = scopes[scopes.length - 1].callPath;
 
@@ -122,6 +125,20 @@ export function Canvas() {
     });
   }, [scope, callPath, enterScope]);
 
+  // 전체 보기. 확대는 0.75 아래로 내려가지 않는다 - 그 아래면 글자가 화면에서 9px도 안 된다.
+  // 다 안 들어가면 가운데가 아니라 왼쪽 끝(Input)부터 보이게 맞춘다. 읽는 순서가 왼쪽에서 시작한다.
+  const fitReadable = useCallback((duration = 0) => {
+    const box = getNodesBounds(nodes.map((node) => node.id));
+    if (!box.width || !viewWidth || !viewHeight) return;
+    const pad = 40;
+    const zoom = Math.min(1, Math.max(MIN_FIT_ZOOM,
+      Math.min((viewWidth - 2 * pad) / box.width, (viewHeight - 2 * pad) / box.height)));
+    const fits = box.width * zoom <= viewWidth - 2 * pad;
+    const x = fits ? (viewWidth - box.width * zoom) / 2 - box.x * zoom : pad - box.x * zoom;
+    const y = (viewHeight - box.height * zoom) / 2 - box.y * zoom;
+    void setViewport({ x, y, zoom }, { duration });
+  }, [nodes, viewWidth, viewHeight, getNodesBounds, setViewport]);
+
   // 화살표는 위상 순으로 움직인다 - 그래프를 읽는 순서가 곧 탐색 순서다.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -153,28 +170,29 @@ export function Canvas() {
         return;
       }
 
-      followFocus.current = true;
+      // 뷰가 따라가는 것은 키보드 탐색뿐이다. Esc 같은 키가 이 플래그를 켜 두면 다음 클릭에 뷰가 튄다.
+      const go = (id: string | undefined) => { followFocus.current = true; focus(id ?? null); };
       switch (event.key) {
         case "ArrowRight": case "ArrowDown":
-          focus(order[Math.min(index + 1, order.length - 1)] ?? order[0]); break;
+          go(order[Math.min(index + 1, order.length - 1)] ?? order[0]); break;
         case "ArrowLeft": case "ArrowUp":
-          focus(order[Math.max(index - 1, 0)] ?? order[0]); break;
-        case "Home": focus(order[0]); break;
-        case "End": focus(order[order.length - 1]); break;
+          go(order[Math.max(index - 1, 0)] ?? order[0]); break;
+        case "Home": go(order[0]); break;
+        case "End": go(order[order.length - 1]); break;
         case "Enter": if (focused) select(focused); break;
         case "]": if (focused) enter(focused); break;
         case "Escape":
           if (scopes.length > 1) popToScope(scopes.length - 2);
           else select(null);
           break;
-        case "f": fitView({ duration: 200 }); return;
+        case "f": fitReadable(240); return;
         default: return;
       }
       event.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [order, focused, selected, scopes, focus, select, enter, popToScope, fitView,
+  }, [order, focused, selected, scopes, focus, select, enter, popToScope, fitReadable,
       openPalette, screenToFlowPosition, remove, edges, disconnect]);
 
   useEffect(() => {
@@ -189,15 +207,15 @@ export function Canvas() {
   const scopeKey = scopes.map((entry) => entry.callPath).join("/");
   const fitted = useRef(false);
   // 확대 상한 1: 노드 하나짜리 그래프를 2배로 키우면 다음 블록이 놓이는 자리가 화면 밖이다.
-  useEffect(() => { fitted.current = false; fitView({ duration: 0, maxZoom: 1 }); }, [scopeKey, fitView]);
+  useEffect(() => { fitted.current = false; }, [scopeKey]);
   // 노드가 실측되기 전에 맞추면 0x0 기준으로 맞춰져 화면 밖으로 나간다.
   // 노드가 0개일 때도 "초기화됨"이라 노드가 실제로 들어온 뒤라야 의미가 있다.
   const measured = useNodesInitialized() && computed.nodes.length > 0;
   useEffect(() => {
     if (fitted.current || !measured) return;
     fitted.current = true;
-    fitView({ duration: 0, maxZoom: 1 });
-  }, [measured, fitView]);
+    fitReadable(0);
+  }, [measured, fitReadable]);
 
   const onNodeClick: NodeMouseHandler = (_event, node) => { select(node.id); focus(node.id); };
   // 선을 고르면 노드 선택은 비운다 - Delete가 노드를 지우면 안 된다.
@@ -253,6 +271,8 @@ export function Canvas() {
       proOptions={{ hideAttribution: true }}
       nodesDraggable
       aria-label="모델 그래프 캔버스"
+      // 노드 글자가 줌에 반비례해 커질 수 있게 현재 줌을 CSS로 넘긴다(.node--far/.node--mid).
+      style={{ "--zoom": zoom } as React.CSSProperties}
     >
       <Background variant={BackgroundVariant.Lines} gap={72} size={1} color="var(--border-subtle)" />
       <MiniMap

@@ -80,8 +80,14 @@ class Hub:
                 pass   # 좌표가 깨져도 그래프는 열려야 한다 - 자동 배치로 돌아간다.
         return {"positions": {}}
 
+    def positions(self) -> dict[str, Any]:
+        """지금 열린 그래프의 노드 좌표. 그래프마다 따로 둔다 - IN, OUT 같은 id는 그래프마다
+        있어서 한 통에 넣으면 다른 그래프의 좌표가 새 그래프에 묻어 나온다(실제로 그랬다).
+        예전의 평평한 ``positions``는 읽지 않는다 - 자동 배치로 돌아간다."""
+        return self.layout.setdefault("graphs", {}).setdefault(self.graph_id or "_", {})
+
     def update_layout(self, positions: dict[str, Any]) -> None:
-        self.layout.setdefault("positions", {}).update(positions)
+        self.positions().update(positions)
         self.layout_path.write_text(
             json.dumps(self.layout, sort_keys=True, indent=2), encoding="utf-8")
 
@@ -633,7 +639,7 @@ def create_app(
 
     @app.get("/api/layout")
     def read_layout() -> JSONResponse:
-        return JSONResponse(hub.layout)
+        return JSONResponse({"positions": hub.positions()})
 
     @app.post("/api/layout")
     def write_layout(patch: dict[str, Any]) -> JSONResponse:
@@ -643,7 +649,7 @@ def create_app(
         옮겨도 그래프 의미가 바뀌지 않고, git에서 ``merge=ours``로 충돌하지 않는다.
         """
         hub.update_layout(patch.get("positions") or {})
-        return JSONResponse({"ok": True, "positions": len(hub.layout["positions"])})
+        return JSONResponse({"ok": True, "positions": len(hub.positions())})
 
     @app.post("/api/probe")
     async def run_probe(cfg: dict[str, Any] | None = None) -> JSONResponse:

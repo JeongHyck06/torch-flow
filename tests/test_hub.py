@@ -179,7 +179,8 @@ def test_layout_survives_a_restart(app, client, tmp_path):
                 json={"positions": {"n1": {"x": 5, "y": 6}}})
     restarted = create_app(MINIVIT, state_dir=app.state.hub.state_dir, token=TOKEN)
     try:
-        assert restarted.state.hub.layout["positions"]["n1"] == {"x": 5, "y": 6}
+        # 좌표는 그래프별로 산다 - 같은 그래프를 다시 열면 그대로다.
+        assert restarted.state.hub.positions()["n1"] == {"x": 5, "y": 6}
     finally:
         restarted.state.hub.kernel.stop()
         restarted.state.hub.l1.stop()
@@ -190,7 +191,7 @@ def test_corrupt_layout_falls_back_to_auto_placement(app, tmp_path):
     app.state.hub.layout_path.write_text("{broken", encoding="utf-8")
     reopened = create_app(MINIVIT, state_dir=app.state.hub.state_dir, token=TOKEN)
     try:
-        assert reopened.state.hub.layout == {"positions": {}}
+        assert reopened.state.hub.positions() == {}
     finally:
         reopened.state.hub.kernel.stop()
         reopened.state.hub.l1.stop()
