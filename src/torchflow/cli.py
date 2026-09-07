@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -239,6 +242,15 @@ def view(graph: str | None, port: int, host: str, state_dir: str, rt: tuple[str,
     from .hub.app import create_app
     from .hub.auth import new_token
 
+    # 사람이 직접 띄운 hub는 프로젝트에 하나다. 이미 떠 있으면 새로 띄우지 않고 그 창을 연다 -
+    # 둘이 같은 runs/를 나눠 쓰면 run이 섞인다. 토큰을 직접 준 경우(Attach, 테스트)는 예외다.
+    lock = Path(state_dir) / "hub.json"
+    if token is None and (running := _running_hub(lock)) is not None:
+        click.secho(f"\n  TorchFlow가 이미 열려 있습니다 → {running}\n", fg="yellow")
+        if browser:
+            webbrowser.open(running)
+        return
+    owns_lock = token is None
     token = token or new_token()
     app = create_app(graph, state_dir=state_dir, token=token, rt=_kv(rt))
     # 지난번 hub가 죽는 동안에도 워커는 돌았다. runs/를 훑어 다시 집는다(§5.5.3).
@@ -249,7 +261,39 @@ def view(graph: str | None, port: int, host: str, state_dir: str, rt: tuple[str,
     click.echo(f"  원격이면: ssh -L {port}:127.0.0.1:{port} <host>\n")
     if browser:
         webbrowser.open(url)
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    if owns_lock:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps({"pid": os.getpid(), "host": host, "port": port, "token": token}),
+                        encoding="utf-8")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    finally:
+        if owns_lock:
+            lock.unlink(missing_ok=True)
+
+
+def _running_hub(lock: Path) -> str | None:
+    """지난 hub가 남긴 hub.json이 가리키는 hub가 지금도 응답하면 그 URL. 아니면 None."""
+    try:
+        info = json.loads(lock.read_text(encoding="utf-8"))
+        pid, host, port, token = info["pid"], info["host"], info["port"], info["token"]
+    except (OSError, ValueError, KeyError):
+        return None
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        return None                     # 죽은 hub의 흔적이다. 새로 띄운다.
+    request = urllib.request.Request(f"http://{host}:{port}/api/health",
+                                     headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=1.0) as response:
+            if response.status != 200:
+                return None
+    except (urllib.error.URLError, OSError):
+        click.secho(f"  이전 hub(PID {pid})가 살아 있지만 응답하지 않습니다. 끝낸 뒤 다시 실행하세요",
+                    fg="red")
+        raise SystemExit(1)
+    return f"http://{host}:{port}/?token={token}"
 
 
 if __name__ == "__main__":
