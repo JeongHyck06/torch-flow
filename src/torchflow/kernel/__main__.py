@@ -111,6 +111,8 @@ class Kernel:
             self.estimate_memory(message)
         elif message.type == "Eval":
             self.eval_expr(message)
+        elif message.type == "NodeDetail":
+            self.node_detail(message)
         elif message.type == "ReloadBlocks":
             from .registry import write
 
@@ -201,6 +203,21 @@ class Kernel:
             key = f"{message.path}/{message.node_id}" if message.path else message.node_id
             self.send(proto.EvalResult(req_id=message.req_id,
                                        **evaluate(self.l1_pass, key, message.expr)))
+        self.send(proto.Progress(req_id=message.req_id, done=1, total=1))
+
+    def node_detail(self, message) -> None:
+        """블록 상세(§6.3). 마지막 probe 위에서 그린다 - 모델을 다시 돌리지 않는다."""
+        from .detail import describe_node
+
+        if self.l1_pass is None:
+            payload = {"ok": False, "error": "probe를 한 번 돌린 뒤에 볼 수 있습니다"}
+        else:
+            key = f"{message.path}/{message.node_id}" if message.path else message.node_id
+            try:
+                payload = describe_node(self.l1_pass, key, message.node_id)
+            except Exception as exc:
+                payload = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        self.send(proto.NodeDetailResult(req_id=message.req_id, **payload))
         self.send(proto.Progress(req_id=message.req_id, done=1, total=1))
 
     def import_trace(self, message) -> None:

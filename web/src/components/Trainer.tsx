@@ -9,13 +9,22 @@
 
 import { useEffect, useState } from "react";
 
-import { controlTraining, fetchTraining, startTraining } from "../api";
-import type { TrainRun } from "../api";
+import { controlTraining, downloadDataset, fetchDatasets, fetchTraining, startTraining } from "../api";
+import type { DatasetInfo, PortSpec, TrainRun } from "../api";
+import { applyEdit } from "../edit";
+import { op } from "../graph/ops";
+import { useStore } from "../store";
 
 const RUNNING = new Set(["running", "starting"]);
 
 export function Trainer({ onChange }: { onChange: () => void }) {
   const [runs, setRuns] = useState<TrainRun[]>([]);
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  // 데이터와 레시피는 그래프에 딸린 것이라 스토어에 산다(experiment.data).
+  const dataset = useStore((state) => state.dataset);
+  const recipe = useStore((state) => state.recipe);
+  const setData = useStore((state) => state.setData);
+  const [fetching, setFetching] = useState(false);
   const [steps, setSteps] = useState(500);
   const [batch, setBatch] = useState(32);
   const [lr, setLr] = useState(0.001);
@@ -23,9 +32,15 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   const [warmup, setWarmup] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // hub가 규격 불일치와 함께 준 고칠 op 재료. 버튼 하나로 Input을 데이터에 맞춘다.
+  const [fix, setFix] = useState<{ node: string; ports_out: PortSpec[] } | null>(null);
 
   const active = runs.find((run) => RUNNING.has(run.state) || run.state === "paused");
   const last = runs[runs.length - 1];
+  const chosen = datasets.find((entry) => entry.name === dataset);
+  const needsDownload = chosen !== undefined && chosen.source === "builtin" && !chosen.available;
+
+  useEffect(() => { fetchDatasets().then(setDatasets).catch(() => undefined); }, []);
 
   useEffect(() => {
     let stop = false;
@@ -43,11 +58,31 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   const start = async (smoke = false) => {
     setError(null);
     setNote(null);
+    setFix(null);
     const result = await startTraining(
-      smoke ? { smoke: true }
-        : { steps, batch, lr, optimizer: "adamw", scheduler: schedule, warmup_steps: warmup });
-    if (result.error) setError(result.error);
+      smoke ? { smoke: true, dataset, recipe: recipe ?? undefined }
+        : { dataset, recipe: recipe ?? undefined, steps, batch, lr, optimizer: "adamw",
+            scheduler: schedule, warmup_steps: warmup });
+    if (result.error) { setError(result.error); setFix(result.fix ?? null); }
     else setRuns((previous) => [...previous, result]);
+  };
+
+  const applyFix = async () => {
+    if (!fix) return;
+    const failed = await applyEdit(op("set_ports", { node: fix.node, ports_out: fix.ports_out }));
+    if (failed) { setError(failed); return; }
+    setFix(null);
+    setError(null);
+    onChange();
+  };
+
+  const download = async () => {
+    setFetching(true);
+    setError(null);
+    const result = await downloadDataset(dataset);
+    setFetching(false);
+    if (result.error) setError(result.error);
+    else setDatasets(await fetchDatasets());
   };
 
   const send = async (cmd: string, extra: Record<string, unknown> = {}) => {
@@ -73,8 +108,14 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     <div className="trainer">
       {!active ? (
         <>
-          <button className="trainer__run" onClick={() => void start()}>Run</button>
-          <button className="trainer__stop" onClick={() => void start(true)}
+          {needsDownload ? (
+            <button className="trainer__run" onClick={() => void download()} disabled={fetching}>
+              {fetching ? "내려받는 중" : `${chosen.label} 내려받기 (${chosen.size_mb} MB)`}
+            </button>
+          ) : (
+            <button className="trainer__run" onClick={() => void start()}>Run</button>
+          )}
+          <button className="trainer__stop" onClick={() => void start(true)} disabled={needsDownload}
                   title="20 step · batch 8 · 결정적 - 두 번 돌리면 loss가 같습니다">
             Smoke
           </button>
@@ -83,6 +124,18 @@ export function Trainer({ onChange }: { onChange: () => void }) {
               재개
             </button>
           )}
+          <label className="trainer__field">데이터
+            <select className="trainer__select mono" value={dataset}
+                    onChange={(event) => setData(event.target.value, null)}>
+              <option value="teacher">합성</option>
+              {datasets.map((entry) => (
+                <option key={entry.name} value={entry.name}>
+                  {entry.label}
+                  {entry.source === "builtin" && !entry.available ? " (내려받기 필요)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="trainer__field">steps
             <input type="number" min={1} value={steps}
                    onChange={(event) => setSteps(Number(event.target.value))} />
@@ -113,7 +166,13 @@ export function Trainer({ onChange }: { onChange: () => void }) {
               {last.run_id} · {last.state} · step {last.step.toLocaleString()}
             </span>
           )}
-          <span className="muted trainer__note">합성 과제 · 데이터셋 노드는 Experiment 탭에서</span>
+          <span className="muted trainer__note">
+            {chosen
+              ? `${chosen.label}${chosen.count ? ` ${chosen.count.toLocaleString()}개` : ""}`
+                + ` · Input 규격 [B, ${chosen.shape.join(", ")}] · 출력 ${chosen.classes} 클래스`
+                + (chosen.source === "user" ? " · 8:2로 나눠 검증" : " · 검증은 test 분할")
+              : "합성 과제 · 무작위 입력에 고정 teacher 라벨"}
+          </span>
         </>
       ) : (
         <>
@@ -162,6 +221,11 @@ export function Trainer({ onChange }: { onChange: () => void }) {
       )}
       {note && <span className="mono trainer__note">{note}</span>}
       {error && <span className="warn mono">{error}</span>}
+      {fix && (
+        <button className="trainer__stop" onClick={() => void applyFix()}>
+          Input을 [{fix.ports_out[0].shape.join(", ")}]로 맞추기
+        </button>
+      )}
       {active?.error && <span className="warn mono">{active.error.message}</span>}
     </div>
   );

@@ -102,6 +102,15 @@ class EstimateMemory(_Msg):
     amp: bool = False
 
 
+class NodeDetail(_Msg):
+    """블록 상세(§6.3). 마지막 probe의 입력·출력·가중치로 그림을 만든다."""
+
+    type: Literal["NodeDetail"] = "NodeDetail"
+    req_id: str
+    node_id: str
+    path: str = ""
+
+
 class Eval(_Msg):
     """Debug Console (§5.6.1). 선택 노드의 마지막 probe 값을 표현식으로 조회한다."""
 
@@ -118,7 +127,7 @@ class Shutdown(_Msg):
 
 
 ToKernel = Annotated[
-    Union[Ping, RunNodes, RunClosure, Cancel, ReloadBlocks, ImportTrace, EstimateMemory,
+    Union[Ping, RunNodes, RunClosure, Cancel, ReloadBlocks, ImportTrace, EstimateMemory, NodeDetail,
           Eval, Shutdown],
     Field(discriminator="type"),
 ]
@@ -222,6 +231,21 @@ class MemoryEstimate(_Msg):
     error: dict[str, Any] | None = None
 
 
+class NodeDetailResult(_Msg):
+    type: Literal["NodeDetailResult"] = "NodeDetailResult"
+    req_id: str
+    ok: bool = True
+    error: str | None = None
+    node: str = ""
+    label: str = ""
+    kind: str = ""
+    params: int = 0
+    input_shape: list[int] | None = None
+    output_shape: list[int] | None = None
+    explain: str = ""
+    panels: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class EvalResult(_Msg):
     type: Literal["EvalResult"] = "EvalResult"
     req_id: str
@@ -243,7 +267,8 @@ class Progress(_Msg):
 
 
 FromKernel = Annotated[
-    Union[Ready, Pong, Done, Error, Busy, Log, Progress, MemoryEstimate, Imported, EvalResult],
+    Union[Ready, Pong, Done, Error, Busy, Log, Progress, MemoryEstimate, Imported, EvalResult,
+          NodeDetailResult],
     Field(discriminator="type"),
 ]
 

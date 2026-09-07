@@ -56,6 +56,8 @@ export function toFlow(
     lod: Lod; selected: string | null; focused: string | null; callPath: string;
     gradOverlay?: boolean;
     positions?: Record<string, { x: number; y: number }>;
+    /** 그래프에 붙은 데이터 이름. 합성 과제면 빈 문자열. */
+    dataset?: string;
   },
 ): { nodes: FlowNode[]; edges: Edge[] } {
   const irNodes = scope.nodes ?? [];
@@ -120,6 +122,8 @@ export function toFlow(
       feature: state?.badges?.feature as
         { size: number; pixels: string; channels: number; shown: number } | undefined,
       enterable: enterableComposite(scope, node.id) !== null,
+      // Input에는 붙은 데이터 이름이 걸린다. 없으면 빈 문자열 - 카드가 "데이터 없음"으로 읽는다.
+      dataset: typeLabel === "torchflow.Input" ? options.dataset ?? "" : undefined,
       lod: options.lod,
       selected: options.selected === node.id,
       focused: options.focused === node.id,
@@ -145,6 +149,8 @@ export function toFlow(
         id: `${src}->${dst}`,
         source,
         target,
+        // 끊을 때 disconnect op에 그대로 실린다.
+        data: { src, dst },
         // 굵기 = log(원소 수), 색 = dtype, 라벨 = shape (§6.1).
         style: {
           strokeWidth: edgeWidth(spec?.shape),

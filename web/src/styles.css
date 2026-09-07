@@ -354,6 +354,100 @@ body {
 .snippet__notes p { margin: 0; font-size: 12px; color: var(--text-muted); }
 .snippet__notes .mono { font-size: 12px; color: var(--text-secondary); }
 
+.templates__row--on .templates__name { color: var(--state-ok); }
+.datacard { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+.datacard h3 {
+  margin: 12px 0 6px; font-size: 11px; font-weight: 500; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.datacard h3:first-child { margin-top: 0; }
+.datacard__checks { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; }
+.datacard__checks label { display: flex; align-items: center; gap: 5px; }
+.datacard__bars { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.datacard__bar { display: grid; grid-template-columns: 96px 1fr 56px; align-items: center; gap: 8px; }
+.datacard__bar .muted { text-align: right; }
+.datacard__fill { display: block; height: 6px; border-radius: 2px; background: var(--dtype-f32); }
+/* 좁은 열에서는 라벨이 눌리지 않고 격자가 가로로 넘친다(스크롤). */
+.datacard__thumbs { display: flex; gap: 8px; margin-top: 12px; overflow-x: auto; }
+.datacard__thumblabels { display: flex; flex-direction: column; font-size: 11px; flex-shrink: 0; }
+.datacard__thumblabels span { display: flex; align-items: center; }
+.datacard__thumbs img { image-rendering: pixelated; border: 1px solid var(--border-subtle); }
+.datacard__table { margin-top: 12px; overflow-x: auto; }
+.datacard__table table { border-collapse: collapse; font: 12px var(--font-mono); }
+.datacard__table th, .datacard__table td {
+  padding: 3px 10px; text-align: left; border-bottom: 1px solid var(--border-subtle); white-space: nowrap;
+}
+.datacard__table th { color: var(--text-secondary); font-weight: 500; }
+.datacard__table p { margin: 8px 0 0; font-size: 11px; }
+.datacard__summary { margin: 12px 0 0; font-size: 12px; color: var(--text-primary); }
+
+.blockdetail { display: flex; flex-direction: column; gap: 12px; }
+.blockdetail__head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.blockdetail__head h2 .mono { font-weight: 400; font-size: 12px; margin-left: 8px; }
+.blockdetail__head p { margin: 4px 0 0; font-size: 13px; }
+.blockdetail__panels { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+.blockdetail__panel { display: flex; flex-direction: column; gap: 5px; margin: 0; min-width: 140px; }
+.blockdetail__panel figcaption {
+  font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted);
+}
+.blockdetail__panel .mono.muted { font-size: 11px; }
+.blockdetail__panel img { image-rendering: pixelated; border: 1px solid var(--border-subtle); align-self: flex-start; }
+.blockdetail__hist { width: 260px; height: 80px; border-bottom: 1px solid var(--border-subtle); }
+.blockdetail__bars { display: flex; flex-direction: column; gap: 3px; min-width: 220px; }
+.blockdetail__bar { display: grid; grid-template-columns: 28px 1fr 52px; gap: 8px; align-items: center; font-size: 11px; }
+.blockdetail__bar span:last-child { text-align: right; }
+.blockdetail__track { position: relative; height: 8px; }
+.blockdetail__fill { position: absolute; left: 0; top: 1px; height: 6px; border-radius: 2px; background: var(--dtype-f32); }
+.blockdetail__fill--before { top: 1px; background: var(--border-default); }
+
+/* ── Input 데이터 창 · 팔레트와 같은 떠 있는 패널(헤어라인, radius 12, 그림자 없음) ── */
+
+.datadialog__scrim {
+  position: absolute; inset: 0; z-index: 8;
+  background: var(--surface-canvas); opacity: 0.6;
+}
+.datadialog {
+  position: absolute; z-index: 9; left: 50%; top: 32px; transform: translateX(-50%);
+  width: min(940px, calc(100% - 48px)); max-height: calc(100% - 64px);
+  display: flex; flex-direction: column;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-default); border-radius: var(--radius-panel); overflow: hidden;
+}
+.datadialog__head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 16px; border-bottom: 1px solid var(--border-subtle);
+}
+.datadialog__title { font: 600 14px var(--font-sans); color: var(--text-primary); }
+.datadialog__head > .mono { flex: 1; font-size: 12px; }
+.datadialog__body {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 300px 1fr;
+}
+.datadialog__side { padding: 14px; border-right: 1px solid var(--border-subtle); overflow: auto; }
+.datadialog__main { padding: 14px 18px; overflow: auto; }
+.datadialog__drop {
+  width: 100%; display: flex; flex-direction: column; gap: 5px; text-align: left;
+  padding: 16px; background: var(--surface-canvas);
+  border: 1.5px dashed var(--border-default); border-radius: 10px;
+  cursor: pointer; font: inherit; color: inherit;
+}
+.datadialog__drop--hover { border-color: var(--state-queued); background: var(--surface-dock); }
+.datadialog__drop .dropband__title { font-size: 14px; }
+.datadialog__drop .dropband__sub { font-size: 12px; }
+.datadialog__side .templates { margin-top: 12px; }
+.datadialog__error { margin: 0; padding: 8px 16px; border-top: 1px solid var(--border-subtle); }
+.datadialog__foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid var(--border-subtle);
+}
+.inspector__action { margin-top: 10px; }
+
+.datafolder { display: flex; gap: 8px; margin-top: 10px; }
+.datafolder input {
+  flex: 1; padding: 6px 10px; font-size: 12px;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-default); border-radius: 6px; color: var(--text-primary);
+}
+
 .scratch { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border-subtle); }
 .scratch__row { display: flex; align-items: center; gap: 16px; }
 .scratch__row > div { flex: 1 0 0; min-width: 0; }
@@ -423,6 +517,11 @@ body {
   padding: 1px 5px; margin-right: 4px; color: var(--text-secondary);
 }
 
+/* 클릭한 선 - 인라인 stroke(dtype 색)를 이겨야 해서 !important. 색과 점선 두 축으로 표시한다. */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--text-primary) !important; stroke-dasharray: 5 4;
+}
+
 /* ── 하단 Run 패널 ───────────────────────────────────────────────── */
 
 .canvas { position: relative; display: flex; flex-direction: column; }
@@ -437,9 +536,15 @@ body {
 .runpanel__handle:hover { color: var(--text-primary); }
 
 .runpanel {
-  flex-shrink: 0; height: 232px; display: flex; flex-direction: column;
+  position: relative; flex-shrink: 0; height: 232px; display: flex; flex-direction: column;
   background: var(--surface-panel); border-top: 1px solid var(--border-subtle);
 }
+/* 위쪽 헤어라인이 손잡이다. 6px 높이라 보이지는 않고 잡힌다. */
+.runpanel__grip {
+  position: absolute; left: 0; right: 0; top: -3px; height: 6px; z-index: 6;
+  cursor: row-resize; touch-action: none;
+}
+.runpanel__grip:hover { background: var(--border-default); }
 .runpanel__tabs {
   display: flex; align-items: center; gap: 4px;
   padding: 0 14px; border-bottom: 1px solid var(--border-subtle);
@@ -460,7 +565,8 @@ body {
   background: none; border: 0; cursor: pointer;
   font: 500 12px var(--font-sans); color: var(--text-muted); padding: 4px 6px;
 }
-.runpanel__body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; }
+.runpanel__body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; }
+.runpanel__body > * { flex-shrink: 0; }
 .runpanel__json { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
 
 /* Debug Console (§5.6.1) — Figma에 없는 패널이라 기존 탭·mono 규칙만 따랐다 */
@@ -510,7 +616,9 @@ body {
 .curves__legend { display: flex; align-items: center; gap: 14px; font-size: 12px; margin-bottom: 8px; }
 .curves__key { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); }
 .curves__swatch { width: 10px; height: 2px; border-radius: 1px; }
-.curves__plot { width: 100%; height: 150px; }
+/* 곡선은 패널이 커지는 만큼 같이 커진다. */
+.runpanel__body > .curves { flex: 1 1 150px; min-height: 150px; display: flex; flex-direction: column; }
+.curves__plot { width: 100%; height: 150px; flex: 1; min-height: 0; }
 
 /* ── 모듈 트리 (Figma 02 Attach mode 왼쪽) ────────────────────────── */
 

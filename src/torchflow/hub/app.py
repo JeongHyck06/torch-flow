@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, codegen, paper, protocol as proto
+from .. import __version__, codegen, datasets, paper, protocol as proto
 from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
@@ -48,6 +48,8 @@ class Hub:
         # L2 학습 run들. hub는 워커를 띄우고 파일을 읽을 뿐 학습을 돌리지 않는다(§5.5.3).
         self.runs_dir = Path.cwd() / "runs"
         self.l2: dict[str, l2.RunHandle] = {}
+        # 내려받은 데이터셋 자리. hub는 파일 유무와 다운로드만 알고 적재는 워커가 한다.
+        self.data_dir = Path.cwd() / "data"
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
         self.attached = False
@@ -103,6 +105,9 @@ class Hub:
             {"id": "minivit", "name": "MiniViT / CIFAR-10",
              "recipe": "설계 예제 · 검증 전", "metric": "—",
              "file": "minivit.tfg.json", "rt": {"num_classes": 10}},
+            {"id": "mnist_cnn", "name": "MNIST CNN",
+             "recipe": "2,000 step · AdamW 1e-3 · batch 64", "metric": "≈98.8 % val",
+             "file": "mnist_cnn.tfg.json"},
             {"id": "nanogpt", "name": "nanoGPT char / Shakespeare",
              "recipe": "5,000 iter · 6층 384 dim", "metric": "val loss ≈1.47",
              "file": "nanogpt.tfg.json"},
@@ -428,8 +433,10 @@ def create_app(
         await hub.broadcast(proto.OpBroadcast(seq=seq, op=op))
         for state in states:
             await hub.broadcast(state)
+        # 총계는 L0가 센 값이 정본이다. 편집마다 같이 보내야 상단 바가 다시 열 때까지 0으로 남지 않는다.
         return JSONResponse(
-            {"seq": seq, "node_states": [s.model_dump(mode="json") for s in states]}
+            {"seq": seq, "node_states": [s.model_dump(mode="json") for s in states],
+             "total_params": hub.total_params}
         )
 
     @app.post("/api/shapes")
@@ -563,11 +570,27 @@ def create_app(
         """빈 그래프에서 시작한다(§2.2의 진입점 다섯 중 하나)."""
         from ..ir import Graph
 
-        name = ((request or {}).get("name") or "untitled").strip() or "untitled"
+        request = request or {}
+        # 데이터부터 시작하면 Input과 Output을 그 규격으로 깔아 준다 - 모양을 손으로 옮겨 적지 않는다.
+        spec = datasets.describe(request["dataset"], hub.data_dir) if request.get("dataset") else None
+        if request.get("dataset") and spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {request['dataset']}"},
+                                status_code=400)
+        if spec is not None:
+            spec = datasets.resolve(spec, request.get("recipe"))
+        name = (request.get("name") or (spec["label"] if spec else "untitled")).strip() or "untitled"
+        nodes = []
+        if spec is not None:
+            nodes = [{"id": "IN", "label": "x", "type": "torchflow.Input",
+                      "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", *spec["shape"]],
+                                     "dtype": "float32"}]},
+                     {"id": "OUT", "label": "logits", "type": "torchflow.Output"}]
         # id를 여기서 박아 둔다. 없으면 새 프로젝트마다 run이 섞인다.
         meta = {"app_version": __version__, "id": uuid4().hex[:8].upper()}
-        hub.open(ModuleGraph(meta=meta, graph=Graph(name=name)))
-        return JSONResponse({"ok": True, "name": name})
+        experiment = {"data": {"name": spec["name"], "recipe": spec["recipe"]}} if spec else None
+        hub.open(ModuleGraph(meta=meta, experiment=experiment,
+                             graph=Graph.model_validate({"name": name, "nodes": nodes})))
+        return JSONResponse({"ok": True, "name": name, "dataset": spec and spec["name"]})
 
     @app.post("/api/close")
     def close_graph() -> JSONResponse:
@@ -734,6 +757,98 @@ def create_app(
             manifest=request.get("manifest"))
         return JSONResponse({"ok": True, "run_id": run_id})
 
+    @app.get("/api/datasets")
+    def list_datasets() -> JSONResponse:
+        """내장 데이터셋과 data/ 아래 사용자 데이터. 다운로드는 명시 버튼으로만(§3.1)."""
+        return JSONResponse({"datasets": datasets.scan(hub.data_dir)})
+
+    @app.post("/api/datasets/{name}/preview")
+    def preview_dataset(name: str, request: dict[str, Any] | None = None) -> JSONResponse:
+        """정제 화면: 레시피를 적용한 명세와 미리보기. 적재는 하지 않는다."""
+        spec = datasets.describe(name, hub.data_dir)
+        if spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {name}"}, status_code=404)
+        if spec["kind"] == "builtin":
+            return JSONResponse({"base": spec, "spec": datasets.resolve(spec, None), "preview": {}})
+        return JSONResponse(datasets.preview(spec, hub.data_dir, (request or {}).get("recipe")))
+
+    @app.post("/api/data")
+    async def set_graph_data(request: dict[str, Any]) -> JSONResponse:
+        """그래프에 데이터와 레시피를 붙이고 Input 규격을 맞춘다.
+
+        레시피는 IR의 ``experiment.data``에 남아 저장·재현에 따라간다. Input은 평범한
+        ``set_ports`` op로 고치므로 실행 취소가 되고 다른 클라이언트도 본다.
+        """
+        if hub.store is None:
+            return no_graph()
+        name = request.get("name") or ""
+        spec = datasets.describe(name, hub.data_dir)
+        if spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {name}"}, status_code=404)
+        effective = datasets.resolve(spec, request.get("recipe"))
+        ir = hub.store.ir
+        ir.experiment = {**(ir.experiment or {}),
+                         "data": {"name": name, "recipe": effective["recipe"]}}
+        entry = next((node for node in ir.graph.nodes if node.type == "torchflow.Input"), None)
+        states = []
+        if entry is not None and entry.ports_out and request.get("apply_input", True):
+            port = entry.ports_out[0]
+            wanted = ["B", *effective["shape"]]
+            if list(port.shape or []) != wanted:
+                op = {"client_id": "hub", "tmp_seq": 0, "kind": "set_ports",
+                      "payload": {"node": entry.id,
+                                  "ports_out": [{"name": port.name, "type": port.type,
+                                                 "shape": wanted, "dtype": port.dtype or "float32"}]}}
+                seq = hub.apply_op(op)
+                states = hub.run_l0()
+                await hub.broadcast(proto.OpBroadcast(seq=seq, op=op))
+                for state in states:
+                    await hub.broadcast(state)
+        return JSONResponse({"ok": True, "spec": effective, "seq": hub.seq,
+                             "node_states": [s.model_dump(mode="json") for s in states]})
+
+    @app.put("/api/datasets/{name}/files")
+    async def upload_dataset_file(name: str, request: Request, path: str = "") -> JSONResponse:
+        """브라우저에서 끌어다 놓은 데이터 파일 하나를 data/<name>/<path>에 쓴다.
+
+        multipart 없이 본문이 곧 파일이다 - 의존성 하나를 아끼고 폴더 하나에 수백 장이어도
+        요청 수백 개로 충분하다(로컬이다).
+        """
+        relative = Path(path)
+        if not name or "/" in name or name.startswith(".") or relative.is_absolute() \
+                or ".." in relative.parts or not path:
+            return JSONResponse({"error": f"쓸 수 없는 경로: {name}/{path}"}, status_code=400)
+        target = hub.data_dir / name / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(await request.body())
+        return JSONResponse({"ok": True, "path": str(target)})
+
+    @app.post("/api/datasets")
+    def add_dataset_folder(request: dict[str, Any]) -> JSONResponse:
+        """다른 곳의 폴더를 data/ 에 링크로 등록한다. 복사하지 않는다."""
+        source = Path(request.get("path") or "").expanduser()
+        if not source.is_dir():
+            return JSONResponse({"error": f"폴더가 아닙니다: {source}"}, status_code=400)
+        spec = datasets.inspect(source)
+        if spec is None:
+            return JSONResponse({"error": "이미지 폴더(클래스별 하위 폴더), CSV, x.npy+y.npy 중 "
+                                          "무엇도 찾지 못했습니다"}, status_code=400)
+        hub.data_dir.mkdir(parents=True, exist_ok=True)
+        link = hub.data_dir / source.name
+        if not link.exists():
+            link.symlink_to(source.resolve(), target_is_directory=True)
+        return JSONResponse({"ok": True, **datasets.describe(source.name, hub.data_dir)})
+
+    @app.post("/api/datasets/{name}/download")
+    def download_dataset(name: str) -> JSONResponse:
+        if name not in datasets.CATALOGUE:
+            return JSONResponse({"error": f"unknown dataset {name}"}, status_code=404)
+        try:
+            written = datasets.download(name, hub.data_dir)
+        except OSError as exc:
+            return JSONResponse({"error": f"내려받지 못했습니다: {exc}"}, status_code=502)
+        return JSONResponse({"ok": True, "files": [str(path) for path in written]})
+
     @app.post("/api/train")
     def start_training(request: dict[str, Any] | None = None) -> JSONResponse:
         """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
@@ -748,6 +863,43 @@ def create_app(
         if entry is None or not entry.ports_out:
             return JSONResponse(
                 {"error": "Input 노드와 입력 규격이 있어야 학습할 수 있습니다"}, status_code=400)
+
+        # 실제 데이터셋이면 워커를 띄우기 전에 규격을 맞춰 본다. 워커 안에서 터지면 사람은
+        # stdout을 뒤져야 하고, 여기서 말하면 Input 노드를 고치면 된다.
+        dataset = options.get("dataset", "teacher")
+        spec = datasets.describe(dataset, hub.data_dir) if dataset not in ("teacher", "noise") else None
+        if dataset not in ("teacher", "noise") and spec is None:
+            return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {dataset}"}, status_code=400)
+        recipe = options.get("recipe")
+        attached = ((hub.store.ir.experiment or {}).get("data") or {})
+        if recipe is None and attached.get("name") == dataset:
+            recipe = attached.get("recipe")
+        if spec is not None:
+            spec = datasets.resolve(spec, recipe)
+            if spec.get("problem"):
+                return JSONResponse({"error": f"{spec['label']}: {spec['problem']}"}, status_code=400)
+            given = list(entry.ports_out[0].shape or [])
+            wanted = ", ".join(str(dim) for dim in ["B", *spec["shape"]])
+            if given[1:] != spec["shape"]:
+                port = entry.ports_out[0]
+                return JSONResponse({"error": f"{spec['label']}의 입력은 [{wanted}]입니다. "
+                                              f"Input 노드의 규격을 {wanted}로 바꾸세요 "
+                                              f"(지금 [{', '.join(map(str, given))}])",
+                                     # 화면이 버튼 하나로 고칠 수 있게 op 재료를 같이 준다.
+                                     "fix": {"node": entry.id,
+                                             "ports_out": [{"name": port.name, "type": port.type,
+                                                            "shape": ["B", *spec["shape"]],
+                                                            "dtype": port.dtype or "float32"}]}},
+                                    status_code=400)
+            sink = next((node for node in graph.nodes if node.type == "torchflow.Output"), None)
+            logits = ((hub.node_states.get(sink.id) or {}).get("spec") or {}).get("shape") if sink else None
+            if logits and logits[-1] != spec["classes"]:
+                return JSONResponse({"error": f"{spec['label']}는 {spec['classes']}개 클래스입니다. "
+                                              f"출력이 [B, {spec['classes']}]여야 합니다 (지금 {logits})"},
+                                    status_code=400)
+            if not spec["available"]:
+                return JSONResponse({"error": f"{spec['label']} 파일이 없습니다. 먼저 내려받으세요",
+                                     "download": dataset}, status_code=400)
 
         try:
             code = codegen.generate(hub.store.ir, version=__version__,
@@ -781,7 +933,11 @@ def create_app(
             "class_name": _class_name(graph.name),
             "model_args": model_args,
             "input_shape": list(entry.ports_out[0].shape or []),
-            "num_classes": int(hub.rt.get("num_classes", 10)),
+            "num_classes": spec["classes"] if spec else int(hub.rt.get("num_classes", 10)),
+            "dataset": dataset,
+            "data_dir": str(hub.data_dir),
+            "recipe": spec["recipe"] if spec else None,
+            "eval_every": int(options.get("eval_every", 100)),
             "batch": int(options.get("batch", 32)),
             "steps": int(options.get("steps", 200)),
             "optimizer": options.get("optimizer", "adamw"),
@@ -893,6 +1049,19 @@ def create_app(
     @app.get("/api/logs")
     def read_logs(limit: int = 300, node: str = "") -> JSONResponse:
         return JSONResponse({"logs": hub.tracker.tail(limit, node or None)})
+
+    @app.post("/api/detail")
+    def node_detail(request: dict[str, Any]) -> JSONResponse:
+        """블록 상세 탭(§6.3). L1 커널의 마지막 probe 값으로 그린다."""
+        if hub.attached or not hub.l1.alive():
+            return JSONResponse({"ok": False, "error": "Probe를 한 번 돌리면 이 블록이 무엇을 했는지 보입니다"})
+        node = request.get("node") or ""
+        path, _, node_id = node.rpartition("/")
+        replies = hub.l1.request(proto.NodeDetail(req_id=f"d-{hub.seq}", node_id=node_id, path=path))
+        result = next((r for r in replies if r.type == "NodeDetailResult"), None)
+        if result is None:
+            return JSONResponse({"ok": False, "error": "커널이 응답하지 않았습니다"}, status_code=502)
+        return JSONResponse(result.model_dump(mode="json", exclude_none=True))
 
     @app.post("/api/eval")
     def eval_expression(request: dict[str, Any]) -> JSONResponse:

@@ -66,11 +66,13 @@ export async function fetchRegistry(): Promise<Block[]> {
 }
 
 /** 빈 그래프에서 시작한다. 첫 화면의 진입점 하나(§2.2). */
-export async function newGraph(name = "untitled"): Promise<{ ok?: boolean; error?: string }> {
+/** ``dataset``을 주면 Input/Output이 그 데이터 규격으로 깔린 채 열린다. */
+export async function newGraph(name = "untitled", dataset?: string, recipe?: Recipe | null):
+    Promise<{ ok?: boolean; error?: string }> {
   const response = await fetch("/api/new", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(dataset ? { name, dataset, recipe: recipe ?? {} } : { name }),
   });
   return response.json();
 }
@@ -99,7 +101,7 @@ export async function saveGraph(path?: string):
  * 한 번이 싸다 - 로컬 hub에서 한 자릿수 ms다.`
  */
 export async function sendOp(operation: Op):
-    Promise<{ seq: number; node_states: NodeState[]; error?: string }> {
+    Promise<{ seq: number; node_states: NodeState[]; total_params?: number; error?: string }> {
   const response = await fetch("/api/ops", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
@@ -219,14 +221,95 @@ export interface TrainRun {
   restart_required?: string; message?: string; ok?: boolean;
 }
 
+export interface DatasetInfo {
+  name: string; label: string; shape: number[]; classes: number; available: boolean;
+  /** builtin은 내려받는 것, user는 data/ 아래 폴더(이미지 폴더·CSV·npy). */
+  source: "builtin" | "user"; kind: string; size_mb?: number; count?: number;
+  class_names?: string[];
+}
+
+/** 사람이 정제한 설정. 키는 datasets.recipe_defaults가 정한다. */
+export type Recipe = Record<string, unknown>;
+
+export interface DatasetColumn { name: string; kind: string; missing: number; uniques?: string[] | null }
+export interface EffectiveSpec extends DatasetInfo {
+  recipe: Recipe; split?: { train: number; val: number };
+  class_counts?: Record<string, number>; problem?: string;
+}
+export interface DatasetPreview {
+  base: DatasetInfo & { columns?: DatasetColumn[]; label_column?: string };
+  spec: EffectiveSpec;
+  preview: {
+    columns?: DatasetColumn[]; header?: string[]; rows?: string[][];
+    thumbnails?: { png: string; labels: string[]; tile: number; per_class: number } | null;
+  };
+  error?: string;
+}
+
+export async function previewDataset(name: string, recipe: Recipe | null): Promise<DatasetPreview> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(name)}/preview`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ recipe: recipe ?? {} }),
+  });
+  return response.json();
+}
+
+/** 그래프에 데이터와 레시피를 붙이고 Input 규격을 맞춘다. */
+export async function setGraphData(name: string, recipe: Recipe | null):
+    Promise<{ ok?: boolean; error?: string; spec?: EffectiveSpec }> {
+  const response = await fetch("/api/data", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ name, recipe: recipe ?? {} }),
+  });
+  return response.json();
+}
+
+/** 끌어다 놓은 파일 하나를 data/<name>/<path>로 올린다. 본문이 곧 파일이다. */
+export async function uploadDatasetFile(name: string, path: string, file: File):
+    Promise<{ ok?: boolean; error?: string }> {
+  const response = await fetch(
+    `/api/datasets/${encodeURIComponent(name)}/files?path=${encodeURIComponent(path)}`,
+    { method: "PUT", headers: authHeaders(), body: file });
+  return response.json();
+}
+
+/** 다른 곳의 폴더를 data/ 에 링크로 등록한다. */
+export async function addDatasetFolder(path: string): Promise<DatasetInfo & { error?: string }> {
+  const response = await fetch("/api/datasets", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return response.json();
+}
+
+export async function fetchDatasets(): Promise<DatasetInfo[]> {
+  const response = await fetch("/api/datasets", { headers: authHeaders() });
+  if (!response.ok) return [];
+  return (await response.json()).datasets ?? [];
+}
+
+/** 다운로드는 사람이 누른 버튼에서만 시작한다(§3.1). */
+export async function downloadDataset(name: string): Promise<{ ok?: boolean; error?: string }> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(name)}/download`, {
+    method: "POST", headers: authHeaders(),
+  });
+  return response.json();
+}
+
 export interface TrainOptions {
+  dataset?: string; recipe?: Recipe;
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
   scheduler?: string; warmup_steps?: number;
 }
 
 /** 학습을 시작한다. 워커는 hub와 분리된 세션에서 돈다(§5.5.3). */
+export interface PortSpec { name: string; type: string; shape: (string | number)[]; dtype: string }
+
 export async function startTraining(options: TrainOptions):
-    Promise<TrainRun & { error?: string }> {
+    Promise<TrainRun & { error?: string; fix?: { node: string; ports_out: PortSpec[] } }> {
   const response = await fetch("/api/train", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
@@ -259,6 +342,27 @@ export async function fetchTraining(): Promise<TrainRun[]> {
   const response = await fetch("/api/train", { headers: authHeaders() });
   if (!response.ok) return [];
   return (await response.json()).runs ?? [];
+}
+
+export interface DetailPanel {
+  type: "grid" | "heatmap" | "hist" | "bars" | "text"; title: string;
+  png?: string; cols?: number; rows?: number; note?: string;
+  range?: [number, number]; before?: number[] | null; after?: number[];
+  labels?: string[]; values?: number[];
+}
+export interface BlockDetailInfo {
+  ok: boolean; error?: string; node: string; label: string; kind: string; params: number;
+  input_shape?: number[] | null; output_shape?: number[] | null; explain: string; panels: DetailPanel[];
+}
+
+/** 블록 상세(§6.3). L1 커널의 마지막 probe 값으로 그린다. */
+export async function fetchDetail(node: string): Promise<BlockDetailInfo> {
+  const response = await fetch("/api/detail", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ node }),
+  });
+  return response.json();
 }
 
 export async function runProbe(batch = 4) {

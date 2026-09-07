@@ -215,6 +215,7 @@ def test_start_endpoint_lists_templates_and_marks_missing_ones(client):
     templates = {entry["id"]: entry for entry in payload["templates"]}
     assert templates["resnet18"]["available"] is True
     assert templates["resnet18"]["metric"] == "≈95.0 % top-1"
+    assert templates["mnist_cnn"]["available"] is True
     # 아직 없는 템플릿을 있는 척하지 않는다.
     assert templates["nanogpt"]["available"] is False
     assert payload["state_dir"] and payload["torch_version"]
@@ -332,6 +333,8 @@ def test_new_graph_starts_empty_and_saves(tmp_path):
                                  "ports_out": [{"name": "x", "type": "Tensor",
                                                 "shape": ["B", 8], "dtype": "float32"}]}}})
         assert added.status_code == 200 and added.json()["seq"] == 1
+        # 편집 응답에 총계가 실린다 - 상단 바가 다시 열 때까지 0으로 남지 않게.
+        assert added.json()["total_params"] == 0
 
         # 저장 기본 경로는 프로젝트의 graph/ 다 - 테스트는 tmp_path로 명시한다.
         target = tmp_path / "graph" / "scratch.tfg.json"
@@ -677,3 +680,94 @@ def test_merge_survives_concurrent_polling(tmp_path):
 
     assert handle.cursor == events.stat().st_size
     assert handle.state == "stopped" and handle.step == 1499
+
+
+def test_training_on_a_dataset_checks_the_input_spec(app, client, tmp_path):
+    """MNIST는 [B, 1, 28, 28]이다. 규격이 다르면 워커를 띄우기 전에 말한다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.data_dir = tmp_path / "data"
+    listed = client.get("/api/datasets", headers=auth).json()["datasets"]
+    assert [(entry["name"], entry["available"]) for entry in listed] == [("mnist", False)]
+
+    response = client.post("/api/train", headers=auth, json={"dataset": "mnist", "steps": 2})
+    assert response.status_code == 400 and "1, 28, 28" in response.json()["error"]
+    assert client.post("/api/datasets/nope/download", headers=auth).status_code == 404
+
+
+def test_a_new_graph_can_start_from_a_dataset(tmp_path):
+    """데이터부터 시작하면 Input이 그 규격으로 깔리고, 규격이 어긋난 학습 요청은 고칠 op를 준다."""
+    from test_datasets import write_image_folder
+
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        app.state.hub.data_dir = tmp_path / "data"
+        write_image_folder(tmp_path / "data")
+        names = [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]]
+        assert names == ["mnist", "shapes"]
+
+        assert client.post("/api/new", headers=auth, json={"dataset": "shapes"}).json()["name"] == "shapes"
+        graph = client.get("/api/graph", headers=auth).json()["graph"]["graph"]
+        assert {node["type"] for node in graph["nodes"]} == {"torchflow.Input", "torchflow.Output"}
+        entry = next(node for node in graph["nodes"] if node["type"] == "torchflow.Input")
+        assert entry["ports_out"][0]["shape"] == ["B", 3, 20, 20]
+
+        client.post("/api/ops", headers=auth, json={
+            "client_id": "c", "tmp_seq": 1, "kind": "set_ports",
+            "payload": {"node": "IN", "ports_out": [{"name": "x", "type": "Tensor",
+                                                     "shape": ["B", 1, 28, 28], "dtype": "float32"}]}})
+        response = client.post("/api/train", headers=auth, json={"dataset": "shapes", "steps": 1})
+        assert response.status_code == 400
+        assert response.json()["fix"]["ports_out"][0]["shape"] == ["B", 3, 20, 20]
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()
+
+
+def test_recipe_preview_and_graph_data(tmp_path):
+    """정제 화면의 미리보기와, 레시피를 그래프에 붙이며 Input을 맞추는 경로."""
+    from test_datasets import write_image_folder
+
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        app.state.hub.data_dir = tmp_path / "data"
+        write_image_folder(tmp_path / "data")
+        body = client.post("/api/datasets/shapes/preview", headers=auth,
+                           json={"recipe": {"size": 8, "channels": 1}}).json()
+        assert body["spec"]["shape"] == [1, 8, 8] and body["spec"]["split"] == {"train": 5, "val": 1}
+        assert body["preview"]["thumbnails"]["labels"] == ["blue", "red"]
+
+        client.post("/api/new", headers=auth, json={"dataset": "shapes"})
+        out = client.post("/api/data", headers=auth,
+                          json={"name": "shapes", "recipe": {"size": 8, "channels": 1}}).json()
+        assert out["ok"] and out["spec"]["shape"] == [1, 8, 8]
+        graph = client.get("/api/graph", headers=auth).json()["graph"]
+        assert graph["experiment"]["data"]["recipe"]["size"] == 8
+        entry = next(node for node in graph["graph"]["nodes"] if node["type"] == "torchflow.Input")
+        assert entry["ports_out"][0]["shape"] == ["B", 1, 8, 8]
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()
+
+
+def test_detail_route_needs_a_probe_first(client):
+    auth = {"Authorization": f"token {TOKEN}"}
+    body = client.post("/api/detail", headers=auth, json={"node": "01J9Q4B5"}).json()
+    assert body["ok"] is False and "Probe" in body["error"]
+    client.post("/api/probe", headers=auth, json={})
+    body = client.post("/api/detail", headers=auth, json={"node": "01J9Q4B5"}).json()
+    assert body["ok"] and body["panels"]
+
+
+def test_dropped_files_land_under_data(app, client, tmp_path):
+    """브라우저가 끌어다 놓은 파일은 data/<이름>/<상대 경로>에 그대로 놓인다. 경로 탈출은 막는다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.data_dir = tmp_path / "data"
+    body = b"a,b,label\n1,2,x\n3,4,y\n"
+    response = client.put("/api/datasets/table/files?path=t.csv", headers=auth, content=body)
+    assert response.status_code == 200 and (tmp_path / "data" / "table" / "t.csv").read_bytes() == body
+    assert client.put("/api/datasets/table/files?path=../evil.csv", headers=auth, content=body).status_code == 400
+    assert [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]] == ["mnist", "table"]

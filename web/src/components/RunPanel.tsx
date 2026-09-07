@@ -6,19 +6,25 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchCurve, fetchLogs, fetchRuns } from "../api";
 import type { CurveSeries, LogLine, RunInfo } from "../api";
+import { setGraphData } from "../api";
+import { BlockDetail } from "./BlockDetail";
 import { Console } from "./Console";
+import { DataCard } from "./DataCard";
 import { TrainLog } from "./TrainLog";
 import { Trainer } from "./Trainer";
-import { useStore } from "../store";
+import { SYNTHETIC, useStore } from "../store";
 
-type Tab = "curves" | "stdout" | "manifest" | "logs" | "console";
+type Tab = "curves" | "block" | "data" | "stdout" | "manifest" | "logs" | "console";
 
 const TAB_LABELS: Record<Tab, string> = {
-  curves: "Run 곡선", stdout: "학습 출력", manifest: "run manifest",
-  logs: "로그", console: "콘솔",
+  curves: "Run 곡선", block: "블록 상세", data: "데이터", stdout: "학습 출력",
+  manifest: "run manifest", logs: "로그", console: "콘솔",
 };
 
 const COLORS = ["var(--dtype-f32)", "#4a86c9", "#7c8898", "#2a558d", "#5e93d1"];
+
+const DEFAULT_HEIGHT = 232;
+const MIN_HEIGHT = 160;
 
 export function RunPanel() {
   const [tab, setTab] = useState<Tab>("curves");
@@ -28,6 +34,43 @@ export function RunPanel() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const open = useStore((state) => state.runPanel);
   const toggle = useStore((state) => state.toggleRunPanel);
+  const dataset = useStore((state) => state.dataset);
+  const recipe = useStore((state) => state.recipe);
+  const setData = useStore((state) => state.setData);
+  const openData = useStore((state) => state.openData);
+  const [applied, setApplied] = useState<string | null>(null);
+  // 위쪽 경계를 끌어 높이를 바꾼다. 곡선을 크게 보려는 것이라 브라우저에 기억해 둔다.
+  const [height, setHeight] = useState(() => {
+    try { return Number(localStorage.getItem("torchflow.runpanel.height")) || DEFAULT_HEIGHT; }
+    catch { return DEFAULT_HEIGHT; }
+  });
+  const resize = (next: number) => {
+    const clamped = Math.max(MIN_HEIGHT, Math.min(next, window.innerHeight - 160));
+    setHeight(clamped);
+    try { localStorage.setItem("torchflow.runpanel.height", String(clamped)); } catch { /* 저장 못 해도 동작한다 */ }
+  };
+  const onGrip = (event: React.PointerEvent<HTMLDivElement>) => {
+    const startY = event.clientY;
+    const startHeight = height;
+    const grip = event.currentTarget;
+    grip.setPointerCapture(event.pointerId);
+    const move = (moving: PointerEvent) => resize(startHeight + (startY - moving.clientY));
+    const stop = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", stop);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", stop);
+  };
+
+  // 레시피를 그래프에 붙인다. hub가 Input을 set_ports op로 맞추고 브로드캐스트한다.
+  const apply = async () => {
+    setApplied("…");
+    const result = await setGraphData(dataset, recipe);
+    if (result.error) { setApplied(result.error); return; }
+    setData(dataset, result.spec?.recipe ?? recipe);
+    setApplied(`적용됨 · Input [B, ${(result.spec?.shape ?? []).join(", ")}]`);
+  };
 
   const refresh = useCallback(async () => {
     const found = await fetchRuns();
@@ -60,7 +103,13 @@ export function RunPanel() {
   const keys = [...new Set(runs.flatMap((run) => run.keys))];
 
   return (
-    <section className="runpanel" aria-label="Run 패널">
+    <section className="runpanel" aria-label="Run 패널" style={{ height }}>
+      <div
+        className="runpanel__grip" role="separator" aria-label="패널 높이"
+        title="끌어서 높이 조절 · 더블클릭으로 크게/원래대로"
+        onPointerDown={onGrip}
+        onDoubleClick={() => resize(height > DEFAULT_HEIGHT ? DEFAULT_HEIGHT : Math.round(window.innerHeight * 0.6))}
+      />
       <div className="runpanel__tabs">
         {(Object.keys(TAB_LABELS) as Tab[]).map((name) => (
           <button
@@ -90,6 +139,26 @@ export function RunPanel() {
             </p>
           ) : (
             <Curves series={series} label={key} />
+          )
+        )}
+
+        {tab === "block" && <BlockDetail />}
+
+        {tab === "data" && (
+          SYNTHETIC.has(dataset) ? (
+            <div className="trainer">
+              <button className="trainer__run" onClick={openData}>Input에 데이터 불러오기</button>
+              <span className="mono muted">지금은 합성 과제로 학습합니다</span>
+            </div>
+          ) : (
+            <>
+              <div className="trainer">
+                <button className="trainer__run" onClick={() => void apply()}>그래프에 적용</button>
+                <span className="mono trainer__progress">{dataset}</span>
+                {applied && <span className="mono trainer__note">{applied}</span>}
+              </div>
+              <DataCard name={dataset} recipe={recipe} onRecipe={(next) => setData(dataset, next)} />
+            </>
           )
         )}
 

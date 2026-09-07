@@ -202,3 +202,24 @@ def test_a_dispatch_failure_still_ends_the_request(kernel):
     assert time.perf_counter() - started < 5
     assert replies[0].type == "Error" and replies[0].kind == "kernel"
     assert replies[-1].type == "Progress"
+
+
+def test_node_detail_draws_from_the_last_probe(tmp_path):
+    """블록 상세는 probe가 남긴 값으로 그린다. probe 전에는 그렇게 말한다."""
+    manager = KernelManager("L1", state_dir=tmp_path / "state")
+    manager.start()
+    try:
+        before = manager.request(proto.NodeDetail(req_id="d-0", node_id="01J9Q4B5"))
+        assert before[0].type == "NodeDetailResult" and not before[0].ok and "probe" in before[0].error
+
+        manager.request(proto.RunClosure(req_id="p-1", graph=snapshot(),
+                                         probe_cfg={"batch": 2, "objective": "random_target_ce"}))
+        head = manager.request(proto.NodeDetail(req_id="d-1", node_id="01J9Q4B5"))[0]
+        assert head.ok and head.kind.endswith("Linear") and head.params == 192 * 10 + 10
+        assert head.output_shape[1] == 10 and head.explain   # 배치는 예산이 정한다
+        assert {panel["type"] for panel in head.panels} >= {"heatmap", "bars"}
+
+        patch = manager.request(proto.NodeDetail(req_id="d-2", node_id="01J9Q4B2"))[0]
+        assert patch.ok and any(panel["type"] == "grid" for panel in patch.panels)   # 컴포지트도 그린다
+    finally:
+        manager.stop()

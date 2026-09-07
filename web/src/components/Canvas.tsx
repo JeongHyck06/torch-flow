@@ -5,17 +5,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Background, BackgroundVariant, Controls, MiniMap, ReactFlow, applyNodeChanges,
+  Background, BackgroundVariant, Controls, MiniMap, ReactFlow, applyEdgeChanges, applyNodeChanges,
   useNodesInitialized, useReactFlow,
 } from "@xyflow/react";
 import type {
-  Connection, NodeChange, NodeMouseHandler, Node as FlowNode,
+  Connection, Edge, EdgeChange, EdgeMouseHandler, NodeChange, NodeMouseHandler, Node as FlowNode,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
 import { NodeCard } from "./NodeCard";
 import { Palette } from "./Palette";
-import { currentScope, useStore } from "../store";
+import { SYNTHETIC, currentScope, useStore } from "../store";
 import { saveLayout } from "../api";
 import { applyEdit, redo, undo } from "../edit";
 import { op, removeNodeOp } from "../graph/ops";
@@ -40,6 +40,8 @@ export function Canvas() {
   const setPosition = useStore((state) => state.setPosition);
   const openPalette = useStore((state) => state.openPalette);
   const paletteAt = useStore((state) => state.paletteAt);
+  const dataset = useStore((state) => state.dataset);
+  const openData = useStore((state) => state.openData);
 
   const [zoom, setZoom] = useState(1);
   // 뷰가 포커스를 따라가는 것은 키보드 탐색일 때만이다. 클릭에도 따라가면
@@ -52,8 +54,9 @@ export function Canvas() {
   const computed = useMemo(() => {
     if (!graph || !scope) return { nodes: [], edges: [] };
     return toFlow(scope, nodeStates,
-      { lod: lodOf(zoom), selected, focused, callPath, gradOverlay, positions });
-  }, [graph, scope, callPath, nodeStates, zoom, selected, focused, gradOverlay, positions]);
+      { lod: lodOf(zoom), selected, focused, callPath, gradOverlay, positions,
+        dataset: SYNTHETIC.has(dataset) ? "" : dataset });
+  }, [graph, scope, callPath, nodeStates, zoom, selected, focused, gradOverlay, positions, dataset]);
 
   // 드래그 중에는 로컬 상태가 권위를 갖는다 - 매 프레임 스토어를 때리면 끊긴다.
   const [nodes, setNodes] = useState<FlowNode[]>(computed.nodes);
@@ -61,6 +64,13 @@ export function Canvas() {
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => setNodes((current) => applyNodeChanges(changes, current)),
+    [],
+  );
+  // 엣지도 로컬 상태를 둔다 - 선택(클릭)이 여기 남아야 Delete가 어느 선인지 안다.
+  const [edges, setEdges] = useState<Edge[]>(computed.edges);
+  useEffect(() => { setEdges(computed.edges); }, [computed.edges]);
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange[]) => setEdges((current) => applyEdgeChanges(changes, current)),
     [],
   );
 
@@ -79,6 +89,12 @@ export function Canvas() {
     if (selected === nodeId) select(null);
     focus(null);
   }, [composite, selected, select, focus]);
+
+  // 선을 끊는 것도 평범한 disconnect op다 - 실행 취소하면 connect로 돌아온다.
+  const disconnect = useCallback((edge: Edge) => {
+    const { src, dst } = edge.data as { src: string; dst: string };
+    void applyEdit(op("disconnect", { ...(composite ? { composite } : {}), src, dst }));
+  }, [composite]);
 
   const order = useMemo(
     () => (scope ? topologicalIds(scope.nodes ?? [], (scope.edges ?? []) as [string, string][]) : []),
@@ -105,6 +121,8 @@ export function Canvas() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      // 데이터 창이 떠 있으면 키는 그 창의 것이다 - Tab이 뒤에서 팔레트를 열면 안 된다.
+      if (useStore.getState().dataOpen) return;
       if (!order.length && event.key !== "Tab") return;
       const index = focused ? order.indexOf(focused) : -1;
 
@@ -119,8 +137,12 @@ export function Canvas() {
         event.preventDefault();
         return;
       }
-      if ((event.key === "Delete" || event.key === "Backspace") && (focused || selected)) {
-        remove((focused ?? selected) as string);
+      if (event.key === "Delete" || event.key === "Backspace") {
+        // 클릭해 둔 선이 있으면 선이 먼저다. 노드 선택은 선을 클릭할 때 비운다.
+        const edge = edges.find((candidate) => candidate.selected);
+        if (edge) disconnect(edge);
+        else if (focused || selected) remove((focused ?? selected) as string);
+        else return;
         event.preventDefault();
         return;
       }
@@ -147,7 +169,7 @@ export function Canvas() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [order, focused, selected, scopes, focus, select, enter, popToScope, fitView,
-      openPalette, screenToFlowPosition, remove]);
+      openPalette, screenToFlowPosition, remove, edges, disconnect]);
 
   useEffect(() => {
     if (!focused || !followFocus.current) return;
@@ -172,7 +194,14 @@ export function Canvas() {
   }, [measured, fitView]);
 
   const onNodeClick: NodeMouseHandler = (_event, node) => { select(node.id); focus(node.id); };
-  const onNodeDoubleClick: NodeMouseHandler = (_event, node) => enter(node.id);
+  // 선을 고르면 노드 선택은 비운다 - Delete가 노드를 지우면 안 된다.
+  const onEdgeClick: EdgeMouseHandler = () => { select(null); focus(null); };
+  const onNodeDoubleClick: NodeMouseHandler = (_event, node) => {
+    // Input은 임포트 블록처럼 더블클릭으로 데이터 창을 연다 - 안으로 들어갈 것이 없다.
+    const kind = scope?.nodes?.find((one) => one.id === node.id)?.type?.split("@")[0];
+    if (kind === "torchflow.Input") openData();
+    else enter(node.id);
+  };
 
   const onPaneDoubleClick = (event: React.MouseEvent) => {
     // ReactFlow의 onDoubleClick은 노드 위에서도 발화한다 - 거기서는 컴포지트 진입이 맞다.
@@ -199,9 +228,12 @@ export function Canvas() {
   return (
     <ReactFlow
       nodes={nodes}
-      edges={computed.edges}
+      edges={edges}
       nodeTypes={nodeTypes}
       onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      onEdgeClick={onEdgeClick}
+      deleteKeyCode={null}
       onNodeDragStop={onNodeDragStop}
       onNodeClick={onNodeClick}
       onNodeDoubleClick={onNodeDoubleClick}

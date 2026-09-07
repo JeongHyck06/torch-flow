@@ -11,7 +11,7 @@ import type { LogLine } from "../api";
 import { applyEdit } from "../edit";
 import { op } from "../graph/ops";
 import type { Block } from "../graph/ops";
-import { currentScope, useStore } from "../store";
+import { SYNTHETIC, currentScope, useStore } from "../store";
 import { formatRatio, formatShape } from "../theme";
 
 export function Inspector() {
@@ -19,6 +19,8 @@ export function Inspector() {
   const scopes = useStore((state) => state.scopes);
   const selected = useStore((state) => state.selected);
   const states = useStore((state) => state.nodeStates);
+  const dataset = useStore((state) => state.dataset);
+  const openData = useStore((state) => state.openData);
   const scope = currentScope({ graph, scopes });
   const stateKey = selected
     ? (scopes[scopes.length - 1].callPath
@@ -48,6 +50,7 @@ export function Inspector() {
           <div><dt>나가기</dt><dd>Esc</dd></div>
           <div><dt>전체 보기</dt><dd>f</dd></div>
           <div><dt>위치 조정</dt><dd>드래그</dd></div>
+          <div><dt>연결 끊기</dt><dd>선 클릭 후 Delete</dd></div>
         </dl>
       </aside>
     );
@@ -93,6 +96,21 @@ export function Inspector() {
           </div>
         ) : null}
       </dl>
+
+      {kind === "torchflow.Input" && (
+        <>
+          <h3>데이터</h3>
+          <dl className="rows">
+            <div>
+              <dt>데이터셋</dt>
+              <dd>{SYNTHETIC.has(dataset) ? "없음 · 합성 과제" : dataset}</dd>
+            </div>
+          </dl>
+          <button className="ghost inspector__action" onClick={openData}>
+            데이터 불러오기
+          </button>
+        </>
+      )}
 
       {node?.ports_out?.length ? (
         <>

@@ -1,0 +1,176 @@
+{
+  "graph": {
+    "edges": [
+      [
+        "N00.x",
+        "N01.input"
+      ],
+      [
+        "N01.output",
+        "N02.input"
+      ],
+      [
+        "N02.output",
+        "N03.input"
+      ],
+      [
+        "N03.output",
+        "N04.input"
+      ],
+      [
+        "N04.output",
+        "N05.input"
+      ],
+      [
+        "N05.output",
+        "N06.input"
+      ],
+      [
+        "N06.output",
+        "N07.input"
+      ],
+      [
+        "N07.output",
+        "N08.input"
+      ],
+      [
+        "N08.output",
+        "N09.input"
+      ]
+    ],
+    "instances": {
+      "IN01": {
+        "label": "conv1",
+        "args": {
+          "in_channels": 1,
+          "kernel_size": 3,
+          "out_channels": 16,
+          "padding": 1
+        },
+        "type": "torch.nn.Conv2d"
+      },
+      "IN02": {
+        "label": "relu1",
+        "type": "torch.nn.ReLU"
+      },
+      "IN03": {
+        "label": "pool1",
+        "args": {
+          "kernel_size": 2
+        },
+        "type": "torch.nn.MaxPool2d"
+      },
+      "IN04": {
+        "label": "conv2",
+        "args": {
+          "in_channels": 16,
+          "kernel_size": 3,
+          "out_channels": 32,
+          "padding": 1
+        },
+        "type": "torch.nn.Conv2d"
+      },
+      "IN05": {
+        "label": "relu2",
+        "type": "torch.nn.ReLU"
+      },
+      "IN06": {
+        "label": "pool2",
+        "args": {
+          "kernel_size": 2
+        },
+        "type": "torch.nn.MaxPool2d"
+      },
+      "IN07": {
+        "label": "flatten",
+        "type": "torch.nn.Flatten"
+      },
+      "IN08": {
+        "label": "fc",
+        "args": {
+          "in_features": 1568,
+          "out_features": 10
+        },
+        "type": "torch.nn.Linear"
+      }
+    },
+    "name": "MNIST-CNN",
+    "nodes": [
+      {
+        "label": "x",
+        "id": "N00",
+        "ports_out": [
+          {
+            "dtype": "float32",
+            "name": "x",
+            "shape": [
+              "B",
+              1,
+              28,
+              28
+            ]
+          }
+        ],
+        "type": "torchflow.Input"
+      },
+      {
+        "label": "conv1",
+        "call": "IN01",
+        "id": "N01",
+        "method": "forward"
+      },
+      {
+        "label": "relu1",
+        "call": "IN02",
+        "id": "N02",
+        "method": "forward"
+      },
+      {
+        "label": "pool1",
+        "call": "IN03",
+        "id": "N03",
+        "method": "forward"
+      },
+      {
+        "label": "conv2",
+        "call": "IN04",
+        "id": "N04",
+        "method": "forward"
+      },
+      {
+        "label": "relu2",
+        "call": "IN05",
+        "id": "N05",
+        "method": "forward"
+      },
+      {
+        "label": "pool2",
+        "call": "IN06",
+        "id": "N06",
+        "method": "forward"
+      },
+      {
+        "label": "flatten",
+        "call": "IN07",
+        "id": "N07",
+        "method": "forward"
+      },
+      {
+        "label": "fc",
+        "call": "IN08",
+        "id": "N08",
+        "method": "forward"
+      },
+      {
+        "label": "logits",
+        "id": "N09",
+        "type": "torchflow.Output"
+      }
+    ]
+  },
+  "meta": {
+    "app_version": "0.0.1",
+    "template": "mnist_cnn",
+    "reference": "2 conv + fc. 2,000 step AdamW 1e-3 batch 64 -> val 98.8 %"
+  }
+}

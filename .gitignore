@@ -17,6 +17,8 @@ src/torchflow/hub/static/
 # 로컬 상태 (--state-dir 기본값): 캐시·journal·layout·registry
 .torchflow/
 runs/
+# 내려받은 데이터셋 (MNIST 등)
+data/
 # 학습 중 hparam 변경 기록. 사용자 프로젝트에서는 커밋 대상이지만
 # 이 저장소에서 나오는 것은 예제를 돌린 흔적이다.
 conf/
