@@ -859,6 +859,11 @@ def create_app(
         options = request or {}
 
         graph = hub.store.ir.graph
+        trainer = next((node for node in graph.nodes if node.type == "torchflow.Train"), None)
+        if trainer is not None:
+            # 학습 블록이 있으면 그 값이 기본이다. 요청이 준 값(smoke의 짧은 steps 등)이 이긴다.
+            options = {**{key: value for key, value in (trainer.args or {}).items()
+                          if isinstance(value, (int, float, str, bool))}, **options}
         entry = next((node for node in graph.nodes if node.type == "torchflow.Input"), None)
         if entry is None or not entry.ports_out:
             return JSONResponse(

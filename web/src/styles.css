@@ -440,6 +440,28 @@ body {
   padding: 10px 16px; border-top: 1px solid var(--border-subtle);
 }
 .inspector__action { margin-top: 10px; }
+.inspector__actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ── 단계 표시줄 · 캔버스 왼쪽 위. 색 없이 글리프와 굵기로만 상태를 말한다 ── */
+
+.stages {
+  position: absolute; top: 12px; left: 12px; z-index: 5;
+  display: flex; list-style: none; margin: 0; padding: 0;
+  background: var(--surface-panel); border: 1px solid var(--border-default); border-radius: 8px;
+  overflow: hidden;
+}
+.stages__item + .stages__item { border-left: 1px solid var(--border-subtle); }
+.stages__button {
+  display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  padding: 6px 12px; background: none; border: 0; cursor: pointer; text-align: left;
+  font: 500 12px var(--font-sans); color: var(--text-muted);
+}
+.stages__button:hover { background: var(--surface-dock); }
+.stages__glyph { display: inline-block; width: 14px; font-family: var(--font-mono); }
+.stages__detail { font-size: 11px; color: var(--text-muted); }
+.stages__item--done .stages__button, .stages__item--active .stages__button { color: var(--text-primary); }
+.stages__item--active .stages__name { text-decoration: underline; text-underline-offset: 3px; }
+.stages__item--error .stages__button, .stages__item--error .stages__detail { color: var(--state-ink-warn); }
 
 .datafolder { display: flex; gap: 8px; margin-top: 10px; }
 .datafolder input {

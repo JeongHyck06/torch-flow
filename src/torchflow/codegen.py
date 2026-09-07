@@ -239,6 +239,9 @@ class _Writer:
                     inputs.append(f"{name}: Tensor")
                 continue
 
+            if node.type == "torchflow.Train":
+                # 학습 설정은 모델이 아니다. 워커 job으로 간다(hub의 /api/train).
+                continue
             incoming = _incoming(scope, node.id, values)
             if node.type == "torchflow.Output":
                 outputs = list(incoming.values())

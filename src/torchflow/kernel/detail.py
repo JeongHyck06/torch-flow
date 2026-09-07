@@ -19,6 +19,12 @@ TILE = 32
 
 def describe_node(pass_, key: str, node_id: str) -> dict[str, Any]:
     torch = pass_.torch
+    node, instance = _find(pass_.ir, node_id)
+    if node is not None and node.type == "torchflow.Train":
+        # 학습 블록은 probe에 실리지 않는다. 설정을 말로 풀어 준다.
+        return {"ok": True, "node": node_id, "label": node.label, "kind": "torchflow.Train",
+                "params": 0, "input_shape": None, "output_shape": None,
+                "explain": _explain_train(node.args or {}), "panels": []}
     output = pass_.activations.get(key)
     if output is None:
         return {"ok": False, "error": "이 블록은 마지막 probe에서 실행되지 않았습니다. Probe를 다시 돌려 주세요"}
@@ -26,7 +32,6 @@ def describe_node(pass_, key: str, node_id: str) -> dict[str, Any]:
     x = next((value for value in inputs.values() if torch.is_tensor(value)), None)
     module_key = pass_.node_modules.get(key)
     module = pass_.session.modules.get(module_key) if module_key else None
-    node, instance = _find(pass_.ir, node_id)
     kind = (instance.type if instance else (node.type if node else "?")).split("@")[0]
     short = kind.rsplit(".", 1)[-1]
     params = sum(p.numel() for p in module.parameters()) if module is not None and hasattr(module, "parameters") else 0
@@ -70,6 +75,15 @@ def _find(ir: ModuleGraph, node_id: str):
             if node.id == node_id:
                 return node, (scope.instances.get(node.call) if node.call else None)
     return None, None
+
+
+def _explain_train(args: dict[str, Any]) -> str:
+    optimizer = str(args.get("optimizer", "adamw"))
+    scheduler = str(args.get("scheduler", "none"))
+    return (f"{optimizer} 옵티마이저로 lr {args.get('lr', 0.001)}, batch {args.get('batch', 32)}씩 "
+            f"{args.get('steps', 500)} step 학습한다. 손실은 cross entropy, 검증은 eval 주기마다 val 분할로 잰다"
+            + (f". 스케줄 {scheduler}" if scheduler != "none" else "")
+            + ". Run 패널의 Run이 이 값으로 워커를 띄운다")
 
 
 def _explain(short: str, module, x, y) -> str:

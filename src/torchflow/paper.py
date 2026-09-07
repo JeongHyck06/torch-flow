@@ -69,7 +69,8 @@ def build(
     """IR + shape 상태 -> 인쇄용 장면."""
     graph = ir.graph
     states = node_states or {}
-    order = flow_order(graph)
+    # 학습 블록은 모델 그림에 넣지 않는다. 그림은 아키텍처다.
+    order = [node for node in flow_order(graph) if node.type != "torchflow.Train"]
     columns = max(1, int((PRESETS.get(preset, PRESETS[DEFAULT_PRESET]) * 72 - 2 * MARGIN + GAP_X)
                          // (NODE_W + GAP_X)))
 

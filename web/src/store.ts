@@ -6,7 +6,7 @@
 
 import { create } from "zustand";
 import type { ModuleGraph, NodeState } from "./types.gen";
-import type { Recipe } from "./api";
+import type { Recipe, TrainRun } from "./api";
 import type { Op } from "./graph/ops";
 
 export interface Scope {
@@ -48,6 +48,8 @@ interface State {
   recipe: Recipe | null;
   /** Input 블록의 데이터 창이 열려 있나. */
   dataOpen: boolean;
+  /** 학습 run 목록. App이 2초마다 새로 읽는다 - 단계 표시줄과 Train 노드 배지가 같이 쓴다. */
+  runs: TrainRun[];
 
   setGraph: (graph: ModuleGraph, seq: number) => void;
   openGraph: (graph: ModuleGraph, seq: number) => void;
@@ -74,6 +76,7 @@ interface State {
   setData: (dataset: string, recipe: Recipe | null) => void;
   openData: () => void;
   closeData: () => void;
+  setRuns: (runs: TrainRun[]) => void;
   closePalette: () => void;
   enterScope: (scope: Scope) => void;
   popToScope: (index: number) => void;
@@ -111,6 +114,7 @@ export const useStore = create<State>((set, get) => ({
   dataset: "teacher",
   recipe: null,
   dataOpen: false,
+  runs: [],
 
   openGraph: (graph, seq) =>
     // **다른** 그래프를 연다. 이전 그래프에 딸린 것은 전부 비운다 - 노드 상태,
@@ -118,7 +122,7 @@ export const useStore = create<State>((set, get) => ({
     // 거기서 비우면 매 편집마다 배지가 사라진다. 그래서 둘을 나눈다.
     set({ graph, seq, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" }],
-          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false,
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false, runs: [],
           totals: { params: 0, band: null, batch: 64 },
           ...dataOf(graph) }),
   setGraph: (graph, seq) =>
@@ -132,7 +136,7 @@ export const useStore = create<State>((set, get) => ({
   closeGraph: () =>
     set({ graph: null, seq: 0, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: "Net", callPath: "" }],
-          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false,
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false, runs: [],
           totals: { params: 0, band: null, batch: 64 } }),
   applyNodeState: (state) =>
     // L1은 L0가 채운 spec 위에 grad 배지를 얹는다 - 축이 다르므로 덮어쓰지 않고 합친다.
@@ -191,6 +195,7 @@ export const useStore = create<State>((set, get) => ({
   setData: (dataset, recipe) => set({ dataset, recipe }),
   openData: () => set({ dataOpen: true, paletteAt: null }),
   closeData: () => set({ dataOpen: false }),
+  setRuns: (runs) => set({ runs }),
   closePalette: () => set({ paletteAt: null }),
   enterScope: (scope) =>
     set((prev) =>

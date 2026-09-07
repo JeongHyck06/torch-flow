@@ -72,7 +72,10 @@ export function addBlockOp(
     payload.instance = { id: newId(), label, type: block.type, args: defaultArgs(block) };
     payload.node = { id: nodeId, label, method: "forward" };
   } else {
-    payload.node = { id: nodeId, label, type: block.type, ...inputPorts(block) };
+    // 내장 블록의 기본값도 노드에 적는다 - Train의 lr·steps가 보이는 값이어야 고칠 수 있다.
+    const args = defaultArgs(block);
+    payload.node = { id: nodeId, label, type: block.type, ...inputPorts(block),
+                     ...(Object.keys(args).length ? { args } : {}) };
   }
   return { op: op("add_node", payload), nodeId };
 }
@@ -81,7 +84,7 @@ export function addBlockOp(
 function defaultArgs(block: Block): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(block.params)
-      .filter(([, schema]) => schema.default !== undefined)
+      .filter(([, schema]) => schema.default !== undefined && schema.default !== null)
       .map(([name, schema]) => [name, schema.default]),
   );
 }

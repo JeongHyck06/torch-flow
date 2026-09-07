@@ -163,3 +163,21 @@ def test_graph_without_an_output_node_returns_its_sink():
 
     body = codegen.generate(ir).split("class MiniViT(nn.Module):")[1]
     assert "return head" in body
+
+
+def test_train_block_stays_out_of_the_model():
+    """학습 블록은 모델 코드에 나타나지 않는다. Output 뒤에 붙어 있어도 forward는 로짓을 돌려준다."""
+    from torchflow.ir import ModuleGraph
+
+    ir = ModuleGraph.model_validate({
+        "graph": {"name": "tiny", "nodes": [
+            {"id": "IN", "label": "x", "type": "torchflow.Input",
+             "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 8], "dtype": "float32"}]},
+            {"id": "OUT", "label": "logits", "type": "torchflow.Output"},
+            {"id": "TR", "label": "train", "type": "torchflow.Train",
+             "args": {"optimizer": "sgd", "lr": 0.005, "steps": 7, "batch": 4}}],
+            "edges": [["IN.x", "OUT.input"], ["OUT.output", "TR.input"]]}})
+    code = codegen.generate(ir, version="0.0.1")
+    ast.parse(code)
+    assert "Train" not in code and "sgd" not in code
+    assert "return x" in code
