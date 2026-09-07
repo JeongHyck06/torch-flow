@@ -148,3 +148,21 @@ def test_unconnected_port_and_missing_args_are_reported_in_graph_terms(minivit):
     result = run_pass(empty, rt=RT)
     assert result.error["node_id"] == "01J9Q4B5" and result.error["kind"] == "args"
     assert "in_features, out_features" in result.error["message"]
+
+
+def test_train_block_passes_through_l0():
+    """학습 블록은 텐서를 만들지 않고 L0를 통과한다. Output이 학습 블록으로 이어져도 shape는 그대로다."""
+    from torchflow.ir import ModuleGraph
+
+    ir = ModuleGraph.model_validate({
+        "graph": {"name": "tiny", "nodes": [
+            {"id": "IN", "label": "x", "type": "torchflow.Input",
+             "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 8], "dtype": "float32"}]},
+            {"id": "OUT", "label": "logits", "type": "torchflow.Output"},
+            {"id": "TR", "label": "train", "type": "torchflow.Train",
+             "args": {"optimizer": "sgd", "lr": 0.005, "steps": 7, "batch": 4}}],
+            "edges": [["IN.x", "OUT.input"], ["OUT.output", "TR.input"]]}})
+    result = run_pass(ir, rt=RT)
+    assert result.ok, result.error
+    assert result.spec("logits")["shape"] == ["B", 8]
+    assert result.spec("train") is None

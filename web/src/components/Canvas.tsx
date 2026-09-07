@@ -15,11 +15,13 @@ import "@xyflow/react/dist/style.css";
 
 import { NodeCard } from "./NodeCard";
 import { Palette } from "./Palette";
+import { Stages } from "./Stages";
 import { SYNTHETIC, currentScope, useStore } from "../store";
 import { saveLayout } from "../api";
 import { applyEdit, redo, undo } from "../edit";
 import { op, removeNodeOp } from "../graph/ops";
 import { enterableComposite, lodOf, toFlow } from "../graph/toFlow";
+import { runLabel } from "../stages";
 import { topologicalIds } from "../graph/layout";
 import { categoryColor, categoryOf } from "../theme";
 
@@ -42,6 +44,10 @@ export function Canvas() {
   const paletteAt = useStore((state) => state.paletteAt);
   const dataset = useStore((state) => state.dataset);
   const openData = useStore((state) => state.openData);
+  const runs = useStore((state) => state.runs);
+  const runPanel = useStore((state) => state.runPanel);
+  const toggleRunPanel = useStore((state) => state.toggleRunPanel);
+  const run = runLabel(runs);
 
   const [zoom, setZoom] = useState(1);
   // 뷰가 포커스를 따라가는 것은 키보드 탐색일 때만이다. 클릭에도 따라가면
@@ -55,8 +61,8 @@ export function Canvas() {
     if (!graph || !scope) return { nodes: [], edges: [] };
     return toFlow(scope, nodeStates,
       { lod: lodOf(zoom), selected, focused, callPath, gradOverlay, positions,
-        dataset: SYNTHETIC.has(dataset) ? "" : dataset });
-  }, [graph, scope, callPath, nodeStates, zoom, selected, focused, gradOverlay, positions, dataset]);
+        dataset: SYNTHETIC.has(dataset) ? "" : dataset, run });
+  }, [graph, scope, callPath, nodeStates, zoom, selected, focused, gradOverlay, positions, dataset, run]);
 
   // 드래그 중에는 로컬 상태가 권위를 갖는다 - 매 프레임 스토어를 때리면 끊긴다.
   const [nodes, setNodes] = useState<FlowNode[]>(computed.nodes);
@@ -200,6 +206,8 @@ export function Canvas() {
     // Input은 임포트 블록처럼 더블클릭으로 데이터 창을 연다 - 안으로 들어갈 것이 없다.
     const kind = scope?.nodes?.find((one) => one.id === node.id)?.type?.split("@")[0];
     if (kind === "torchflow.Input") openData();
+    // Train은 Run 패널을 열 뿐이다. 학습은 거기서 버튼을 눌러야 시작한다.
+    else if (kind === "torchflow.Train") { if (!runPanel) toggleRunPanel(); }
     else enter(node.id);
   };
 
@@ -269,6 +277,7 @@ export function Canvas() {
         </div>
       )}
       <Palette />
+      {nodes.length > 0 && <Stages />}
     </ReactFlow>
   );
 }

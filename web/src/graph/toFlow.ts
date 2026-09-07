@@ -58,6 +58,8 @@ export function toFlow(
     positions?: Record<string, { x: number; y: number }>;
     /** 그래프에 붙은 데이터 이름. 합성 과제면 빈 문자열. */
     dataset?: string;
+    /** 마지막 run 한 줄. Train 노드 배지에 걸린다. */
+    run?: string;
   },
 ): { nodes: FlowNode[]; edges: Edge[] } {
   const irNodes = scope.nodes ?? [];
@@ -101,7 +103,7 @@ export function toFlow(
       label: node.label,
       category: categoryOf(node.type ?? instance?.type, Boolean(node.call)),
       typeLabel: typeLabel.replace(/^torch\.nn\.|^torchflow\.|^composite:/, ""),
-      params: Object.entries(instance?.args ?? {})
+      params: Object.entries(instance?.args ?? node.args ?? {})
         .slice(0, 3)
         .map(([key, value]) => `${key}=${renderArg(value)}`)
         .join("  "),
@@ -124,6 +126,7 @@ export function toFlow(
       enterable: enterableComposite(scope, node.id) !== null,
       // Input에는 붙은 데이터 이름이 걸린다. 없으면 빈 문자열 - 카드가 "데이터 없음"으로 읽는다.
       dataset: typeLabel === "torchflow.Input" ? options.dataset ?? "" : undefined,
+      run: typeLabel === "torchflow.Train" ? options.run ?? "" : undefined,
       lod: options.lod,
       selected: options.selected === node.id,
       focused: options.focused === node.id,

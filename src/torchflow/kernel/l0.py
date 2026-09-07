@@ -421,6 +421,9 @@ class L0Pass:
             # 종단 노드는 입력을 그대로 통과시킨다 - 그래프 출력 shape가 노드에 뜨고,
             # L1이 목적함수를 걸 지점이 생긴다.
             return {"output": next(iter(kwargs.values()))} if kwargs else {}
+        if node.type == "torchflow.Train":
+            # 학습 블록은 텐서를 만들지 않는다. 값은 Run이 job을 만들 때 읽는다.
+            return {}
 
         args = {k: self._resolve(node.id, v, env) for k, v in node.args.items()}
 

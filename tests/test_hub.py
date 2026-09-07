@@ -771,3 +771,54 @@ def test_dropped_files_land_under_data(app, client, tmp_path):
     assert response.status_code == 200 and (tmp_path / "data" / "table" / "t.csv").read_bytes() == body
     assert client.put("/api/datasets/table/files?path=../evil.csv", headers=auth, content=body).status_code == 400
     assert [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]] == ["mnist", "table"]
+
+
+def test_train_block_feeds_the_job(app, client, tmp_path, monkeypatch):
+    """학습 블록의 값이 job의 기본이다. 요청이 준 값(smoke의 짧은 steps)이 이긴다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.runs_dir = tmp_path / "runs"
+    started: dict = {}
+
+    def fake_start(*, run_id, root, job, code, python=None):
+        from torchflow.hub.runs import RunHandle
+
+        directory = root / run_id
+        directory.mkdir(parents=True, exist_ok=True)
+        started.update({"job": job, "code": code})
+        (directory / "events.jsonl").write_text("", encoding="utf-8")
+        (directory / "control.json").write_text("{}", encoding="utf-8")
+        return RunHandle(run_id=run_id, directory=directory, total=int(job["steps"]))
+
+    monkeypatch.setattr("torchflow.hub.runs.start", fake_start)
+    assert client.post("/api/new", headers=auth, json={"name": "tiny"}).status_code == 200
+    ops = [
+        {"kind": "add_node", "payload": {"node": {
+            "id": "IN", "label": "x", "type": "torchflow.Input",
+            "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 8], "dtype": "float32"}]}}},
+        {"kind": "add_node", "payload": {"node": {"id": "OUT", "label": "logits", "type": "torchflow.Output"}}},
+        {"kind": "add_node", "payload": {"node": {
+            "id": "TR", "label": "train", "type": "torchflow.Train",
+            "args": {"optimizer": "sgd", "lr": 0.005, "steps": 7, "batch": 4}}}},
+        {"kind": "connect", "payload": {"src": "IN.x", "dst": "OUT.input"}},
+        {"kind": "connect", "payload": {"src": "OUT.output", "dst": "TR.input"}},
+    ]
+    for index, op in enumerate(ops, 1):
+        response = client.post("/api/ops", headers=auth, json={"client_id": "c", "tmp_seq": index, **op})
+        assert response.status_code == 200, response.json()
+
+    body = client.post("/api/train", headers=auth, json={}).json()
+    assert body["ok"], body
+    job = started["job"]
+    assert (job["steps"], job["batch"], job["optimizer"], job["lr"]) == (7, 4, "sgd", 0.005)
+    assert "Train" not in started["code"]
+
+    # 살아 있는 run이 있으면 새 학습을 거부한다 - 화면이 반복해 눌러도 워커가 쌓이지 않는다.
+    handle = app.state.hub.l2[body["run_id"]]
+    (handle.directory / "heartbeat").write_text("", encoding="utf-8")
+    refused = client.post("/api/train", headers=auth, json={})
+    assert refused.status_code == 409 and refused.json()["run_id"] == body["run_id"]
+    (handle.directory / "heartbeat").unlink()
+
+    smoke = client.post("/api/train", headers=auth, json={"smoke": True}).json()
+    assert smoke["ok"], smoke
+    assert started["job"]["steps"] == 20 and started["job"]["optimizer"] == "sgd"

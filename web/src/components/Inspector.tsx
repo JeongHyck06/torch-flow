@@ -13,6 +13,7 @@ import { op } from "../graph/ops";
 import type { Block } from "../graph/ops";
 import { SYNTHETIC, currentScope, useStore } from "../store";
 import { formatRatio, formatShape } from "../theme";
+import { startRun } from "../train";
 
 export function Inspector() {
   const graph = useStore((state) => state.graph);
@@ -21,6 +22,9 @@ export function Inspector() {
   const states = useStore((state) => state.nodeStates);
   const dataset = useStore((state) => state.dataset);
   const openData = useStore((state) => state.openData);
+  const runPanel = useStore((state) => state.runPanel);
+  const toggleRunPanel = useStore((state) => state.toggleRunPanel);
+  const [trainError, setTrainError] = useState<string | null>(null);
   const scope = currentScope({ graph, scopes });
   const stateKey = selected
     ? (scopes[scopes.length - 1].callPath
@@ -171,6 +175,25 @@ export function Inspector() {
               </div>
             ))}
           </dl>
+        </>
+      )}
+
+      {kind === "torchflow.Train" && (
+        <>
+          <p className="mono muted">optimizer는 adamw 또는 sgd, scheduler는 none 또는 cosine입니다</p>
+          <div className="inspector__actions">
+            <button className="solid" onClick={() => {
+              setTrainError(null);
+              void startRun().then((result) => {
+                if (result.error) setTrainError(result.error);
+                else if (!runPanel) toggleRunPanel();
+              });
+            }}>
+              학습 시작
+            </button>
+            <button className="ghost" onClick={() => { if (!runPanel) toggleRunPanel(); }}>Run 패널</button>
+          </div>
+          {trainError && <p className="mono inspector__error">{trainError}</p>}
         </>
       )}
 

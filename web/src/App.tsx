@@ -9,7 +9,7 @@ import { LayerStrip } from "./components/LayerStrip";
 import { RunPanel } from "./components/RunPanel";
 import { StartScreen } from "./components/StartScreen";
 import { TopBar } from "./components/TopBar";
-import { connect, fetchGraph, fetchHealth, fetchLayout, runShapes } from "./api";
+import { connect, fetchGraph, fetchHealth, fetchLayout, fetchTraining, runShapes } from "./api";
 import { useStore } from "./store";
 
 export function App() {
@@ -20,6 +20,19 @@ export function App() {
   const graph = useStore((state) => state.graph);
   const tab = useStore((state) => state.tab);
   const dataOpen = useStore((state) => state.dataOpen);
+  const setRuns = useStore((state) => state.setRuns);
+  const open = graph !== null;
+
+  // run 상태는 그래프가 열려 있는 동안 2초마다 읽는다. 패널이 닫혀 있어도 단계 표시줄과
+  // Train 노드가 "지금 학습 중인지"를 보여야 한다.
+  useEffect(() => {
+    if (!open) return;
+    let stop = false;
+    const tick = () => fetchTraining().then((runs) => { if (!stop) setRuns(runs); }).catch(() => undefined);
+    void tick();
+    const timer = window.setInterval(tick, 2000);
+    return () => { stop = true; window.clearInterval(timer); };
+  }, [open, setRuns]);
   const [checked, setChecked] = useState(false);
 
   const load = useCallback(async () => {

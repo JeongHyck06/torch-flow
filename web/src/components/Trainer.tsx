@@ -9,20 +9,21 @@
 
 import { useEffect, useState } from "react";
 
-import { controlTraining, downloadDataset, fetchDatasets, fetchTraining, startTraining } from "../api";
-import type { DatasetInfo, PortSpec, TrainRun } from "../api";
+import { controlTraining, downloadDataset, fetchDatasets } from "../api";
+import type { DatasetInfo, PortSpec } from "../api";
 import { applyEdit } from "../edit";
 import { op } from "../graph/ops";
+import { RUNNING, kindOf } from "../stages";
 import { useStore } from "../store";
-
-const RUNNING = new Set(["running", "starting"]);
+import { startRun } from "../train";
 
 export function Trainer({ onChange }: { onChange: () => void }) {
-  const [runs, setRuns] = useState<TrainRun[]>([]);
+  // run 목록은 App이 2초마다 채운다 - 패널이 닫혀 있어도 단계 표시줄이 같은 값을 본다.
+  const runs = useStore((state) => state.runs);
+  const graph = useStore((state) => state.graph);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   // 데이터와 레시피는 그래프에 딸린 것이라 스토어에 산다(experiment.data).
   const dataset = useStore((state) => state.dataset);
-  const recipe = useStore((state) => state.recipe);
   const setData = useStore((state) => state.setData);
   const [fetching, setFetching] = useState(false);
   const [steps, setSteps] = useState(500);
@@ -39,32 +40,25 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   const last = runs[runs.length - 1];
   const chosen = datasets.find((entry) => entry.name === dataset);
   const needsDownload = chosen !== undefined && chosen.source === "builtin" && !chosen.available;
+  // Train 블록이 있으면 하이퍼파라미터는 그 블록의 것이다. 폼은 실행과 상태만 맡는다.
+  const trainNode = graph?.graph.nodes?.find((node) => kindOf(node) === "torchflow.Train");
+  const trainArgs = (trainNode?.args ?? {}) as Record<string, unknown>;
 
   useEffect(() => { fetchDatasets().then(setDatasets).catch(() => undefined); }, []);
 
+  // 돌고 있는 동안은 곡선을 run 목록과 같은 박자로 다시 읽는다.
   useEffect(() => {
-    let stop = false;
-    const tick = async () => {
-      const found = await fetchTraining().catch(() => []);
-      if (stop) return;
-      setRuns(found);
-      if (found.some((run) => RUNNING.has(run.state))) onChange();
-    };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 1000);
-    return () => { stop = true; window.clearInterval(timer); };
-  }, [onChange]);
+    if (runs.some((run) => RUNNING.has(run.state))) onChange();
+  }, [runs, onChange]);
 
   const start = async (smoke = false) => {
     setError(null);
     setNote(null);
     setFix(null);
-    const result = await startTraining(
-      smoke ? { smoke: true, dataset, recipe: recipe ?? undefined }
-        : { dataset, recipe: recipe ?? undefined, steps, batch, lr, optimizer: "adamw",
-            scheduler: schedule, warmup_steps: warmup });
+    const result = await startRun(
+      trainNode ? {} : { steps, batch, lr, optimizer: "adamw", scheduler: schedule, warmup_steps: warmup },
+      smoke);
     if (result.error) { setError(result.error); setFix(result.fix ?? null); }
-    else setRuns((previous) => [...previous, result]);
   };
 
   const applyFix = async () => {
@@ -120,7 +114,8 @@ export function Trainer({ onChange }: { onChange: () => void }) {
             Smoke
           </button>
           {last && (
-            <button className="trainer__stop" onClick={() => void send("resume", { steps })}>
+            <button className="trainer__stop"
+                    onClick={() => void send("resume", { steps: trainNode ? Number(trainArgs.steps ?? steps) : steps })}>
               재개
             </button>
           )}
@@ -136,30 +131,40 @@ export function Trainer({ onChange }: { onChange: () => void }) {
               ))}
             </select>
           </label>
-          <label className="trainer__field">steps
-            <input type="number" min={1} value={steps}
-                   onChange={(event) => setSteps(Number(event.target.value))} />
-          </label>
-          <label className="trainer__field">batch
-            <input type="number" min={1} value={batch}
-                   onChange={(event) => setBatch(Number(event.target.value))} />
-          </label>
-          <label className="trainer__field">lr
-            <input type="number" step={0.0001} min={0} value={lr}
-                   onChange={(event) => setLr(Number(event.target.value))} />
-          </label>
-          <label className="trainer__field">스케줄
-            <select className="trainer__select mono" value={schedule}
-                    onChange={(event) => setSchedule(event.target.value)}>
-              <option value="none">없음</option>
-              <option value="cosine">cosine</option>
-            </select>
-          </label>
-          {schedule === "cosine" && (
-            <label className="trainer__field">warmup
-              <input type="number" min={0} value={warmup}
-                     onChange={(event) => setWarmup(Number(event.target.value))} />
-            </label>
+          {trainNode ? (
+            <span className="mono trainer__progress" title="값은 Train 블록을 선택해 Inspector에서 바꿉니다">
+              Train 블록 · {String(trainArgs.optimizer ?? "adamw")} · lr {String(trainArgs.lr ?? 0.001)}
+              {" · "}{String(trainArgs.steps ?? 500)} step · batch {String(trainArgs.batch ?? 32)}
+              {trainArgs.scheduler && trainArgs.scheduler !== "none" ? ` · ${String(trainArgs.scheduler)}` : ""}
+            </span>
+          ) : (
+            <>
+              <label className="trainer__field">steps
+                <input type="number" min={1} value={steps}
+                       onChange={(event) => setSteps(Number(event.target.value))} />
+              </label>
+              <label className="trainer__field">batch
+                <input type="number" min={1} value={batch}
+                       onChange={(event) => setBatch(Number(event.target.value))} />
+              </label>
+              <label className="trainer__field">lr
+                <input type="number" step={0.0001} min={0} value={lr}
+                       onChange={(event) => setLr(Number(event.target.value))} />
+              </label>
+              <label className="trainer__field">스케줄
+                <select className="trainer__select mono" value={schedule}
+                        onChange={(event) => setSchedule(event.target.value)}>
+                  <option value="none">없음</option>
+                  <option value="cosine">cosine</option>
+                </select>
+              </label>
+              {schedule === "cosine" && (
+                <label className="trainer__field">warmup
+                  <input type="number" min={0} value={warmup}
+                         onChange={(event) => setWarmup(Number(event.target.value))} />
+                </label>
+              )}
+            </>
           )}
           {last && (
             <span className="mono trainer__progress">

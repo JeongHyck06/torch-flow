@@ -73,6 +73,8 @@ export interface NodeCardData extends Record<string, unknown> {
   folded?: boolean;
   /** Input에만 있다. 붙은 데이터 이름, 없으면 빈 문자열. */
   dataset?: string;
+  /** Train에만 있다. 마지막 run 한 줄, 없으면 빈 문자열. */
+  run?: string;
   enterable: boolean;
   lod: Lod;
   selected: boolean;
@@ -85,6 +87,8 @@ export function NodeCard({ data }: NodeProps) {
   const lod = node.lod === "focus" ? "near" : node.lod;
   const showBody = lod !== "far";
   const showNear = lod === "near";
+  // 학습 블록은 텐서가 없다. shape 자리에 설정을 보여 준다.
+  const shapeText = node.run !== undefined ? "" : formatShape(node.shape);
 
   const ariaLabel = [
     node.label, node.typeLabel, status.label,
@@ -119,6 +123,9 @@ export function NodeCard({ data }: NodeProps) {
             {node.dataset !== undefined && (
               <span className="node__enter" title="더블클릭으로 데이터 불러오기">›</span>
             )}
+            {node.run !== undefined && (
+              <span className="node__enter" title="더블클릭으로 Run 패널">›</span>
+            )}
           </div>
 
           {showBody && (
@@ -141,10 +148,10 @@ export function NodeCard({ data }: NodeProps) {
                 <div className="node__thumb"
                      style={{ background: node.gradColor, borderColor: "transparent" }} />
               ) : null}
-              <span className="node__shape">{formatShape(node.shape)}</span>
+              <span className="node__shape">{shapeText}</span>
             </div>
           ) : showBody ? (
-            <p className="node__shape">{formatShape(node.shape)}</p>
+            <p className="node__shape">{shapeText || node.params}</p>
           ) : null}
 
           {showBody && (
@@ -153,6 +160,9 @@ export function NodeCard({ data }: NodeProps) {
                 <span className={`badge${node.dataset ? "" : " badge--warn"}`}>
                   {node.dataset || "데이터 없음"}
                 </span>
+              )}
+              {node.run !== undefined && (
+                <span className="badge">{node.run || "학습 전 · 버튼으로 시작"}</span>
               )}
               {node.paramCount ? (
                 <span className="badge"><span className="badge__glyph">↯</span>
