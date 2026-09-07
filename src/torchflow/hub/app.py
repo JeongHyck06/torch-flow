@@ -219,7 +219,8 @@ class Hub:
 
     def sync_runs(self) -> None:
         """워커가 남긴 이벤트를 트래커로 옮긴다. 곡선을 물어볼 때마다 부른다."""
-        for handle in self.l2.values():
+        # /api/train이 다른 스레드에서 l2에 넣는 동안 돌 수 있다 - 복사본을 돈다.
+        for handle in list(self.l2.values()):
             l2.merge(handle, self.tracker)
             # 워커가 "적용했다"고 말한 것만 적는다. hub가 명령을 낸 step이 아니라
             # 실제로 반영된 step이 재현에 쓸 수 있는 숫자다.
@@ -850,8 +851,11 @@ def create_app(
         return JSONResponse({"ok": True, "files": [str(path) for path in written]})
 
     @app.post("/api/train")
-    def start_training(request: dict[str, Any] | None = None) -> JSONResponse:
+    def start_training(http: Request, request: dict[str, Any] | None = None) -> JSONResponse:
         """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
+        # 누가 눌렀는지 터미널에 한 줄 남긴다. 요청이 반복되면 여기서 바로 보인다.
+        print(f"[train] 시작 요청 {http.client.host if http.client else '?'} "
+              f"{(http.headers.get('user-agent') or '')[:60]}", flush=True)
         if hub.store is None:
             return no_graph()
         if hub.traced:
@@ -859,6 +863,14 @@ def create_app(
         options = request or {}
 
         graph = hub.store.ir.graph
+        # 한 그래프에 학습은 한 번에 하나다. 화면이 잘못 반복해 눌러도 워커가 쌓이면 안 된다 -
+        # 실제로 run 200개가 한꺼번에 떠서 기계가 멈출 뻔했다.
+        busy = next((handle for handle in list(hub.l2.values())
+                     if handle.alive and handle.extra.get("graph_id") == hub.graph_id), None)
+        if busy is not None:
+            return JSONResponse({"error": f"이미 학습이 돌고 있습니다: {busy.run_id} "
+                                          f"(step {busy.step}). 멈추거나 끝난 뒤 시작하세요",
+                                 "run_id": busy.run_id}, status_code=409)
         trainer = next((node for node in graph.nodes if node.type == "torchflow.Train"), None)
         if trainer is not None:
             # 학습 블록이 있으면 그 값이 기본이다. 요청이 준 값(smoke의 짧은 steps 등)이 이긴다.

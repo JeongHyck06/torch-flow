@@ -812,6 +812,13 @@ def test_train_block_feeds_the_job(app, client, tmp_path, monkeypatch):
     assert (job["steps"], job["batch"], job["optimizer"], job["lr"]) == (7, 4, "sgd", 0.005)
     assert "Train" not in started["code"]
 
+    # 살아 있는 run이 있으면 새 학습을 거부한다 - 화면이 반복해 눌러도 워커가 쌓이지 않는다.
+    handle = app.state.hub.l2[body["run_id"]]
+    (handle.directory / "heartbeat").write_text("", encoding="utf-8")
+    refused = client.post("/api/train", headers=auth, json={})
+    assert refused.status_code == 409 and refused.json()["run_id"] == body["run_id"]
+    (handle.directory / "heartbeat").unlink()
+
     smoke = client.post("/api/train", headers=auth, json={"smoke": True}).json()
     assert smoke["ok"], smoke
     assert started["job"]["steps"] == 20 and started["job"]["optimizer"] == "sgd"

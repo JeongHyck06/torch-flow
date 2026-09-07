@@ -131,7 +131,8 @@ export function RunPanel() {
       </div>
 
       <div className="runpanel__body">
-        {tab === "curves" && <Trainer onChange={() => void refresh()} />}
+        {/* 함수 identity가 렌더마다 바뀌면 Trainer의 effect가 매 렌더 다시 돌아 요청이 꼬리를 문다. */}
+        {tab === "curves" && <Trainer onChange={refresh} />}
         {tab === "curves" && (
           series.length === 0 || series.every((one) => one.points.length === 0) ? (
             <p className="mono muted">
