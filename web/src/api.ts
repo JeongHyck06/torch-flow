@@ -16,8 +16,11 @@ export async function fetchGraph():
   return response.json();
 }
 
+export interface DeviceInfo { name: string; label: string }
+
 export async function fetchHealth(): Promise<{
   kernel: { alive: boolean }; attached?: boolean; graph_open?: boolean;
+  devices?: DeviceInfo[];
 }> {
   const response = await fetch("/api/health", { headers: authHeaders() });
   return response.json();
@@ -368,7 +371,8 @@ export async function datasetProgress(name: string): Promise<DownloadProgress | 
 }
 
 export interface TrainOptions {
-  device?: "auto" | "cpu" | "mps" | "cuda"; retry_run?: string;
+  /** auto, cpu, mps, cuda, cuda:1 처럼 커널이 알려 준 이름 그대로. */
+  device?: string; retry_run?: string;
   dataset?: string; recipe?: Recipe;
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
   scheduler?: string; warmup_steps?: number;

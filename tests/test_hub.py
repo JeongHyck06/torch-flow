@@ -1224,3 +1224,25 @@ def test_ast_import_opens_an_editable_graph(app, client, tmp_path):
     assert not hub.traced
     entry = next(node for node in hub.store.ir.graph.nodes if node.type == "torchflow.Input")
     assert entry.ports_out[0].shape == ["B", 4]
+
+
+def test_the_training_device_list_comes_from_the_kernel(app, client):
+    """원격 GPU 서버에서 hub를 띄우면 이 목록이 그 서버의 카드가 된다."""
+    from torchflow import protocol as proto
+
+    hub = app.state.hub
+    hub.kernel.ready = proto.Ready(device="cuda:0", devices=["cuda:0", "cuda:1"],
+                                   torch_version="2.8.0")
+    assert hub.devices() == [{"name": "cuda:0", "label": "GPU 0 (cuda)"},
+                             {"name": "cuda:1", "label": "GPU 1 (cuda)"}]
+    body = client.get("/api/health", headers={"Authorization": f"token {TOKEN}"}).json()
+    assert body["devices"][1]["name"] == "cuda:1"
+
+
+def test_training_refuses_a_device_the_worker_cannot_parse(app, client):
+    auth = {"Authorization": f"token {TOKEN}"}
+    body = client.post("/api/train", headers=auth, json={"device": "gpu0", "steps": 1}).json()
+    assert "학습 장치" in body["error"]
+    # 카드가 여럿인 서버에서 두 번째 카드를 고르는 것은 정상이다 - 장치 때문에 막히지 않는다.
+    second = client.post("/api/train", headers=auth, json={"device": "cuda:1", "steps": 1}).json()
+    assert "학습 장치" not in str(second.get("error", ""))

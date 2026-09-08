@@ -1,6 +1,6 @@
 // 지금 run의 상태와 조작 (기획서 §5.7, §13.1 M7). 하단 패널 곡선 탭의 머리에 붙는다.
 //
-// **시작은 여기서 하지 않는다** - 단계 표시줄의 4 실행이 유일한 시작 버튼이고(train.ts startRun),
+// **시작은 여기서 하지 않는다** - 단계 표시줄의 4 학습이 유일한 시작 버튼이고(train.ts startRun),
 // 여기는 돌고 있는 run의 Pause/Stop/lr(HOT, §5.7.1)과 멈춘 run의 재개만 둔다. 재시작이 필요한
 // 변경은 **알리기만** 한다(ADR-05). run 종류 표기는 Figma `04 Runs`(48:147)를 따른다:
 // exploratory는 †로 표시하고 집계에서 기본 제외, reported는 hparam 동결이라 편집하면 run이 갈라진다.
@@ -32,6 +32,7 @@ export function Trainer({ onChange }: { onChange: () => void }) {
   const active = runs.find((run) => RUNNING.has(run.state) || run.state === "paused");
   const last = runs[runs.length - 1];
   const device = useStore((state) => state.trainingDevice);
+  const devices = useStore((state) => state.devices);
   const [retrying, setRetrying] = useState(false);
   const finalizing = active?.state === "finalizing" || Boolean(active && active.total > 0 && active.step >= active.total);
   useEffect(() => { setError(null); setNote(null); }, [last?.run_id]);
@@ -95,9 +96,13 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     <div className="trainer">
       <label className="trainer__field">학습 장치
         <select aria-label="학습 장치" value={device} disabled={Boolean(active) || retrying}
-                onChange={(event) => useStore.setState({ trainingDevice: event.target.value as typeof device })}>
-          <option value="auto">자동 선택</option><option value="cpu">CPU</option>
-          <option value="mps">Apple GPU (MPS)</option><option value="cuda">NVIDIA GPU (CUDA)</option>
+                onChange={(event) => useStore.setState({ trainingDevice: event.target.value })}>
+          <option value="auto">자동 선택</option>
+          <option value="cpu">CPU</option>
+          {/* 커널이 실제로 본 가속기만 고를 수 있게 한다 - 없는 장치를 골라 워커가 죽는 일이 없다. */}
+          {devices.map((one) => (
+            <option key={one.name} value={one.name}>{one.label}</option>
+          ))}
         </select>
       </label>
       {!active ? (
@@ -122,7 +127,7 @@ export function Trainer({ onChange }: { onChange: () => void }) {
                 + ` · Input 규격 [B, ${chosen.shape.join(", ")}] · 출력 ${chosen.classes} 클래스`
                 + (chosen.source === "user" ? " · 8:2로 나눠 검증" : " · 검증은 test 분할")
               : "합성 과제 · 무작위 입력에 고정 teacher 라벨"}
-            {" · 시작은 단계 표시줄의 4 실행"}
+            {" · 시작은 단계 표시줄의 4 학습"}
           </span>
         </>
       ) : (

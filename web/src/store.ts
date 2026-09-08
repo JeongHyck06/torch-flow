@@ -57,7 +57,10 @@ interface State {
   /** 학습 run 목록. App이 2초마다 새로 읽는다 - 단계 표시줄과 Train 노드 배지가 같이 쓴다. */
   runs: TrainRun[];
   /** 마지막 학습 시작 요청의 오류와 고칠 재료. 시작은 단계 표시줄이 하고 패널이 보여 준다. */
-  trainingDevice: "auto" | "cpu" | "mps" | "cuda";
+  trainingDevice: string;
+  /** 이 hub가 쓸 수 있는 가속기. 원격 서버에서 띄웠으면 그 서버의 카드가 온다. */
+  devices: { name: string; label: string }[];
+  setDevices: (devices: State["devices"]) => void;
   startError: string | null;
   startFix: { node: string; ports_out: PortSpec[] } | null;
   /** "이미 학습이 돌고 있습니다"가 가리키던 run. 그 run이 끝나면 오류가 거짓이 되므로 지운다. */
@@ -145,6 +148,7 @@ export const useStore = create<State>((set, get) => ({
   dataOpen: false,
   runs: [],
   trainingDevice: "auto",
+  devices: [],
   startError: null,
   startFix: null,
   startErrorRun: null,
@@ -152,6 +156,7 @@ export const useStore = create<State>((set, get) => ({
   guideHidden: readGuideHidden(),
   project: null,
   setProject: (project) => set({ project }),
+  setDevices: (devices) => set({ devices }),
   sourceChange: null,
   setSourceChange: (sourceChange) =>
     // 같은 변경을 2초마다 다시 넣어 화면을 다시 그리지 않는다.

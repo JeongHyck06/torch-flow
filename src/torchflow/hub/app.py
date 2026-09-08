@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import threading
 import time
@@ -231,11 +232,16 @@ class Hub:
         return self.store.seq if self.store is not None else 0
 
     def devices(self) -> list[dict[str, Any]]:
-        """디바이스 스트립(§2.2). torch는 커널만 안다 - hub는 Ready 메시지를 읽을 뿐."""
+        """디바이스 스트립(§2.2). torch는 커널만 안다 - hub는 Ready 메시지를 읽을 뿐.
+
+        학습 장치를 고르는 목록이기도 하다. 원격 GPU 서버에서 hub를 띄우면 여기에
+        그 서버의 카드가 나오고, 고른 값이 워커의 ``device``로 간다.
+        """
         ready = self.kernel.ready
         if ready is None:
             return []
-        return [{"name": ready.device, "label": ready.device}]
+        found = list(getattr(ready, "devices", None) or [ready.device])
+        return [{"name": name, "label": _device_label(name)} for name in found]
 
     def templates(self) -> list[dict[str, Any]]:
         """검증된 템플릿 목록(§13.3). 파일이 실제로 있는 것만 열 수 있다."""
@@ -534,6 +540,20 @@ def _graph_id_for(path: Path | None) -> str:
     return f"path-{digest[:12]}"
 
 
+# cuda 또는 cuda:0 처럼 인덱스가 붙은 것까지. 여러 장 달린 서버에서 카드를 고른다.
+_CUDA_DEVICE = re.compile(r"cuda(:\d+)?")
+
+
+def _device_label(name: str) -> str:
+    """사람이 읽는 장치 이름. cuda:0은 GPU 0, mps는 Apple GPU다."""
+    if name.startswith("cuda"):
+        _, _, index = name.partition(":")
+        return f"GPU {index or '0'} (cuda)"
+    if name == "mps":
+        return "Apple GPU (mps)"
+    return name
+
+
 def _apply_example(ir: ModuleGraph, example: dict[str, Any]) -> None:
     """AST import는 shape를 모른다. 첫 화면의 "예시 입력"이 Input 규격이 된다(§7.4.1).
 
@@ -620,6 +640,8 @@ def create_app(
             "attached": hub.attached,
             "kernel": {"alive": hub.kernel.alive(), "level": hub.kernel.level},
             "l1": {"alive": hub.l1.alive()},
+            # 학습 장치 드롭다운이 이 목록으로 채워진다. 원격 서버면 그 서버의 카드가 온다.
+            "devices": hub.devices(),
         }
 
     @app.get("/api/graph")
@@ -1207,8 +1229,9 @@ def create_app(
                                    manifest={"job": json.loads((child.directory / "job.json").read_text()),
                                              "retry_of": original.run_id})
             return JSONResponse({"ok": True, **child.as_dict()})
-        if (request or {}).get("device", "auto") not in ("auto", "cpu", "mps", "cuda"):
-            return JSONResponse({"error": "지원하지 않는 학습 장치입니다"}, status_code=400)
+        device = str((request or {}).get("device", "auto"))
+        if device not in ("auto", "cpu", "mps") and not _CUDA_DEVICE.fullmatch(device):
+            return JSONResponse({"error": f"지원하지 않는 학습 장치입니다: {device}"}, status_code=400)
         # 누가 눌렀는지 터미널에 남기되, 거부되는 반복 요청은 초당 한 줄로 접는다 - 키 자동 반복으로
         # 초당 30번 들어온 요청이 터미널을 도배해 사람이 놀랐다.
         now = time.time()

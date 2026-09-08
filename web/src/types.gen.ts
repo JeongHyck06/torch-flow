@@ -60,6 +60,7 @@ export interface Probe {
 export interface CodeCell {
   kind: "CellModule" | "CellFunction" | "CellStep" | "CellHook" | "CellData";
   file: string;
+  source?: string;
   ports?: Record<string, Port[]>;
   shape_fn?: string;
   export_compatible?: boolean;

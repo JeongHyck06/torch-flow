@@ -38,6 +38,8 @@ export function App() {
   const load = useCallback(async () => {
     const health = await fetchHealth();
     setKernel(health.kernel.alive);
+    // 학습 장치 목록은 커널이 알려 준 것이다. 원격 GPU 서버면 그 서버의 카드가 온다.
+    useStore.getState().setDevices(health.devices ?? []);
     useStore.getState().setAttached(Boolean(health.attached));
     setChecked(true);
     if (health.graph_open === false) return;

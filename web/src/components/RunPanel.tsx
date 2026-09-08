@@ -160,7 +160,7 @@ export function RunPanel() {
         {tab === "curves" && (
           series.length === 0 || series.every((one) => one.points.length === 0) ? (
             <p className="mono muted">
-              아직 기록이 없습니다 · 단계 표시줄의 4 실행으로 학습을 시작하거나, 스크립트에서 tf.log(step, loss=...)를 부르면 여기에 쌓입니다
+              아직 기록이 없습니다 · 단계 표시줄의 4 학습으로 학습을 시작하거나, 스크립트에서 tf.log(step, loss=...)를 부르면 여기에 쌓입니다
             </p>
           ) : (
             <Curves series={series} label={CURVE_LABELS[key] ?? key} />

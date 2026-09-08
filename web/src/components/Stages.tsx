@@ -2,7 +2,7 @@
 // 단계가 진행된다**. 조작은 여기 한 곳이다: 학습 시작과 테스트는 여기서만 시작하고, 아래 패널은
 // 결과를 보는 곳(돌고 있는 run의 일시정지·중지만 예외), Inspector는 고른 블록의 설정이다.
 //
-// L2는 자동으로 돌지 않는다(§5.4) - 4 실행도 사람이 누른 클릭이다.
+// L2는 자동으로 돌지 않는다(§5.4) - 4 학습도 사람이 누른 클릭이다.
 
 import { useEffect, useState } from "react";
 import { useReactFlow } from "@xyflow/react";

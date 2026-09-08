@@ -215,7 +215,7 @@ export function Inspector() {
 
       {kind === "torchflow.Train" && (
         <p className="mono muted">
-          값을 고치면 다음 실행에 반영됩니다 · 시작은 단계 표시줄의 4 실행 ·
+          값을 고치면 다음 실행에 반영됩니다 · 시작은 단계 표시줄의 4 학습 ·
           steps는 배치 수, batch는 한 번에 보는 샘플 수, lr은 한 걸음의 크기입니다
         </p>
       )}

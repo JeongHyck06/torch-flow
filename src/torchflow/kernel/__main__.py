@@ -68,6 +68,7 @@ class Kernel:
                 # 첫 화면의 디바이스 칩이 읽는 값. L0 자체는 CPU에서 돌지만 칩은 이 컴퓨터에
                 # 어떤 가속기가 있는지를 말해야 한다.
                 device=(available_devices(torch) or ["cpu"])[0],
+                devices=available_devices(torch),
                 registry_path=registry_path,
             )
         )

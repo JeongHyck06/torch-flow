@@ -113,46 +113,46 @@ export function computeStages(input: {
   const args = (train?.args ?? {}) as Record<string, unknown>;
   const recipe = `${String(args.optimizer ?? "adamw")} · lr ${String(args.lr ?? 0.001)} · ${String(args.steps ?? 500)} step`;
   const trainStage: Stage = train
-    ? { key: "train", name: "학습", state: "done", detail: recipe,
+    ? { key: "train", name: "학습 설정", state: "done", detail: recipe,
         hint: "Train 블록을 눌러 값을 바꿉니다",
         guide: `학습 설정은 ${recipe} · batch ${String(args.batch ?? 32)}입니다. 값을 바꾸려면 Train 블록을 누르세요. `
           + "loss가 안 내려가면 lr을 10분의 1로, 정확도가 낮으면 steps를 늘려 보세요." }
-    : { key: "train", name: "학습", state: "pending", detail: "Train 블록 없음 · 기본값",
+    : { key: "train", name: "학습 설정", state: "pending", detail: "Train 블록 없음 · 기본값",
         hint: "눌러서 학습 블록을 Output 뒤에 넣습니다. 없으면 기본값으로 돕니다",
-        guide: "3 학습을 누르면 학습 설정 블록이 Output 뒤에 붙습니다. optimizer·lr·steps·batch를 거기서 "
+        guide: "3 학습 설정을 누르면 Train 블록이 Output 뒤에 붙습니다. optimizer·lr·steps·batch를 거기서 "
           + "고칩니다. 기본값 500 step은 빠른 확인용이라 정확도가 레시피보다 낮게 나옵니다." };
 
   let runStage: Stage;
   if (traced) {
-    runStage = { key: "run", name: "실행", state: "pending", detail: "가져온 그래프 · 학습 없음",
+    runStage = { key: "run", name: "학습", state: "pending", detail: "가져온 그래프 · 학습 없음",
                  hint: "트레이스로 가져온 그래프는 코드를 만들지 않습니다",
                  guide: "트레이스로 가져온 그래프는 구조와 실측 shape만 봅니다. 코드를 만들지 않으므로 "
                    + "학습은 원본 .py에서 하세요." };
   } else if (!run) {
-    runStage = { key: "run", name: "실행", state: "pending", detail: "눌러서 학습 시작",
+    runStage = { key: "run", name: "학습", state: "pending", detail: "눌러서 학습 시작",
                  hint: "학습 블록의 값으로 학습을 시작합니다",
-                 guide: "4 실행을 누르면 이 설정으로 학습이 시작되고 아래 패널에 loss 곡선이 그려집니다. "
+                 guide: "4 학습을 누르면 이 설정으로 학습이 시작되고 아래 패널에 loss 곡선이 그려집니다. "
                    + "loss가 내려가고 acc가 올라가면 배우고 있는 것입니다." };
   } else if (RUNNING.has(run.state)) {
-    runStage = { key: "run", name: "실행", state: "active", detail: runLabel(input.runs),
+    runStage = { key: "run", name: "학습", state: "active", detail: runLabel(input.runs),
                  hint: "누르면 아래 패널 · 일시정지와 중지는 패널에서",
                  guide: "학습 중입니다. 아래 패널에서 곡선을 보고 일시정지·중지로 조절합니다. loss가 "
                    + "ln(클래스 수) 근처에 그대로면 데이터가 없거나 lr이 맞지 않는 것입니다." };
   } else if (run.state === "done") {
-    runStage = { key: "run", name: "실행", state: "done", detail: runLabel(input.runs),
+    runStage = { key: "run", name: "학습", state: "done", detail: runLabel(input.runs),
                  hint: "다시 누르면 새 run을 시작합니다",
-                 guide: "학습이 끝났습니다. 5 테스트로 정확도를 재거나, 값을 바꿔 4 실행으로 새 run을 시작하세요." };
+                 guide: "학습이 끝났습니다. 5 테스트로 정확도를 재거나, 값을 바꿔 4 학습으로 새 run을 시작하세요." };
   } else if (run.state === "paused") {
-    runStage = { key: "run", name: "실행", state: "active", detail: runLabel(input.runs),
+    runStage = { key: "run", name: "학습", state: "active", detail: runLabel(input.runs),
                  hint: "누르면 아래 패널 · 이어 가기와 중지는 패널에서",
                  guide: "일시정지 상태입니다. 아래 패널에서 이어 가거나 멈출 수 있습니다." };
   } else {
     // 여기에 영어 오류 원문을 붙이면 안내문이 통째로 RuntimeError가 된다. 무엇을 하면
     // 되는지만 한국어로 말하고, 원문과 traceback은 아래 실패 카드가 펼쳐서 보여 준다.
-    runStage = { key: "run", name: "실행", state: "error", detail: runLabel(input.runs),
+    runStage = { key: "run", name: "학습", state: "error", detail: runLabel(input.runs),
                  hint: "다시 누르면 새 실행 · 이어 하려면 패널의 재개",
                  guide: run.state !== "failed"
-                   ? "학습을 중간에 멈췄습니다. 아래 패널에서 이어 하거나 4 실행으로 새로 시작하세요."
+                   ? "학습을 중간에 멈췄습니다. 아래 패널에서 이어 하거나 4 학습으로 새로 시작하세요."
                    : run.cpu_retry
                      ? "Apple GPU(MPS)가 이 모델의 연산 하나를 지원하지 않아 학습이 멈췄습니다. "
                        + "아래 패널의 'CPU로 다시 실행'을 누르면 같은 설정으로 CPU에서 이어서 해 봅니다."
