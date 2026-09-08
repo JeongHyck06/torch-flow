@@ -260,7 +260,8 @@ export async function saveLayout(key: string, position: { x: number; y: number }
 
 export interface TrainRun {
   run_id: string; state: string; step: number; total: number;
-  device: string; alive: boolean; error: { message?: string } | null;
+  device: string; alive: boolean; error: { message?: string; detail?: string } | null;
+  cpu_retry?: boolean; retry_of?: string;
   reason?: string; nan_step?: number;
   // reported run은 hparam이 동결이라 학습 중 편집이 fork가 된다(§5.7.2).
   kind?: string; smoke?: boolean; parent_run?: string; forked_from?: string;
@@ -360,6 +361,7 @@ export async function datasetProgress(name: string): Promise<DownloadProgress | 
 }
 
 export interface TrainOptions {
+  device?: "auto" | "cpu" | "mps" | "cuda"; retry_run?: string;
   dataset?: string; recipe?: Recipe;
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
   scheduler?: string; warmup_steps?: number;

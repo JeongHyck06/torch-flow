@@ -55,8 +55,11 @@ interface State {
   /** 학습 run 목록. App이 2초마다 새로 읽는다 - 단계 표시줄과 Train 노드 배지가 같이 쓴다. */
   runs: TrainRun[];
   /** 마지막 학습 시작 요청의 오류와 고칠 재료. 시작은 단계 표시줄이 하고 패널이 보여 준다. */
+  trainingDevice: "auto" | "cpu" | "mps" | "cuda";
   startError: string | null;
   startFix: { node: string; ports_out: PortSpec[] } | null;
+  /** "이미 학습이 돌고 있습니다"가 가리키던 run. 그 run이 끝나면 오류가 거짓이 되므로 지운다. */
+  startErrorRun: string | null;
   /** 단계별 안내문에 잠깐 띄우는 한 줄. 편집이 거부됐을 때 같은, 패널이 닫혀 있어도 봐야 하는 말. */
   notice: string | null;
   guideHidden: boolean;
@@ -90,12 +93,11 @@ interface State {
   pushRedo: (inverse: Op) => void;
   takeRedo: () => Op | undefined;
   setDirty: (dirty: boolean) => void;
-  openPalette: (at: { x: number; y: number }) => void;
   setData: (dataset: string, recipe: Recipe | null) => void;
   openData: () => void;
   closeData: () => void;
   setRuns: (runs: TrainRun[]) => void;
-  setStartResult: (error: string | null, fix: State["startFix"]) => void;
+  setStartResult: (error: string | null, fix: State["startFix"], blockingRun?: string | null) => void;
   closePalette: () => void;
   enterScope: (scope: Scope) => void;
   popToScope: (index: number) => void;
@@ -135,8 +137,10 @@ export const useStore = create<State>((set, get) => ({
   recipe: null,
   dataOpen: false,
   runs: [],
+  trainingDevice: "auto",
   startError: null,
   startFix: null,
+  startErrorRun: null,
   notice: null,
   guideHidden: readGuideHidden(),
   project: null,
@@ -226,13 +230,13 @@ export const useStore = create<State>((set, get) => ({
     return stack[stack.length - 1];
   },
   setDirty: (dirty) => set({ dirty }),
-  openPalette: (paletteAt) => set({ paletteAt }),
   setData: (dataset, recipe) => set({ dataset, recipe }),
   openData: () => set({ dataOpen: true, paletteAt: null }),
   closeData: () => set({ dataOpen: false }),
   setRuns: (runs) => set({ runs }),
-  setStartResult: (startError, startFix) => set({ startError, startFix }),
-  closePalette: () => set({ paletteAt: null }),
+  setStartResult: (startError, startFix, startErrorRun = null) =>
+    set({ startError, startFix, startErrorRun }),
+  closePalette: () => set({ paletteAt: null, paletteFrom: null }),
   enterScope: (scope) =>
     set((prev) =>
       prev.scopes.some((existing) => existing.callPath === scope.callPath)

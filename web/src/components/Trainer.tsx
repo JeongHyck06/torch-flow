@@ -11,7 +11,7 @@ import { controlTraining, fetchDatasets } from "../api";
 import type { DatasetInfo } from "../api";
 import { applyEdit } from "../edit";
 import { op } from "../graph/ops";
-import { RUNNING } from "../stages";
+import { RUNNING, runLabel } from "../stages";
 import { useStore } from "../store";
 import { startRun } from "../train";
 
@@ -31,6 +31,30 @@ export function Trainer({ onChange }: { onChange: () => void }) {
 
   const active = runs.find((run) => RUNNING.has(run.state) || run.state === "paused");
   const last = runs[runs.length - 1];
+  const device = useStore((state) => state.trainingDevice);
+  const [retrying, setRetrying] = useState(false);
+  const finalizing = active?.state === "finalizing" || Boolean(active && active.total > 0 && active.step >= active.total);
+  useEffect(() => { setError(null); setNote(null); }, [last?.run_id]);
+  // "이미 학습이 돌고 있습니다"는 그 run이 끝나면 더 이상 참이 아니다. 사람이 다시 누를
+  // 때까지 남아 있으면 새 run이 도는 중에도 옛 거절 문구가 붙어 있다.
+  const startErrorRun = useStore((state) => state.startErrorRun);
+  useEffect(() => {
+    if (!startErrorRun) return;
+    const blocking = runs.find((run) => run.run_id === startErrorRun);
+    if (!blocking || !(RUNNING.has(blocking.state) || blocking.state === "paused")) {
+      setStartResult(null, null);
+    }
+  }, [runs, startErrorRun, setStartResult]);
+  const retryCPU = async () => {
+    if (!last || retrying) return;
+    setRetrying(true);
+    try {
+      const result = await startRun({ retry_run: last.run_id, device: "cpu" });
+      // 연타 가드에 걸려 되돌아온 경우까지 말해 준다 - 조용하면 버튼이 먹통으로 보인다.
+      if (result.error) setError(result.error);
+      else useStore.setState({ trainingDevice: "cpu" });
+    } finally { setRetrying(false); }
+  };
   const chosen = datasets.find((entry) => entry.name === dataset);
 
   useEffect(() => { fetchDatasets().then(setDatasets).catch(() => undefined); }, []);
@@ -69,12 +93,19 @@ export function Trainer({ onChange }: { onChange: () => void }) {
 
   return (
     <div className="trainer">
+      <label className="trainer__field">학습 장치
+        <select aria-label="학습 장치" value={device} disabled={Boolean(active) || retrying}
+                onChange={(event) => useStore.setState({ trainingDevice: event.target.value as typeof device })}>
+          <option value="auto">자동 선택</option><option value="cpu">CPU</option>
+          <option value="mps">Apple GPU (MPS)</option><option value="cuda">NVIDIA GPU (CUDA)</option>
+        </select>
+      </label>
       {!active ? (
         <>
           <span className="mono trainer__progress">
-            {last ? `${last.run_id} · ${last.state} · step ${last.step.toLocaleString()}` : "아직 run이 없습니다"}
+            {last ? runLabel([last]) : "아직 학습 기록이 없습니다"}
           </span>
-          {last && last.state !== "done" && (
+          {last && last.state === "stopped" && (
             <button className="trainer__stop" onClick={() => void send("resume")}
                     title="체크포인트에서 이어 돕니다">
               재개
@@ -96,24 +127,25 @@ export function Trainer({ onChange }: { onChange: () => void }) {
         </>
       ) : (
         <>
-          <button className="trainer__run" onClick={() => void send(
+          <button className="trainer__run" disabled={finalizing || active.state === "starting"} onClick={() => void send(
             active.state === "paused" ? "resume" : "pause")}>
-            {active.state === "paused" ? "Resume" : "Pause"}
+            {active.state === "paused" ? "이어 하기" : "일시정지"}
           </button>
-          <button className="trainer__stop" onClick={() => void send("stop")}>Stop</button>
+          <button className="trainer__stop" disabled={finalizing} onClick={() => void send("stop")}>중지</button>
           <span className="mono trainer__progress">
-            step {active.step.toLocaleString()} / {active.total.toLocaleString()}
+            {runLabel([active])}
             {active.device ? ` · ${active.device}` : ""}
             {active.smoke ? " · smoke" : ""}
             {active.state === "paused" ? " · 일시정지" : ""}
             {active.nan_step !== undefined ? ` · NaN @ ${active.nan_step}` : ""}
           </span>
           {reported ? (
-            <span className="mono trainer__progress">reported</span>
+            <span className="mono trainer__progress" title="학습 설정을 고정한 결과입니다">보고용 결과</span>
           ) : (
             <button className="trainer__stop" onClick={() => void send("promote")}
-                    title="reported로 올리면 hparam이 동결되고 편집하면 run이 갈라집니다">
-              exploratory †
+                    title={"†는 탐색용 실행이라는 표시로 집계에서 빠집니다. 누르면 보고용으로 바꿔"
+                           + " 설정을 고정하고, 이후 편집은 별도 실행으로 기록합니다"}>
+              탐색용 실행 †
             </button>
           )}
           <label className="trainer__field">{scheduled ? "base lr" : "lr"}
@@ -145,6 +177,27 @@ export function Trainer({ onChange }: { onChange: () => void }) {
         <button className="trainer__stop" onClick={() => void applyFix()}>
           Input을 [{startFix.ports_out[0].shape.join(", ")}]로 맞추기
         </button>
+      )}
+      {!active && last?.state === "failed" && (
+        <section role="alert" className="training-failure">
+          <strong>학습에 실패했습니다</strong>
+          <p>{last.cpu_retry ? "Apple GPU가 이 연산을 지원하지 않습니다. CPU로 다시 실행할 수 있습니다."
+            : "학습을 완료하지 못했습니다. 아래 오류와 학습 출력을 확인해 설정을 수정해 주세요."}</p>
+          <span className="muted">실행: {last.run_id}</span>
+          {last.cpu_retry && (
+            <>
+              <p>실패 당시 모델·데이터·학습 설정으로 처음부터 실행하며 장치만 CPU로 바꿉니다.</p>
+              <button className="trainer__run" disabled={retrying} onClick={() => void retryCPU()}>
+                {retrying ? "시작 요청 중…" : "CPU로 다시 실행"}
+              </button>
+            </>
+          )}
+          <details>
+            <summary>오류 원문 보기</summary>
+            <pre>{last.error?.detail ?? last.error?.message ?? "상세 오류가 없습니다"}</pre>
+          </details>
+          <button className="trainer__stop" onClick={() => openRunPanel("stdout")}>학습 출력 보기</button>
+        </section>
       )}
       {active?.error && <span className="warn mono">{active.error.message}</span>}
     </div>

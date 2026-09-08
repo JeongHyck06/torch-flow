@@ -137,10 +137,13 @@ export function computeStages(input: {
                  guide: "일시정지 상태입니다. 아래 패널에서 이어 가거나 멈출 수 있습니다." };
   } else {
     runStage = { key: "run", name: "실행", state: "error", detail: runLabel(input.runs),
-                 hint: "다시 누르면 새 run · 이어 하려면 패널의 재개",
-                 guide: `학습이 ${run.state === "failed" ? "실패했습니다" : "멈췄습니다"}`
-                   + (run.error?.message ? `: ${run.error.message}` : "")
-                   + ". 아래 패널의 학습 출력 탭에 워커의 출력과 traceback이 있습니다." };
+                 hint: "다시 누르면 새 실행 · 이어 하려면 패널의 재개",
+                 guide: run.state !== "failed"
+                   ? "학습을 중간에 멈췄습니다. 아래 패널에서 이어 하거나 4 실행으로 새로 시작하세요."
+                   : run.cpu_retry
+                     ? "Apple GPU(MPS)가 이 모델의 연산 하나를 지원하지 않아 학습이 멈췄습니다. "
+                       + "아래 패널의 'CPU로 다시 실행'을 누르면 같은 설정으로 CPU에서 이어서 해 봅니다."
+                     : "학습에 실패했습니다. 아래 패널에 무엇이 잘못됐는지와 오류 원문이 있습니다." };
   }
   let testStage: Stage;
   if (!run || !FINISHED.has(run.state)) {

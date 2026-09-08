@@ -831,3 +831,17 @@ body {
 
 .trainlog__head { font-size: 11px; margin-bottom: 6px; }
 .trainlog { max-height: 240px; overflow: auto; line-height: 1.55; }
+
+/* 실패 안내. 색은 tokens.css의 오류 토큰만 쓴다 - 이 파일에 생색은 없다. */
+.training-failure {
+  flex-basis: 100%; padding: 16px; border-radius: 8px;
+  border: 1px solid var(--state-error); background: var(--state-bg-error);
+  color: var(--state-ink-error);
+}
+.training-failure p { margin: 8px 0; }
+.training-failure pre {
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto;
+  font-size: 12px; color: var(--text-secondary);
+}
+.training-failure details { margin: 12px 0; }
+.training-failure summary { cursor: pointer; }

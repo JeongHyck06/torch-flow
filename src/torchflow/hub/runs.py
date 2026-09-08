@@ -43,8 +43,8 @@ class RunHandle:
 
     @property
     def alive(self) -> bool:
-        if self.process is not None and self.process.poll() is None:
-            return True
+        if self.process is not None:
+            return self.process.poll() is None
         beat = self.directory / "heartbeat"
         try:
             return (time.time() - beat.stat().st_mtime) < STALE_AFTER
@@ -54,7 +54,30 @@ class RunHandle:
     def as_dict(self) -> dict[str, Any]:
         return {"run_id": self.run_id, "state": self.state, "step": self.step,
                 "total": self.total, "device": self.device, "alive": self.alive,
-                "error": self.error, **self.extra}
+                "error": self.error, "cpu_retry": cpu_retryable(self.error), **self.extra}
+
+
+def cpu_retryable(error: dict | None) -> bool:
+    message = str((error or {}).get("message", "")).lower()
+    return "mps" in message and any(text in message for text in (
+        "not implemented", "not supported", "not currently implemented", "must be divisible"))
+
+
+def retry_cpu(handle: RunHandle, root: Path) -> RunHandle:
+    """실패한 run을 장치만 CPU로 바꿔 다시 띄운다.
+
+    편집 중인 그래프가 아니라 **그 run이 저장해 둔** job.json과 model.py를 그대로 쓴다 -
+    실패 뒤에 사람이 블록을 만졌더라도 "실패한 그 설정을 CPU로"가 되어야 하기 때문이다.
+    """
+    job = json.loads((handle.directory / "job.json").read_text())
+    job.pop("resume", None)
+    job["device"] = "cpu"
+    child = start(run_id=new_run_id(), root=root, job=job,
+                  code=(handle.directory / "model.py").read_text())
+    child.extra.update({key: handle.extra[key] for key in ("graph_id", "kind", "smoke")
+                        if key in handle.extra})
+    child.extra["retry_of"] = handle.run_id
+    return child
 
 
 def new_run_id() -> str:

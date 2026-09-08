@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1085,6 +1086,29 @@ def create_app(
 
     @app.post("/api/train")
     def start_training(http: Request, request: dict[str, Any] | None = None) -> JSONResponse:
+        with training_lock:
+            return _start_training(http, request)
+
+    def _start_training(http: Request, request: dict[str, Any] | None) -> JSONResponse:
+        hub.sync_runs()
+        retry_id = (request or {}).get("retry_run")
+        if retry_id:
+            original = hub.l2.get(retry_id)
+            if original is None or original.extra.get("graph_id") != hub.graph_id:
+                return JSONResponse({"error": "현재 모델의 실행 기록을 찾을 수 없습니다"}, status_code=404)
+            if original.state != "failed" or not l2.cpu_retryable(original.error):
+                return JSONResponse({"error": "CPU 재실행 대상 오류가 아닙니다"}, status_code=400)
+            if any(h.alive and h.extra.get("graph_id") == hub.graph_id for h in hub.l2.values()):
+                return JSONResponse({"error": "현재 학습이 끝난 뒤 다시 실행하세요"}, status_code=409)
+            child = l2.retry_cpu(original, hub.runs_dir)
+            hub.l2[child.run_id] = child
+            hub.tracker.ensure_run(child.run_id, kind=child.extra.get("kind", "exploratory"),
+                                   name=hub.store.ir.graph.name, graph_id=hub.graph_id,
+                                   manifest={"job": json.loads((child.directory / "job.json").read_text()),
+                                             "retry_of": original.run_id})
+            return JSONResponse({"ok": True, **child.as_dict()})
+        if (request or {}).get("device", "auto") not in ("auto", "cpu", "mps", "cuda"):
+            return JSONResponse({"error": "지원하지 않는 학습 장치입니다"}, status_code=400)
         # 누가 눌렀는지 터미널에 남기되, 거부되는 반복 요청은 초당 한 줄로 접는다 - 키 자동 반복으로
         # 초당 30번 들어온 요청이 터미널을 도배해 사람이 놀랐다.
         now = time.time()

@@ -22,20 +22,31 @@ let lastStart = 0;
 export async function startRun(
   options: Omit<TrainOptions, "dataset" | "recipe" | "smoke"> = {}, smoke = false,
 ): Promise<StartResult> {
+  // 막은 요청은 오류를 **돌려주기만** 한다. 전역 startError에 쓰면 다음 시작 때까지
+  // 남아 낡은 문구가 된다 - 보여 줄 필요가 있는 쪽(CPU 재실행 버튼)이 받아서 띄운다.
   if (inFlight) return { error: "이미 시작 요청이 나가 있습니다" };
   // 연타·자동 반복은 한 번으로 친다. 1초 안의 두 번째 요청은 hub까지 가지 않는다.
-  if (Date.now() - lastStart < 1000) return { error: "방금 시작 요청을 보냈습니다" };
+  if (Date.now() - lastStart < 1000) return { error: "방금 시작 요청을 보냈습니다 - 잠시 뒤 다시 누르세요" };
   lastStart = Date.now();
   inFlight = true;
   try {
-    const { dataset, recipe } = useStore.getState();
+    const { dataset, recipe, graph, trainingDevice } = useStore.getState();
+    useStore.getState().setStartResult(null, null);
     const result = await startTraining(
-      smoke ? { smoke: true, dataset, recipe: recipe ?? undefined }
-        : { dataset, recipe: recipe ?? undefined, ...options });
-    useStore.getState().setStartResult(result.error ?? null, result.fix ?? null);
+      smoke ? { ...options, device: options.device ?? trainingDevice, smoke: true, dataset, recipe: recipe ?? undefined }
+        : { dataset, recipe: recipe ?? undefined, device: trainingDevice, ...options });
+    if (useStore.getState().graph !== graph) return {};
+    // 409면 hub가 막고 있는 run을 같이 준다. 그 run이 끝나면 이 오류는 거짓이 되므로
+    // Trainer가 run 목록을 보고 스스로 지운다.
+    useStore.getState().setStartResult(result.error ?? null, result.fix ?? null,
+                                       result.error ? result.run_id ?? null : null);
     if (result.error) return { error: result.error, fix: result.fix ?? null };
     useStore.getState().setRuns([...useStore.getState().runs, result]);
     return { run: result };
+  } catch (error) {
+    const message = `학습 시작 요청에 실패했습니다: ${String(error)}`;
+    useStore.getState().setStartResult(message, null);
+    return { error: message };
   } finally {
     inFlight = false;
   }
