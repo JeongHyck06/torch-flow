@@ -6,10 +6,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { fetchRegistry, saveLayout } from '../api';
+import { fetchLibrary, saveLayout } from '../api';
+import type { CompositeEntry } from '../api';
 import { applyEdit } from '../edit';
 import { layeredLayout } from '../graph/layout';
-import { addBlockOp } from '../graph/ops';
+import { addBlockOp, op } from '../graph/ops';
 import type { Block } from '../graph/ops';
 import { currentScope, useStore } from '../store';
 
@@ -31,7 +32,15 @@ const ALIASES: Record<string, string> = {
     emb: 'Embedding',
 };
 
-const LIMIT = 8;
+// 검색 없이 열면 자주 쓰는 순서로 전부 보인다(목록은 스크롤). 8개만 보이면 Conv2d가
+// 타이핑해야 나온다는 것을 알 길이 없었다. 같은 순위끼리는 이 목록이 앞선다.
+const COMMON = ["Input", "Output", "Conv2d", "Linear", "ReLU", "BatchNorm2d", "MaxPool2d",
+                "Flatten", "Dropout", "AdaptiveAvgPool2d", "LayerNorm", "GELU", "Embedding",
+                "MultiheadAttention", "Train"];
+const commonRank = (block: Block) => {
+    const at = COMMON.indexOf(block.label);
+    return at < 0 ? COMMON.length : at;
+};
 
 export function Palette() {
     const at = useStore((state) => state.paletteAt);
@@ -45,12 +54,18 @@ export function Palette() {
     const [cursor, setCursor] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const input = useRef<HTMLInputElement>(null);
+    const list = useRef<HTMLUListElement>(null);
+    // 마우스가 목록 위에 가만히 있어도 목록이 다시 그려지면 mouseenter가 난다 - 그러면
+    // 키보드로 고른 줄이 마우스 밑 줄로 바뀌어 Enter가 엉뚱한 블록을 넣는다.
+    const mouse = useRef({ x: -1, y: -1 });
 
     useEffect(() => {
-        fetchRegistry()
-            .then(setBlocks)
+        // 열 때마다 다시 읽는다 - 지금 그래프에 새로 생긴 컴포지트도 목록에 있어야 한다.
+        if (!at) return;
+        fetchLibrary()
+            .then(({ blocks: leaves, composites }) => setBlocks([...leaves, ...composites.map(asBlock)]))
             .catch(() => undefined);
-    }, []);
+    }, [at]);
     useEffect(() => {
         if (at) {
             setQuery('');
@@ -61,6 +76,9 @@ export function Palette() {
     useEffect(() => {
         input.current?.focus();
     }, [at]);
+    useEffect(() => {
+        list.current?.querySelector('.palette__row--on')?.scrollIntoView({ block: 'nearest' });
+    }, [cursor]);
 
     const found = useMemo(() => search(blocks, query), [blocks, query]);
     const scope = currentScope({ graph, scopes });
@@ -69,12 +87,21 @@ export function Palette() {
     if (!at || !scope) return null;
 
     const insert = async (block: Block) => {
-        const { op, nodeId } = addBlockOp(
-            scope,
+        // 묶음 블록은 정의가 그래프에 있어야 부를 수 있다. 없을 때만 정의를 먼저 넣는다.
+        const name = block.type.replace(/^composite:/, '');
+        if (block.source === 'composite' && !graph?.composites?.[name]) {
+            const defined = await applyEdit(op('define_composite', { name, body: block.composite }));
+            if (defined) {
+                setError(defined);
+                return;
+            }
+        }
+        const { op: add, nodeId } = addBlockOp(
+            currentScope(useStore.getState()) ?? scope,
             block,
             current.name === '$graph' ? null : current.name,
         );
-        const failed = await applyEdit(op);
+        const failed = await applyEdit(add);
         if (failed) {
             setError(failed);
             return;
@@ -135,12 +162,16 @@ export function Palette() {
                     </span>
                 </div>
 
-                <ul className="palette__list">
+                <ul className="palette__list" ref={list}>
                     {found.map((block, index) => (
                         <li key={block.type}>
                             <button
                                 className={`palette__row${index === cursor ? ' palette__row--on' : ''}`}
-                                onMouseEnter={() => setCursor(index)}
+                                onMouseMove={(event) => {
+                                    if (event.clientX === mouse.current.x && event.clientY === mouse.current.y) return;
+                                    mouse.current = { x: event.clientX, y: event.clientY };
+                                    setCursor(index);
+                                }}
                                 onClick={() => void insert(block)}>
                                 <span className="palette__head">
                                     <span className="palette__name">{block.label}</span>
@@ -161,6 +192,22 @@ export function Palette() {
     );
 }
 
+/** 템플릿의 컴포지트를 팔레트 항목으로. 포트 이름은 정의에서, 인자는 params에서 온다. */
+function asBlock(entry: CompositeEntry): Block {
+    return {
+        type: `composite:${entry.name}`,
+        label: entry.name,
+        category: `묶음 블록 · ${entry.source}`,
+        params: Object.fromEntries(Object.entries(entry.params).map(([key, spec]) =>
+            [key, { type: spec.type, default: spec.default }])),
+        ports: { in: (entry.ports.in ?? []).map((port) => port.name),
+                 out: (entry.ports.out ?? []).map((port) => port.name) },
+        doc: entry.doc ?? undefined,
+        source: 'composite',
+        composite: entry.composite,
+    };
+}
+
 /** 이미 노드가 있는 자리면 오른쪽으로 비켜 간다. 간격은 노드 폭(216)을 넘겨야 겹치지 않는다. */
 function freeSpot(at: { x: number; y: number }, taken: { x: number; y: number }[]) {
     const spot = { ...at };
@@ -179,10 +226,10 @@ function signature(block: Block): string {
     return `${left} → ${right}`;
 }
 
-/** 부분 문자열 + 별칭 + 흩어진 글자 순서(퍼지). 짧은 이름이 먼저 온다. */
+/** 부분 문자열 + 별칭 + 흩어진 글자 순서(퍼지). 자주 쓰는 블록, 그다음 짧은 이름이 먼저다. */
 function search(blocks: Block[], query: string): Block[] {
     const needle = query.trim().toLowerCase();
-    if (!needle) return blocks.slice(0, LIMIT);
+    if (!needle) return [...blocks].sort((a, b) => commonRank(a) - commonRank(b));
     const alias = (ALIASES[needle] ?? '').toLowerCase();
 
     const scored = blocks
@@ -198,8 +245,9 @@ function search(blocks: Block[], query: string): Block[] {
         })
         .filter((entry): entry is { block: Block; rank: number } => entry !== null);
 
-    scored.sort((a, b) => a.rank - b.rank || a.block.label.length - b.block.label.length);
-    return scored.slice(0, LIMIT).map((entry) => entry.block);
+    scored.sort((a, b) => a.rank - b.rank || commonRank(a.block) - commonRank(b.block)
+        || a.block.label.length - b.block.label.length);
+    return scored.map((entry) => entry.block);
 }
 
 function fuzzy(text: string, needle: string): boolean {

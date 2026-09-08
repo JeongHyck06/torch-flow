@@ -128,6 +128,7 @@ export function DataDialog() {
   };
 
   const entry = datasets.find((one) => one.name === chosen);
+  const synthetic = chosen !== null && SYNTHETIC.has(chosen);
   const needsDownload = entry?.source === "builtin" && !entry.available;
 
   return (
@@ -187,6 +188,18 @@ export function DataDialog() {
             </div>
 
             <ul className="templates">
+              <li>
+                <button
+                  className={`templates__row${chosen === "teacher" ? " templates__row--on" : ""}`}
+                  onClick={() => pick("teacher")}
+                >
+                  <span className="templates__left">
+                    <span className="templates__name">합성 과제</span>
+                    <span className="templates__recipe mono">데이터 없이 · 무작위 입력에 고정 teacher 라벨</span>
+                  </span>
+                  <span className="templates__metric mono">기본</span>
+                </button>
+              </li>
               {datasets.map((one) => (
                 <li key={one.name}>
                   <button
@@ -209,7 +222,12 @@ export function DataDialog() {
           </div>
 
           <div className="datadialog__main">
-            {chosen ? (
+            {synthetic ? (
+              <p className="mono muted">
+                데이터 없이 무작위 입력에 고정 teacher 라벨로 학습합니다. 학습 루프가 도는지 확인하는
+                기본 과제입니다. 적용하면 붙어 있던 데이터가 떨어집니다.
+              </p>
+            ) : chosen ? (
               <>
                 {needsDownload && (
                   <div className="trainer">

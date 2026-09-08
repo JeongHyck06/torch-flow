@@ -69,7 +69,19 @@ export function Canvas() {
 
   // 드래그 중에는 로컬 상태가 권위를 갖는다 - 매 프레임 스토어를 때리면 끊긴다.
   const [nodes, setNodes] = useState<FlowNode[]>(computed.nodes);
-  useEffect(() => { setNodes(computed.nodes); }, [computed.nodes]);
+  // 다시 그릴 때 잰 크기(measured)를 넘겨준다. React Flow는 크기를 모르는 노드를 잴 때까지 숨기므로,
+  // 폴링이나 probe로 노드 객체가 새로 만들어질 때마다 블록이 잠깐 사라졌다 돌아왔다.
+  useEffect(() => {
+    setNodes((current) => {
+      const known = new Map(current.map((node) => [node.id, node]));
+      return computed.nodes.map((node) => {
+        const previous = known.get(node.id);
+        return previous?.measured?.width
+          ? { ...node, measured: previous.measured, width: previous.width, height: previous.height }
+          : node;
+      });
+    });
+  }, [computed.nodes]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => setNodes((current) => applyNodeChanges(changes, current)),
@@ -143,7 +155,17 @@ export function Canvas() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      if (target.closest("input, textarea, select, [contenteditable='true']")) return;
+      // Space·Enter를 꾹 누르면 키 자동 반복이 초당 30번 버튼을 누른다 - 학습 시작 요청이 그 수만큼
+      // 나가 터미널이 도배됐다. 반복 키는 아무 버튼도 누르지 못하게 한다.
+      if (event.repeat && (event.key === " " || event.key === "Enter")) {
+        event.preventDefault();
+        return;
+      }
+      // Backspace는 노드나 캔버스에 포커스가 있을 때만 지운다. 버튼(단계 표시줄, 모듈 트리)에
+      // 포커스가 남은 채 입력창인 줄 알고 누르면 블록이 확인 없이 사라졌다.
+      if (event.key === "Backspace" && target !== document.body
+          && !target.closest(".react-flow__node, .react-flow__pane")) return;
       // 데이터 창이 떠 있으면 키는 그 창의 것이다 - Tab이 뒤에서 팔레트를 열면 안 된다.
       if (useStore.getState().dataOpen) return;
       if (!order.length && event.key !== "Tab") return;
@@ -268,6 +290,7 @@ export function Canvas() {
       onMove={(_event, viewport) => setZoom(viewport.zoom)}
       fitView
       minZoom={0.1}
+      panOnScroll
       proOptions={{ hideAttribution: true }}
       nodesDraggable
       aria-label="모델 그래프 캔버스"

@@ -6,8 +6,11 @@
 
 import { create } from "zustand";
 import type { ModuleGraph, NodeState } from "./types.gen";
-import type { Recipe, TrainRun } from "./api";
+import type { PortSpec, Recipe, TrainRun } from "./api";
 import type { Op } from "./graph/ops";
+
+/** 하단 Run 패널의 탭. */
+export type RunTab = "curves" | "block" | "data" | "stdout" | "test" | "manifest" | "logs" | "console";
 
 export interface Scope {
   name: string;        // "$graph" 또는 컴포지트 이름
@@ -35,6 +38,7 @@ interface State {
   /** 노드 키 -> 좌표. layout.json이 정본이고 IR은 좌표를 모른다(§10.1). */
   positions: Record<string, { x: number; y: number }>;
   runPanel: boolean;
+  runTab: RunTab;
   /** 상단 탭. Experiment와 Runs는 M7 전까지 비어 있다. */
   tab: "model" | "code";
   /** 역 op 스택. 스택에 든 op를 그대로 보내면 되돌아간다(§8.2.3). */
@@ -50,7 +54,18 @@ interface State {
   dataOpen: boolean;
   /** 학습 run 목록. App이 2초마다 새로 읽는다 - 단계 표시줄과 Train 노드 배지가 같이 쓴다. */
   runs: TrainRun[];
+  /** 마지막 학습 시작 요청의 오류와 고칠 재료. 시작은 단계 표시줄이 하고 패널이 보여 준다. */
+  startError: string | null;
+  startFix: { node: string; ports_out: PortSpec[] } | null;
+  /** 단계별 안내문에 잠깐 띄우는 한 줄. 편집이 거부됐을 때 같은, 패널이 닫혀 있어도 봐야 하는 말. */
+  notice: string | null;
+  guideHidden: boolean;
+  /** 열려 있는 프로젝트 폴더. null이면 아직 폴더에 저장한 적이 없다. */
+  project: string | null;
+  setProject: (project: string | null) => void;
 
+  setNotice: (notice: string | null) => void;
+  setGuideHidden: (hidden: boolean) => void;
   setGraph: (graph: ModuleGraph, seq: number) => void;
   openGraph: (graph: ModuleGraph, seq: number) => void;
   closeGraph: () => void;
@@ -63,6 +78,9 @@ interface State {
   setProbeObjective: (objective: string) => void;
   toggleGradOverlay: () => void;
   toggleRunPanel: () => void;
+  setRunTab: (tab: RunTab) => void;
+  /** 패널을 특정 탭으로 연다. 단계 표시줄의 "테스트"가 이걸로 온다. */
+  openRunPanel: (tab: RunTab) => void;
   setTab: (tab: State["tab"]) => void;
   setPosition: (key: string, position: { x: number; y: number }) => void;
   setPositions: (positions: Record<string, { x: number; y: number }>) => void;
@@ -77,6 +95,7 @@ interface State {
   openData: () => void;
   closeData: () => void;
   setRuns: (runs: TrainRun[]) => void;
+  setStartResult: (error: string | null, fix: State["startFix"]) => void;
   closePalette: () => void;
   enterScope: (scope: Scope) => void;
   popToScope: (index: number) => void;
@@ -106,6 +125,7 @@ export const useStore = create<State>((set, get) => ({
   gradOverlay: true,
   positions: {},
   runPanel: false,
+  runTab: "curves",
   tab: "model",
   undoStack: [],
   redoStack: [],
@@ -115,7 +135,18 @@ export const useStore = create<State>((set, get) => ({
   recipe: null,
   dataOpen: false,
   runs: [],
+  startError: null,
+  startFix: null,
+  notice: null,
+  guideHidden: readGuideHidden(),
+  project: null,
+  setProject: (project) => set({ project }),
 
+  setNotice: (notice) => set({ notice }),
+  setGuideHidden: (guideHidden) => {
+    try { localStorage.setItem("torchflow.guide.hidden", guideHidden ? "1" : ""); } catch { /* 비공개 창 */ }
+    set({ guideHidden });
+  },
   openGraph: (graph, seq) =>
     // **다른** 그래프를 연다. 이전 그래프에 딸린 것은 전부 비운다 - 노드 상태,
     // 브레드크럼, 선택, 편집 히스토리, 총계. setGraph는 편집 왕복마다 불리므로
@@ -123,6 +154,7 @@ export const useStore = create<State>((set, get) => ({
     set({ graph, seq, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" }],
           undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false, runs: [],
+          startError: null, startFix: null,
           totals: { params: 0, band: null, batch: 64 },
           ...dataOf(graph) }),
   setGraph: (graph, seq) =>
@@ -137,6 +169,7 @@ export const useStore = create<State>((set, get) => ({
     set({ graph: null, seq: 0, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: "Net", callPath: "" }],
           undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false, runs: [],
+          startError: null, startFix: null,
           totals: { params: 0, band: null, batch: 64 } }),
   applyNodeState: (state) =>
     // L1은 L0가 채운 spec 위에 grad 배지를 얹는다 - 축이 다르므로 덮어쓰지 않고 합친다.
@@ -167,6 +200,8 @@ export const useStore = create<State>((set, get) => ({
   setProbeObjective: (probeObjective) => set({ probeObjective }),
   toggleGradOverlay: () => set((prev) => ({ gradOverlay: !prev.gradOverlay })),
   toggleRunPanel: () => set((prev) => ({ runPanel: !prev.runPanel })),
+  setRunTab: (runTab) => set({ runTab }),
+  openRunPanel: (runTab) => set({ runPanel: true, runTab }),
   setTab: (tab) => set({ tab }),
   setPosition: (key, position) =>
     set((prev) => ({ positions: { ...prev.positions, [key]: position } })),
@@ -196,6 +231,7 @@ export const useStore = create<State>((set, get) => ({
   openData: () => set({ dataOpen: true, paletteAt: null }),
   closeData: () => set({ dataOpen: false }),
   setRuns: (runs) => set({ runs }),
+  setStartResult: (startError, startFix) => set({ startError, startFix }),
   closePalette: () => set({ paletteAt: null }),
   enterScope: (scope) =>
     set((prev) =>
@@ -207,6 +243,10 @@ export const useStore = create<State>((set, get) => ({
   select: (selected) => set({ selected }),
   focus: (focused) => set({ focused }),
 }));
+
+function readGuideHidden(): boolean {
+  try { return localStorage.getItem("torchflow.guide.hidden") === "1"; } catch { return false; }
+}
 
 /** 데이터 없이 도는 합성 과제. Input에 데이터가 붙지 않은 상태다. */
 export const SYNTHETIC = new Set(["teacher", "noise"]);

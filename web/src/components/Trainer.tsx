@@ -1,48 +1,37 @@
-// 학습 조작 (기획서 §5.7, §13.1 M7). 하단 Run 패널의 곡선 탭 머리에 붙는다.
+// 지금 run의 상태와 조작 (기획서 §5.7, §13.1 M7). 하단 패널 곡선 탭의 머리에 붙는다.
 //
-// L2는 **절대 자동으로 돌지 않는다**(§5.4의 auto = {L0, L1}). 사람이 Run이나 Smoke를
-// 눌러야 시작하고, lr은 학습 중에도 바꿀 수 있다(HOT, §5.7.1) - 재시작 없이
-// param_groups에 반영된다. 재시작이 필요한 변경은 **알리기만** 한다(ADR-05).
-//
-// run 종류 표기는 Figma `04 Runs`(48:147)를 따른다: exploratory는 †로 표시하고
-// 집계에서 기본 제외, reported는 hparam 동결이라 편집하면 run이 갈라진다.
+// **시작은 여기서 하지 않는다** - 단계 표시줄의 4 실행이 유일한 시작 버튼이고(train.ts startRun),
+// 여기는 돌고 있는 run의 Pause/Stop/lr(HOT, §5.7.1)과 멈춘 run의 재개만 둔다. 재시작이 필요한
+// 변경은 **알리기만** 한다(ADR-05). run 종류 표기는 Figma `04 Runs`(48:147)를 따른다:
+// exploratory는 †로 표시하고 집계에서 기본 제외, reported는 hparam 동결이라 편집하면 run이 갈라진다.
 
 import { useEffect, useState } from "react";
 
-import { controlTraining, downloadDataset, fetchDatasets } from "../api";
-import type { DatasetInfo, PortSpec } from "../api";
+import { controlTraining, fetchDatasets } from "../api";
+import type { DatasetInfo } from "../api";
 import { applyEdit } from "../edit";
 import { op } from "../graph/ops";
-import { RUNNING, kindOf } from "../stages";
+import { RUNNING } from "../stages";
 import { useStore } from "../store";
 import { startRun } from "../train";
 
 export function Trainer({ onChange }: { onChange: () => void }) {
   // run 목록은 App이 2초마다 채운다 - 패널이 닫혀 있어도 단계 표시줄이 같은 값을 본다.
   const runs = useStore((state) => state.runs);
-  const graph = useStore((state) => state.graph);
-  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
-  // 데이터와 레시피는 그래프에 딸린 것이라 스토어에 산다(experiment.data).
   const dataset = useStore((state) => state.dataset);
-  const setData = useStore((state) => state.setData);
-  const [fetching, setFetching] = useState(false);
-  const [steps, setSteps] = useState(500);
-  const [batch, setBatch] = useState(32);
+  // 시작 요청의 오류는 단계 표시줄이 만들고 여기서 보여 준다 - 고칠 버튼이 여기 있으므로.
+  const startError = useStore((state) => state.startError);
+  const startFix = useStore((state) => state.startFix);
+  const setStartResult = useStore((state) => state.setStartResult);
+  const openRunPanel = useStore((state) => state.openRunPanel);
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
   const [lr, setLr] = useState(0.001);
-  const [schedule, setSchedule] = useState("none");
-  const [warmup, setWarmup] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  // hub가 규격 불일치와 함께 준 고칠 op 재료. 버튼 하나로 Input을 데이터에 맞춘다.
-  const [fix, setFix] = useState<{ node: string; ports_out: PortSpec[] } | null>(null);
 
   const active = runs.find((run) => RUNNING.has(run.state) || run.state === "paused");
   const last = runs[runs.length - 1];
   const chosen = datasets.find((entry) => entry.name === dataset);
-  const needsDownload = chosen !== undefined && chosen.source === "builtin" && !chosen.available;
-  // Train 블록이 있으면 하이퍼파라미터는 그 블록의 것이다. 폼은 실행과 상태만 맡는다.
-  const trainNode = graph?.graph.nodes?.find((node) => kindOf(node) === "torchflow.Train");
-  const trainArgs = (trainNode?.args ?? {}) as Record<string, unknown>;
 
   useEffect(() => { fetchDatasets().then(setDatasets).catch(() => undefined); }, []);
 
@@ -51,32 +40,12 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     if (runs.some((run) => RUNNING.has(run.state))) onChange();
   }, [runs, onChange]);
 
-  const start = async (smoke = false) => {
-    setError(null);
-    setNote(null);
-    setFix(null);
-    const result = await startRun(
-      trainNode ? {} : { steps, batch, lr, optimizer: "adamw", scheduler: schedule, warmup_steps: warmup },
-      smoke);
-    if (result.error) { setError(result.error); setFix(result.fix ?? null); }
-  };
-
   const applyFix = async () => {
-    if (!fix) return;
-    const failed = await applyEdit(op("set_ports", { node: fix.node, ports_out: fix.ports_out }));
+    if (!startFix) return;
+    const failed = await applyEdit(op("set_ports", { node: startFix.node, ports_out: startFix.ports_out }));
     if (failed) { setError(failed); return; }
-    setFix(null);
-    setError(null);
+    setStartResult(null, null);
     onChange();
-  };
-
-  const download = async () => {
-    setFetching(true);
-    setError(null);
-    const result = await downloadDataset(dataset);
-    setFetching(false);
-    if (result.error) setError(result.error);
-    else setDatasets(await fetchDatasets());
   };
 
   const send = async (cmd: string, extra: Record<string, unknown> = {}) => {
@@ -102,81 +71,27 @@ export function Trainer({ onChange }: { onChange: () => void }) {
     <div className="trainer">
       {!active ? (
         <>
-          {needsDownload ? (
-            <button className="trainer__run" onClick={() => void download()} disabled={fetching}>
-              {fetching ? "내려받는 중" : `${chosen.label} 내려받기 (${chosen.size_mb} MB)`}
-            </button>
-          ) : (
-            <button className="trainer__run" onClick={() => void start()}>Run</button>
-          )}
-          <button className="trainer__stop" onClick={() => void start(true)} disabled={needsDownload}
-                  title="20 step · batch 8 · 결정적 - 두 번 돌리면 loss가 같습니다">
-            Smoke
-          </button>
-          {last && (
-            <button className="trainer__stop"
-                    onClick={() => void send("resume", { steps: trainNode ? Number(trainArgs.steps ?? steps) : steps })}>
+          <span className="mono trainer__progress">
+            {last ? `${last.run_id} · ${last.state} · step ${last.step.toLocaleString()}` : "아직 run이 없습니다"}
+          </span>
+          {last && last.state !== "done" && (
+            <button className="trainer__stop" onClick={() => void send("resume")}
+                    title="체크포인트에서 이어 돕니다">
               재개
             </button>
           )}
-          <label className="trainer__field">데이터
-            <select className="trainer__select mono" value={dataset}
-                    onChange={(event) => setData(event.target.value, null)}>
-              <option value="teacher">합성</option>
-              {datasets.map((entry) => (
-                <option key={entry.name} value={entry.name}>
-                  {entry.label}
-                  {entry.source === "builtin" && !entry.available ? " (내려받기 필요)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          {trainNode ? (
-            <span className="mono trainer__progress" title="값은 Train 블록을 선택해 Inspector에서 바꿉니다">
-              Train 블록 · {String(trainArgs.optimizer ?? "adamw")} · lr {String(trainArgs.lr ?? 0.001)}
-              {" · "}{String(trainArgs.steps ?? 500)} step · batch {String(trainArgs.batch ?? 32)}
-              {trainArgs.scheduler && trainArgs.scheduler !== "none" ? ` · ${String(trainArgs.scheduler)}` : ""}
-            </span>
-          ) : (
-            <>
-              <label className="trainer__field">steps
-                <input type="number" min={1} value={steps}
-                       onChange={(event) => setSteps(Number(event.target.value))} />
-              </label>
-              <label className="trainer__field">batch
-                <input type="number" min={1} value={batch}
-                       onChange={(event) => setBatch(Number(event.target.value))} />
-              </label>
-              <label className="trainer__field">lr
-                <input type="number" step={0.0001} min={0} value={lr}
-                       onChange={(event) => setLr(Number(event.target.value))} />
-              </label>
-              <label className="trainer__field">스케줄
-                <select className="trainer__select mono" value={schedule}
-                        onChange={(event) => setSchedule(event.target.value)}>
-                  <option value="none">없음</option>
-                  <option value="cosine">cosine</option>
-                </select>
-              </label>
-              {schedule === "cosine" && (
-                <label className="trainer__field">warmup
-                  <input type="number" min={0} value={warmup}
-                         onChange={(event) => setWarmup(Number(event.target.value))} />
-                </label>
-              )}
-            </>
-          )}
-          {last && (
-            <span className="mono trainer__progress">
-              {last.run_id} · {last.state} · step {last.step.toLocaleString()}
-            </span>
-          )}
+          <button className="trainer__stop"
+                  onClick={() => void startRun({}, true).then(() => openRunPanel("curves"))}
+                  title="20 step · batch 8 · 결정적 - 학습이 되긴 하는지 30초 안에 봅니다">
+            빠른 점검
+          </button>
           <span className="muted trainer__note">
             {chosen
               ? `${chosen.label}${chosen.count ? ` ${chosen.count.toLocaleString()}개` : ""}`
                 + ` · Input 규격 [B, ${chosen.shape.join(", ")}] · 출력 ${chosen.classes} 클래스`
                 + (chosen.source === "user" ? " · 8:2로 나눠 검증" : " · 검증은 test 분할")
               : "합성 과제 · 무작위 입력에 고정 teacher 라벨"}
+            {" · 시작은 단계 표시줄의 4 실행"}
           </span>
         </>
       ) : (
@@ -203,8 +118,8 @@ export function Trainer({ onChange }: { onChange: () => void }) {
           )}
           <label className="trainer__field">{scheduled ? "base lr" : "lr"}
             {/* 제어 입력이어야 한다. defaultValue는 마운트 때만 읽히는데 React가
-                Run 폼의 입력 DOM을 재사용해서 batch 값이 남아 있었다. */}
-            <input type="number" step={0.0001} min={0} value={lr}
+                입력 DOM을 재사용해서 다른 값이 남아 있었다. */}
+            <input type="number" step={0.0001} min={0} value={Number(lr.toPrecision(6))}
                    onChange={(event) => setLr(Number(event.target.value))}
                    onKeyDown={(event) => {
                      if (event.key !== "Enter") return;
@@ -225,10 +140,10 @@ export function Trainer({ onChange }: { onChange: () => void }) {
         </>
       )}
       {note && <span className="mono trainer__note">{note}</span>}
-      {error && <span className="warn mono">{error}</span>}
-      {fix && (
+      {(error ?? startError) && <span className="warn mono">{error ?? startError}</span>}
+      {startFix && (
         <button className="trainer__stop" onClick={() => void applyFix()}>
-          Input을 [{fix.ports_out[0].shape.join(", ")}]로 맞추기
+          Input을 [{startFix.ports_out[0].shape.join(", ")}]로 맞추기
         </button>
       )}
       {active?.error && <span className="warn mono">{active.error.message}</span>}

@@ -38,10 +38,8 @@ export function DataCard({ name, recipe, onRecipe }: {
   const summary = `Input [B, ${spec.shape.join(", ")}] · ${spec.classes} 클래스`
     + (spec.split ? ` · train ${spec.split.train.toLocaleString()} / val ${spec.split.val.toLocaleString()}` : "");
 
-  if (base.kind === "builtin") {
-    return <p className="mono datacard__summary">{summary} · 내장 데이터는 정제 설정이 없습니다</p>;
-  }
-
+  // 내장 데이터는 레시피가 없다 - 왼쪽은 한 줄, 오른쪽 미리보기는 같다.
+  const builtin = base.kind === "builtin";
   const classNames = base.class_names ?? [];
   const columns = base.columns ?? [];
   const label = String(full.label_column ?? "");
@@ -53,6 +51,9 @@ export function DataCard({ name, recipe, onRecipe }: {
     <div className="datacard">
       <div>
         <h3>정제</h3>
+        {builtin ? (
+          <p className="mono muted">내장 데이터는 정제 설정이 없습니다 · 검증은 test 분할</p>
+        ) : (
         <dl className="rows">
           {base.kind === "csv" && (
             <div><dt>정답 열</dt><dd>
@@ -142,6 +143,7 @@ export function DataCard({ name, recipe, onRecipe }: {
                    onChange={(event) => set("limit", event.target.value ? Number(event.target.value) : null)} />
           </dd></div>
         </dl>
+        )}
 
         {base.kind === "csv" && (
           <>

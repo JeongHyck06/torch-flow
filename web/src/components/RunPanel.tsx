@@ -10,24 +10,35 @@ import { setGraphData } from "../api";
 import { BlockDetail } from "./BlockDetail";
 import { Console } from "./Console";
 import { DataCard } from "./DataCard";
+import { TestPanel } from "./TestPanel";
 import { TrainLog } from "./TrainLog";
 import { Trainer } from "./Trainer";
 import { SYNTHETIC, useStore } from "../store";
+import type { RunTab } from "../store";
 
-type Tab = "curves" | "block" | "data" | "stdout" | "manifest" | "logs" | "console";
-
-const TAB_LABELS: Record<Tab, string> = {
-  curves: "Run 곡선", block: "블록 상세", data: "데이터", stdout: "학습 출력",
-  manifest: "run manifest", logs: "로그", console: "콘솔",
+const TAB_LABELS: Record<RunTab, string> = {
+  curves: "곡선", test: "테스트", stdout: "학습 출력", data: "데이터", block: "블록 상세",
+  manifest: "run manifest", logs: "커널 로그", console: "콘솔",
 };
+// 앞 다섯은 학습 결과, 뒤 셋은 연구용. 구분선 뒤로 흐리게 두어 처음 보는 사람이 안 헤매게 한다.
+const ADVANCED_TABS = new Set<RunTab>(["manifest", "logs", "console"]);
 
 const COLORS = ["var(--dtype-f32)", "#4a86c9", "#7c8898", "#2a558d", "#5e93d1"];
+// 색은 한 계열(214°)뿐이라 run이 넷이면 구분이 안 된다 - 선 모양으로 한 번 더 가른다.
+const DASHES = ["", "6 3", "2 3", "8 3 2 3", "1 3"];
+
+/** ``run-20260908-011654-cbe5`` -> ``09-08 01:16 · cbe5``. 범례에 id를 그대로 쓰면 못 가른다. */
+export function runLabelShort(runId: string): string {
+  const match = /^run-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\d{2}-(\w+)$/.exec(runId);
+  return match ? `${match[2]}-${match[3]} ${match[4]}:${match[5]} · ${match[6]}` : runId;
+}
 
 const DEFAULT_HEIGHT = 232;
 const MIN_HEIGHT = 160;
 
 export function RunPanel() {
-  const [tab, setTab] = useState<Tab>("curves");
+  const tab = useStore((state) => state.runTab);
+  const setTab = useStore((state) => state.setRunTab);
   const [runs, setRuns] = useState<RunInfo[]>([]);
   const [key, setKey] = useState<string>("");
   const [series, setSeries] = useState<CurveSeries[]>([]);
@@ -62,6 +73,11 @@ export function RunPanel() {
     grip.addEventListener("pointermove", move);
     grip.addEventListener("pointerup", stop);
   };
+  // 테스트 탭은 표와 샘플 격자가 커서 기본 높이로는 잘린다. 처음 열 때 한 번 키운다.
+  useEffect(() => {
+    if (tab === "test" && height < 480) resize(Math.min(560, Math.round(window.innerHeight * 0.6)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   // 레시피를 그래프에 붙인다. hub가 Input을 set_ports op로 맞추고 브로드캐스트한다.
   const apply = async () => {
@@ -94,7 +110,7 @@ export function RunPanel() {
   if (!open) {
     return (
       <button className="runpanel__handle" onClick={toggle}>
-        Run 곡선 {runs.length ? `(${runs.length})` : ""}
+        결과 보기{runs.length ? ` (${runs.length})` : ""}
       </button>
     );
   }
@@ -111,10 +127,12 @@ export function RunPanel() {
         onDoubleClick={() => resize(height > DEFAULT_HEIGHT ? DEFAULT_HEIGHT : Math.round(window.innerHeight * 0.6))}
       />
       <div className="runpanel__tabs">
-        {(Object.keys(TAB_LABELS) as Tab[]).map((name) => (
+        {(Object.keys(TAB_LABELS) as RunTab[]).map((name) => (
           <button
             key={name}
-            className={`runpanel__tab${tab === name ? " runpanel__tab--on" : ""}`}
+            className={`runpanel__tab${tab === name ? " runpanel__tab--on" : ""}`
+              + `${ADVANCED_TABS.has(name) ? " runpanel__tab--dim" : ""}`
+              + `${name === "manifest" ? " runpanel__tab--divided" : ""}`}
             onClick={() => setTab(name)}
           >
             {TAB_LABELS[name]}
@@ -136,7 +154,7 @@ export function RunPanel() {
         {tab === "curves" && (
           series.length === 0 || series.every((one) => one.points.length === 0) ? (
             <p className="mono muted">
-              아직 기록이 없습니다. 학습 스크립트에서 tf.log(step, loss=...)를 부르면 여기에 쌓입니다
+              아직 기록이 없습니다 · 단계 표시줄의 4 실행으로 학습을 시작하거나, 스크립트에서 tf.log(step, loss=...)를 부르면 여기에 쌓입니다
             </p>
           ) : (
             <Curves series={series} label={key} />
@@ -165,6 +183,8 @@ export function RunPanel() {
 
         {tab === "stdout" && <TrainLog />}
 
+        {tab === "test" && <TestPanel />}
+
         {tab === "manifest" && (
           active?.manifest && Object.keys(active.manifest).length ? (
             <pre className="mono runpanel__json">
@@ -179,7 +199,7 @@ export function RunPanel() {
               {logs.map((line) =>
                 `${line.node_id ? line.node_id + "  " : ""}${line.text}`).join("\n")}
             </pre>
-          ) : <p className="mono muted">로그가 비어 있습니다</p>
+          ) : <p className="mono muted">커널 로그가 비어 있습니다 · 블록 코드의 print와 모양 계산 오류가 여기에 쌓입니다</p>
         )}
 
         {tab === "console" && <Console />}
@@ -206,9 +226,12 @@ function Curves({ series, label }: { series: CurveSeries[]; label: string }) {
       <div className="curves__legend mono">
         <span>{label}</span>
         {series.map((one, index) => (
-          <span key={one.run} className="curves__key">
-            <span className="curves__swatch" style={{ background: COLORS[index % COLORS.length] }} />
-            {one.run}
+          <span key={one.run} className="curves__key" title={one.run}>
+            <svg className="curves__swatch" width="18" height="4" aria-hidden>
+              <line x1="0" y1="2" x2="18" y2="2" stroke={COLORS[index % COLORS.length]}
+                    strokeWidth="2" strokeDasharray={DASHES[index % DASHES.length] || undefined} />
+            </svg>
+            {runLabelShort(one.run)}
           </span>
         ))}
         <span className="muted">{y0.toFixed(4)} .. {y1.toFixed(4)}</span>
@@ -221,6 +244,7 @@ function Curves({ series, label }: { series: CurveSeries[]; label: string }) {
             fill="none"
             stroke={COLORS[index % COLORS.length]}
             strokeWidth={1.5}
+            strokeDasharray={DASHES[index % DASHES.length] || undefined}
             vectorEffect="non-scaling-stroke"
             points={one.points.map((point) => `${sx(point[0])},${sy(point[1])}`).join(" ")}
           />

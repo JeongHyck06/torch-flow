@@ -22,7 +22,9 @@ export interface Block {
   params: Record<string, { type: string; required?: boolean; default?: unknown }>;
   ports: { in: string[]; out: string[] };
   doc?: string;
-  source: "builtin" | "reflection" | string;
+  source: "builtin" | "reflection" | "composite" | string;
+  /** 묶음 블록이면 그래프에 없을 때 먼저 정의해 넣을 몸체. */
+  composite?: unknown;
 }
 
 const CLIENT_ID = Math.random().toString(36).slice(2, 10);
@@ -71,6 +73,11 @@ export function addBlockOp(
   if (block.source === "reflection") {
     payload.instance = { id: newId(), label, type: block.type, args: defaultArgs(block) };
     payload.node = { id: nodeId, label, method: "forward" };
+  } else if (block.source === "composite") {
+    // 템플릿의 block1처럼: 인스턴스는 composite:이름, 노드는 그 호출이고 출력 포트 이름을 든다.
+    payload.instance = { id: newId(), label, type: block.type, args: defaultArgs(block) };
+    payload.node = { id: nodeId, label, method: "forward",
+                     ports_out: block.ports.out.map((name) => ({ name, type: "Tensor" })) };
   } else {
     // 내장 블록의 기본값도 노드에 적는다 - Train의 lr·steps가 보이는 값이어야 고칠 수 있다.
     const args = defaultArgs(block);
@@ -163,6 +170,13 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
         ...scoped, instance: payload.instance, active: instance.active,
       });
     }
+    // 정의는 팔레트가 그래프에 없을 때만 보내므로 역은 지우기다. 부르는 노드가 남아 있으면
+    // 서버가 거부한다 - 실행 취소는 노드부터 되돌아가므로 순서가 맞는다.
+    case "define_composite":
+      return op("remove_composite", { name: payload.name });
+    case "remove_composite":
+      return payload.body === undefined
+        ? null : op("define_composite", { name: payload.name, body: payload.body });
     default:
       return null;
   }
