@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, codegen, datasets, paper, protocol as proto
+from .. import __version__, astimport, codegen, datasets, graphdiff, package, paper, protocol as proto
 from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
@@ -503,6 +503,25 @@ def _graph_id_for(path: Path | None) -> str:
     return f"path-{digest[:12]}"
 
 
+def _apply_example(ir: ModuleGraph, example: dict[str, Any]) -> None:
+    """AST import는 shape를 모른다. 첫 화면의 "예시 입력"이 Input 규격이 된다(§7.4.1).
+
+    이름이 맞으면 이름으로, 아니면 순서대로 붙인다 - forward 인자 이름과 사용자가
+    적은 이름이 다를 수 있다.
+    """
+    entry = next((node for node in ir.graph.nodes
+                  if (node.type or "").split("@")[0] == "torchflow.Input"), None)
+    if entry is None or not entry.ports_out or not example:
+        return
+    specs = list(example.values())
+    for index, port in enumerate(entry.ports_out):
+        spec = example.get(port.name) or (specs[index] if index < len(specs) else None)
+        if not spec:
+            continue
+        port.shape = list(spec.get("shape") or [])
+        port.dtype = spec.get("dtype") or "float32"
+
+
 def _class_name(name: str) -> str:
     from ..codegen import _class_name as convert
 
@@ -678,7 +697,12 @@ def create_app(
 
     @app.post("/api/import")
     def import_source(request: dict[str, Any]) -> JSONResponse:
-        """사용자 .py를 인스턴스로 만들어 그래프로 편다(§7.4 경로 3)."""
+        """사용자 .py를 그래프로 연다.
+
+        길이 둘이다(§7.4). ``mode="ast"``는 코드를 **읽기만** 해서 편집 가능한 IR을
+        만들고(경로 1), ``mode="trace"``는 커널이 실제로 인스턴스를 만들어 실측
+        트레이스를 뜬다(경로 3, 읽기 전용). 서로를 대체하지 않는다.
+        """
         name = Path(request.get("filename") or "model.py").name
         target = hub.state_dir / "imports" / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -689,6 +713,21 @@ def create_app(
             example = parse_example_spec(request.get("example") or "")
         except ValueError as exc:
             return JSONResponse({"error": f"입력 명세: {exc}"}, status_code=400)
+
+        if request.get("mode") == "ast":
+            source = request.get("source")
+            if source is None:
+                source = target.read_text(encoding="utf-8")
+            try:
+                ir, report = astimport.import_source(
+                    source, filename=name, name=request.get("class") or None,
+                    previous=hub.store.ir if request.get("merge") and hub.store else None)
+            except astimport.AstImportError as exc:
+                return JSONResponse({"error": str(exc), "stage": "ast"}, status_code=400)
+            _apply_example(ir, example)
+            hub.project_dir = None
+            hub.open(ir, target)
+            return JSONResponse({"ok": True, "name": hub.store.ir.graph.name, "report": report})
 
         hub.l1.ensure()
         replies = hub.l1.request(proto.ImportTrace(
@@ -707,6 +746,36 @@ def create_app(
         hub.open(ModuleGraph.model_validate(imported.graph), target)
         return JSONResponse({"ok": True, "name": hub.store.ir.graph.name,
                              "report": imported.report})
+
+    @app.post("/api/reimport")
+    def reimport(request: dict[str, Any]) -> JSONResponse:
+        """열려 있는 그래프를 코드에서 다시 읽는다(§7.5).
+
+        노드 id는 속성 경로에서 파생되므로 안 바뀐 블록은 같은 id를 유지하고, 좌표와
+        프로브와 라벨이 살아남는다. 무엇이 달라지는지 먼저 돌려주고(``preview``),
+        확정은 다시 부를 때 ``apply``로 한다(§7.6.2의 diff 미리보기).
+        """
+        if hub.store is None:
+            return no_graph()
+        source = request.get("source")
+        path = Path(request["path"]).expanduser() if request.get("path") else None
+        if source is None and path is not None:
+            source = path.read_text(encoding="utf-8")
+        if source is None:
+            return JSONResponse({"error": "코드를 주세요"}, status_code=400)
+        try:
+            fresh, report = astimport.import_source(
+                source, filename=str(path or "model.py"), name=request.get("class") or None,
+                previous=hub.store.ir)
+        except astimport.AstImportError as exc:
+            return JSONResponse({"error": str(exc), "stage": "ast"}, status_code=400)
+
+        changes = graphdiff.summarize(hub.store.ir, fresh)
+        if not request.get("apply"):
+            return JSONResponse({"ok": True, "preview": changes, "report": report})
+        hub.open(fresh, path or hub.graph_path)
+        return JSONResponse({"ok": True, "applied": changes, "report": report,
+                             "name": hub.store.ir.graph.name})
 
     @app.post("/api/open")
     def open_graph(request: dict[str, Any]) -> JSONResponse:

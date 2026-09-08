@@ -180,10 +180,17 @@ export async function inspectSource(source: string):
   return response.json();
 }
 
-/** 커널이 모델을 만들고 한 번 돌려 그래프로 편다. */
+/**
+ * .py를 그래프로 연다. 길이 둘이다(기획서 §7.4).
+ *
+ * `ast`는 코드를 읽기만 해서 **편집 가능한** 그래프를 만들고, `trace`는 커널이
+ * 모델을 실제로 만들어 한 번 돌린다(실측이지만 읽기 전용).
+ */
 export async function importSource(request: {
   filename: string; source: string; factory: string; example: string;
-}): Promise<{ ok?: boolean; error?: string; stage?: string }> {
+  mode?: "ast" | "trace"; class?: string;
+}): Promise<{ ok?: boolean; error?: string; stage?: string;
+              report?: { structural_ratio?: number; problems?: string[] } }> {
   const response = await fetch("/api/import", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
@@ -403,7 +410,25 @@ export async function fetchTrainStdout(runId: string, offset: number):
 export async function fetchTraining(): Promise<TrainRun[]> {
   const response = await fetch("/api/train", { headers: authHeaders() });
   if (!response.ok) return [];
-  return (await response.json()).runs ?? [];
+  const body = await response.json();
+  // 코드가 밖에서 바뀌었는지도 이 응답에 실려 온다(§7.6.2) - 따로 감시기를 두지 않는다.
+  useStore.getState().setSourceChange(body.source ?? null);
+  return body.runs ?? [];
+}
+
+/**
+ * 디스크의 코드를 다시 읽어 그래프에 반영한다(§7.5).
+ *
+ * `apply` 없이 부르면 무엇이 달라지는지만 돌려준다 - 자동 적용은 하지 않는다.
+ */
+export async function reimport(request: { path?: string; source?: string; apply?: boolean }):
+    Promise<{ ok?: boolean; error?: string; preview?: string[]; applied?: string[] }> {
+  const response = await fetch("/api/reimport", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return response.json();
 }
 
 export interface TestSample { png: string; pred: number; label: number; prob: number }

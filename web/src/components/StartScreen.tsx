@@ -81,12 +81,14 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
     setFactory(last.suggestion);
   }, []);
 
-  const runImport = async () => {
+  const runImport = async (mode: "ast" | "trace") => {
     if (!dropped) return;
     setBusy("import");
     setError(null);
     const result = await importSource({
-      filename: dropped.filename, source: dropped.source, factory, example,
+      filename: dropped.filename, source: dropped.source, factory, example, mode,
+      // 구조로 읽을 때는 인스턴스 식이 아니라 클래스 이름만 쓴다.
+      class: mode === "ast" ? factory.split("(")[0].trim() : undefined,
     });
     setBusy(null);
     if (result.error) setError(`${result.stage ?? "import"}: ${result.error}`);
@@ -131,7 +133,7 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
         >
           <button className="dropband__half" onClick={() => picker.current?.click()}>
             <span className="dropband__title">모델 .py 드롭</span>
-            <span className="dropband__sub">인스턴스로 만들어 실측 트레이스합니다</span>
+            <span className="dropband__sub">코드를 읽어 블록으로 폅니다</span>
             <span className="dropband__hint mono">
               {dropped ? dropped.filename : "끌어다 놓거나 눌러서 고르세요"}
             </span>
@@ -176,8 +178,15 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                 후보 {dropped.candidates.map((item) => item.name).join(", ")}
               </span>
               <button className="ghost" onClick={() => setDropped(null)}>취소</button>
-              <button className="solid" onClick={runImport} disabled={busy === "import"}>
-                {busy === "import" ? "여는 중" : "그래프로 열기"}
+              <button className="ghost" onClick={() => void runImport("trace")}
+                      disabled={busy === "import"}
+                      title="모델을 실제로 만들어 한 번 돌립니다. 크기는 실측이지만 편집은 안 됩니다">
+                실행해서 열기
+              </button>
+              <button className="solid" onClick={() => void runImport("ast")}
+                      disabled={busy === "import"}
+                      title="코드를 읽기만 해서 블록으로 폅니다. 그대로 편집할 수 있습니다">
+                {busy === "import" ? "여는 중" : "블록으로 열기"}
               </button>
             </div>
           </div>

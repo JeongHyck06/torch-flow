@@ -68,6 +68,9 @@ interface State {
   /** 열려 있는 프로젝트 폴더. null이면 아직 폴더에 저장한 적이 없다. */
   project: string | null;
   setProject: (project: string | null) => void;
+  /** 생성 코드가 편집기에서 바뀌었다(§7.6.2). 반영은 사람이 확인한 뒤에. */
+  sourceChange: { path: string; sha256: string } | null;
+  setSourceChange: (change: State["sourceChange"]) => void;
 
   setNotice: (notice: string | null) => void;
   setGuideHidden: (hidden: boolean) => void;
@@ -148,6 +151,12 @@ export const useStore = create<State>((set, get) => ({
   guideHidden: readGuideHidden(),
   project: null,
   setProject: (project) => set({ project }),
+  sourceChange: null,
+  setSourceChange: (sourceChange) =>
+    // 같은 변경을 2초마다 다시 넣어 화면을 다시 그리지 않는다.
+    set((prev) => (prev.sourceChange?.sha256 === (sourceChange?.sha256 ?? null)
+                   || (!prev.sourceChange && !sourceChange)
+                     ? prev : { sourceChange })),
 
   setNotice: (notice) => set({ notice }),
   setGuideHidden: (guideHidden) => {
