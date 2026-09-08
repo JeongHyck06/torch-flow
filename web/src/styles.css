@@ -152,6 +152,36 @@ body {
 .field:hover { border-color: var(--border-subtle); }
 .field:focus { outline: none; border-color: var(--text-primary); background: var(--surface-panel); }
 
+/* Inspector 행의 보조 동작 - hp 승격, 변형 적용 같은 작은 버튼. */
+.rowvalue { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.rowaction {
+  font-size: 11px; color: var(--text-muted); background: none; padding: 1px 5px;
+  border: 1px solid var(--border-subtle); border-radius: 4px; cursor: pointer;
+}
+.rowaction:hover { color: var(--text-primary); border-color: var(--text-primary); }
+.variant { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.inspector__addvariant { display: flex; gap: 6px; margin-top: 6px; }
+
+/* 코드가 밖에서 바뀌었을 때의 알림과 확인 창 (기획서 7.6.2). */
+.reimport__chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  border: 1px solid var(--border-subtle); border-radius: 999px; padding: 2px 10px;
+  background: var(--surface-panel); color: var(--text-primary); cursor: pointer;
+}
+.reimport__chip:hover { border-color: var(--text-primary); }
+.reimport__scrim {
+  position: fixed; inset: 0; background: rgba(17, 19, 24, 0.35); z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+}
+.reimport {
+  width: min(560px, 90vw); background: var(--surface-panel); border-radius: 12px;
+  border: 1px solid var(--border-subtle); padding: 20px; display: grid; gap: 10px;
+  box-shadow: 0 24px 60px rgba(17, 19, 24, 0.24);
+}
+.reimport h3 { margin: 0; font-size: 15px; }
+.reimport__list { margin: 0; padding-left: 18px; max-height: 240px; overflow-y: auto; font-size: 12px; }
+.reimport__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
 .export { display: flex; align-items: center; gap: 8px; }
 .export__label { font-size: 12px; color: var(--text-muted); }
 .export__link {
@@ -166,6 +196,7 @@ body {
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--state-idle); }
 .dot--on { background: var(--state-ok); }
 .dot--off { background: var(--state-error); }
+.dot--warn { background: var(--state-warn, var(--state-queued)); }
 
 :where(button, input, a):focus-visible { outline: 2px solid var(--state-queued); outline-offset: 1px; }
 

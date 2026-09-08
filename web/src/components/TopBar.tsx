@@ -1,6 +1,7 @@
 // 상단 바 - Figma Screens 기준. 크롬은 무채색이고 색은 그래프에서만 나온다.
 
 import { useEffect, useState } from "react";
+import { ReimportBanner } from "./ReimportBanner";
 import { closeGraph, estimateMemory, runProbe, saveProject } from "../api";
 import { applyEdit } from "../edit";
 import { op } from "../graph/ops";
@@ -117,6 +118,8 @@ export function TopBar() {
           {project && !saving ? ` · ${project.split("/").filter(Boolean).pop()}/` : ""}
         </span>
       </span>
+
+      <ReimportBanner />
 
       <nav className="crumbs" aria-label="그래프 경로">
         {(scopes.length > 1 ? scopes : []).map((scope, index) => (

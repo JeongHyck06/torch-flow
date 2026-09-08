@@ -1176,3 +1176,32 @@ def test_a_killed_hub_leaves_the_worker_training(app, tmp_path):
     assert [step for step, _ in hub.tracker.curve("chaos", "loss")] == list(range(1, 41))
 
 
+def test_code_edited_outside_is_noticed_and_reimported_on_demand(app, client, tmp_path):
+    """§7.6.2: 우리가 쓴 sha와 다르면 알리고, 반영은 사람이 누른 뒤에 한다."""
+    from torchflow import package
+
+    hub = app.state.hub
+    auth = {"Authorization": f"token {TOKEN}"}
+    project = tmp_path / "proj"
+    hub.save_project(project)
+    assert package.check(project) == [], "저장한 프로젝트는 리뷰 계약을 통과해야 한다"
+    assert hub.source_change() is None, "방금 우리가 쓴 파일은 변경이 아니다"
+
+    code = project / "model.py"
+    code.write_text(code.read_text(encoding="utf-8")
+                    .replace("nn.LayerNorm", "nn.BatchNorm1d", 1), encoding="utf-8")
+    change = hub.source_change()
+    assert change and change["path"] == str(code)
+    assert client.get("/api/train", headers=auth).json()["source"]["path"] == str(code)
+
+    preview = client.post("/api/reimport", headers=auth, json={"path": str(code)}).json()
+    assert preview["ok"] and preview["preview"], "무엇이 달라지는지 먼저 보여 준다"
+    before = [node.id for node in hub.store.ir.graph.nodes]
+
+    applied = client.post("/api/reimport", headers=auth,
+                          json={"path": str(code), "apply": True}).json()
+    assert applied["ok"]
+    assert [node.id for node in hub.store.ir.graph.nodes] == before, \
+        "속성 이름이 그대로면 노드 id도 그대로다(§7.5)"
+
+

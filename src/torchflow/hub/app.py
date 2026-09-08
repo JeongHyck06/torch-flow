@@ -55,6 +55,8 @@ class Hub:
         self._runs_dir = Path.cwd() / "runs"
         self.l2: dict[str, l2.RunHandle] = {}
         self.testing: set[str] = set()        # 지금 테스트 프로세스가 도는 run - 겹쳐 띄우지 않는다
+        # 우리가 쓴 파일의 sha(§7.6.2 자기 쓰기 억제). 같은 sha면 밖에서 바뀐 것이 아니다.
+        self.written: dict[str, str] = {}
         # 내려받은 데이터셋 자리. hub는 파일 유무와 다운로드만 알고 적재는 워커가 한다.
         self._data_dir = Path.cwd() / "data"
         self.downloading: set[str] = set()    # 겹쳐 받으면 두 스레드가 같은 .part를 덮어쓴다
@@ -112,9 +114,17 @@ class Hub:
             json.dumps({"positions": self.positions()}, indent=2), encoding="utf-8")
         if not self.traced:
             try:
-                (target / "model.py").write_text(
+                code = target / "model.py"
+                code.write_text(
                     codegen.generate(self.store.ir, version=__version__, source="graph.tfg.json",
                                      specs=self.node_states), encoding="utf-8")
+                # 무엇을 어떤 바이트로 썼는지 남긴다(§7.6.2). 이 sha와 다른 파일은
+                # 사람이 편집기에서 고친 것이고, 같은 sha는 우리가 쓴 것이다(자기 쓰기 억제).
+                package.write_sourcemap(target, graph=target / "graph.tfg.json",
+                                        ir=self.store.ir, unit="model-only", files=[code],
+                                        version=__version__, source="graph.tfg.json",
+                                        annotated=bool(self.node_states))
+                self.written[str(code)] = package.digest(code)
             except codegen.CodegenError:
                 pass    # 오류 블록이 있는 그래프도 저장은 된다. 코드는 고친 뒤에 나온다.
         copied = 0
@@ -136,11 +146,32 @@ class Hub:
         self._remember_project(target)
         return {"dir": str(target), "runs": copied}
 
+    def source_change(self) -> dict[str, Any] | None:
+        """프로젝트의 model.py가 밖에서 바뀌었나(§7.6.2).
+
+        우리가 쓴 바이트와 sha가 다르면 사람이 편집기에서 고친 것이다. 자동으로
+        반영하지는 않는다 - 무엇이 달라지는지 보여 주고 사람이 정한다(§7.6.2의 5).
+        """
+        if self.project_dir is None or self.store is None:
+            return None
+        code = self.project_dir / "model.py"
+        try:
+            digest = package.digest(code)
+        except OSError:
+            return None
+        if digest == self.written.get(str(code)):
+            return None
+        return {"path": str(code), "sha256": digest}
+
     def open_project(self, target: Path) -> None:
         ir = load(target / "graph.tfg.json")
         self.project_dir = target
         _fit_input_to_data(ir, self.data_dir)
         self.open(ir, target / "graph.tfg.json")
+        code = target / "model.py"
+        if code.is_file():
+            # 방금 연 파일은 기준선이다. 이 뒤의 변경만 "밖에서 고쳤다"로 본다.
+            self.written[str(code)] = package.digest(code)
         try:
             layout = json.loads((target / "layout.json").read_text(encoding="utf-8"))
             self.update_layout(layout.get("positions") or {})
@@ -1403,7 +1434,8 @@ def create_app(
         hub.sync_runs()
         return JSONResponse({"runs": [
             handle.as_dict() for handle in hub.l2.values()
-            if hub.graph_id is None or handle.extra.get("graph_id") == hub.graph_id]})
+            if hub.graph_id is None or handle.extra.get("graph_id") == hub.graph_id],
+            "source": hub.source_change()})
 
     @app.get("/api/runs")
     def list_runs() -> JSONResponse:
