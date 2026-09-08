@@ -44,14 +44,25 @@ def ir_hash(ir: ModuleGraph) -> str:
 
 
 def generate(ir: ModuleGraph, *, version: str = "", source: str = "graph/model.tfg.json",
-             specs: dict[str, Any] | None = None) -> str:
-    """IR 하나를 ``model.py`` 한 파일로."""
-    return _Writer(ir, version=version, source=source, specs=specs or {}).run()
+             specs: dict[str, Any] | None = None, shared_utils: bool = False) -> str:
+    """IR 하나를 ``model.py`` 한 파일로.
+
+    ``shared_utils``는 ``package`` 단위에서 켠다(§7.3): ``seeded_init``을 인라인하는
+    대신 같은 패키지의 ``utils``에서 가져온다. **같은 바이트**를 쓰는 것은 그대로다 -
+    두 자리 모두 ``runtime/init.py`` 하나에서 나온다.
+    """
+    return _Writer(ir, version=version, source=source, specs=specs or {},
+                   shared_utils=shared_utils).run()
 
 
 def model_params(ir: ModuleGraph) -> dict[str, Any]:
     """생성된 최상위 클래스가 받는 인자들. 학습 워커가 무엇을 넘길지 여기서 안다."""
     return _Writer(ir, version="", source="", specs={})._top_params()
+
+
+def class_name(ir: ModuleGraph) -> str:
+    """생성 코드의 최상위 클래스 이름."""
+    return _class_name(ir.graph.name)
 
 
 class CodegenError(ValueError):
@@ -63,11 +74,13 @@ class CodegenError(ValueError):
 
 
 class _Writer:
-    def __init__(self, ir: ModuleGraph, *, version: str, source: str, specs: dict[str, Any]):
+    def __init__(self, ir: ModuleGraph, *, version: str, source: str, specs: dict[str, Any],
+                 shared_utils: bool = False):
         self.ir = ir
         self.version = version
         self.source = source
         self.specs = specs
+        self.shared_utils = shared_utils
         self.used_composites: list[str] = []
 
     # 진입점
@@ -82,8 +95,9 @@ class _Writer:
             HEADER.format(version=self.version or "0", source=self.source, digest=ir_hash(self.ir)),
             "from __future__ import annotations\n",
             "import torch\nfrom torch import Tensor, nn\n",
+            "from .utils import seeded_init\n" if self.shared_utils else "",
             self._slot("imports_helpers", indent=""),
-            _seeded_init_source(),
+            "" if self.shared_utils else _seeded_init_source(),
             *composites,
             body,
         ]
@@ -132,8 +146,9 @@ class _Writer:
 
         # 기본값이 있는 인자가 먼저, 없는 것(rt 상수)은 키워드 전용으로 뒤에 둔다.
         # 파이썬 문법상 기본값 뒤에 기본값 없는 인자를 그냥 놓을 수 없다.
+        # 인자와 마찬가지로 이름 순이다. 그래야 저장 전후로 같은 코드가 나온다(§10.2).
         defaulted, required = [], []
-        for param, spec in params.items():
+        for param, spec in sorted(params.items()):
             annotation = _annotation(spec.get("type"))
             default = spec.get("default")
             if default is None:
@@ -316,26 +331,36 @@ class _Writer:
 # 표현식과 이름
 
 
+# 입력 포트의 표준 순서. `a - b`의 피연산자 순서가 엣지가 저장된 순서에 따라
+# 뒤집히면 안 된다 - 정렬된 엣지 목록의 순서는 노드 id에 좌우된다.
+PORT_ORDER = ("input", "other")
+
+
 def _incoming(scope, node_id: str, values: dict[str, str]) -> dict[str, str]:
-    """이 노드의 입력 포트 -> 변수 이름."""
+    """이 노드의 입력 포트 -> 변수 이름. 포트 이름의 표준 순서로 돌려준다."""
     found: dict[str, str] = {}
     for src, dst in scope.edges:
         target, port = split_endpoint(dst)
         if target == node_id and src in values:
             found[port] = values[src]
-    return found
+    rank = {port: index for index, port in enumerate(PORT_ORDER)}
+    return {port: found[port]
+            for port in sorted(found, key=lambda name: (rank.get(name, len(rank)), name))}
 
 
 def _call_args(incoming: dict[str, str], args: dict[str, Any]) -> str:
     """입력이 하나면 위치 인자로 - ``self.norm1(x)``가 ``self.norm1(input=x)``보다 읽힌다."""
     parts = list(incoming.values()) if len(incoming) == 1 else [
         f"{port}={variable}" for port, variable in incoming.items()]
-    parts.extend(f"{key}={_expression(value)}" for key, value in args.items())
-    return ", ".join(parts)
 
 
 def _args(args: dict[str, Any]) -> str:
-    return ", ".join(f"{key}={_expression(value)}" for key, value in args.items())
+    """인자는 **이름 순**으로 쓴다.
+
+    IR의 정본 직렬화가 키를 정렬하므로(§10.1), 정렬하지 않으면 같은 그래프가
+    저장 전후로 다른 코드를 낸다 - `torchflow check`의 바이트 일치가 그때 깨진다.
+    """
+    return ", ".join(f"{key}={_expression(args[key])}" for key in sorted(args))
 
 
 def _expression(value: Any) -> str:
@@ -350,7 +375,7 @@ def _expression(value: Any) -> str:
             return re.sub(r"\b(?:hp|p|rt)\.(\w+)", r"\1", str(inner))
         return _snake(str(inner))
     if isinstance(value, dict):
-        return "{" + ", ".join(f"{k!r}: {_expression(v)}" for k, v in value.items()) + "}"
+        return "{" + ", ".join(f"{k!r}: {_expression(value[k])}" for k in sorted(value)) + "}"
     if isinstance(value, list):
         return "[" + ", ".join(_expression(item) for item in value) + "]"
     return repr(value)

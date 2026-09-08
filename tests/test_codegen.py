@@ -42,7 +42,7 @@ def test_composite_becomes_a_class_and_instance_an_attribute():
 
     assert "class PatchEmbed(nn.Module):" in code
     assert "class MiniViT(nn.Module):" in code
-    assert "self.proj = nn.Conv2d(in_channels=in_ch, out_channels=dim" in code
+    assert "self.proj = nn.Conv2d(in_channels=in_ch, kernel_size=patch, out_channels=dim" in code
     # 컴포지트 doc은 클래스 docstring이 된다.
     assert '"""Conv patchifier followed by a flatten/transpose to token sequence."""' in code
 
@@ -61,7 +61,7 @@ def test_switch_branches_only_in_init():
 
 
 def test_repeat_becomes_a_sequential():
-    assert ("self.blocks = nn.Sequential(*[Block(dim=dim, heads=heads, attn_type=attn_type) "
+    assert ("self.blocks = nn.Sequential(*[Block(attn_type=attn_type, dim=dim, heads=heads) "
             "for _ in range(depth)])") in generated()
 
 
