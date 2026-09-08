@@ -1205,3 +1205,22 @@ def test_code_edited_outside_is_noticed_and_reimported_on_demand(app, client, tm
         "속성 이름이 그대로면 노드 id도 그대로다(§7.5)"
 
 
+def test_ast_import_opens_an_editable_graph(app, client, tmp_path):
+    """경로 1로 열면 traced가 아니다 - 바로 편집할 수 있어야 한다(§7.4)."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    source = ("from torch import nn\n\n\n"
+              "class Tiny(nn.Module):\n"
+              "    def __init__(self):\n"
+              "        super().__init__()\n"
+              "        self.fc = nn.Linear(4, 3)\n\n"
+              "    def forward(self, x):\n"
+              "        return self.fc(x)\n")
+    body = client.post("/api/import", headers=auth,
+                       json={"filename": "tiny.py", "source": source, "mode": "ast",
+                             "example": "x=B,4:f32"}).json()
+    assert body["ok"] and body["name"] == "Tiny"
+    assert body["report"]["structural_ratio"] == 1.0
+    hub = app.state.hub
+    assert not hub.traced
+    entry = next(node for node in hub.store.ir.graph.nodes if node.type == "torchflow.Input")
+    assert entry.ports_out[0].shape == ["B", 4]

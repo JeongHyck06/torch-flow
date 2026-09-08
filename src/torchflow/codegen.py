@@ -276,6 +276,16 @@ class _Writer:
             consumed = {src for src, _ in scope.edges}
             outputs = [variable for key, variable in values.items() if key not in consumed]
 
+        cell = self._cell_of(scope)
+        if cell is not None:
+            # 그래프로 펴지 못한 forward는 원문 그대로 돌려 쓴다(§7.4.2). 이 코드가
+            # 사라지면 "IR이 정본"이 사용자에게 손해가 된다(위험 A3).
+            # 본문 전체가 사용자 코드이므로 여기에는 보호 구역을 따로 두지 않는다.
+            lines = [f"    def forward({', '.join(['self', *inputs])}) -> Tensor:"]
+            lines.extend(f"        {line}" if line.strip() else ""
+                         for line in (cell.source or "pass").splitlines())
+            return lines
+
         lines = [f"    def forward({', '.join(['self', *inputs])}) -> Tensor:"]
         lines.extend(f"        {line}" for line in statements)
         lines.append(self._slot("forward_tail", indent="        "))
@@ -284,6 +294,13 @@ class _Writer:
         else:
             lines.append("        return None  # 그래프에 출력이 연결되지 않았습니다")
         return lines
+
+    def _cell_of(self, scope):
+        """이 스코프가 Cell 하나로 승격된 것이면 그 Cell. 아니면 ``None``."""
+        cells = [node for node in scope.nodes if (node.type or "").startswith("cell:")]
+        if len(cells) != 1:
+            return None
+        return self.ir.code_cells.get(cells[0].type.split(":", 1)[1])
 
     def _statement(self, node: Node, scope, attrs: dict[str, str], incoming: dict[str, str],
                    taken: set[str]) -> tuple[str, dict[str, str]]:

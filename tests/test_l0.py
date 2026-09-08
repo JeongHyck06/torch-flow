@@ -166,3 +166,61 @@ def test_train_block_passes_through_l0():
     assert result.ok, result.error
     assert result.spec("logits")["shape"] == ["B", 8]
     assert result.spec("train") is None
+
+
+def test_a_code_cell_runs_and_reports_its_shape():
+    """그래프로 못 편 forward도 shape는 나온다 (기획서 §4.5, §7.4.2).
+
+    셀 안에서 부르는 자식 모듈은 그래프가 아는 그 인스턴스다 - 인자를 고치면 셀의
+    출력 shape도 따라 바뀐다.
+    """
+    import textwrap
+
+    from torchflow import astimport
+
+    source = textwrap.dedent('''
+        from torch import nn
+
+        class Loopy(nn.Module):
+            def __init__(self, width=16, out=4):
+                super().__init__()
+                self.norm = nn.LayerNorm(width)
+                self.fc = nn.Linear(width, out)
+
+            def forward(self, x):
+                for _ in range(3):
+                    x = x + self.norm(x)
+                return self.fc(x)
+    ''')
+    ir, report = astimport.import_source(source)
+    assert report["cell"] == 1
+    entry = next(node for node in ir.graph.nodes if node.type == "torchflow.Input")
+    entry.ports_out[0].shape = ["B", 16]
+    entry.ports_out[0].dtype = "float32"
+
+    result = run_pass(ir, rt=RT)
+    assert result.ok, result.error
+    assert result.spec("loopy")["shape"] == ["B", 4]
+
+    # 셀은 코드지만 인자는 여전히 그래프의 것이다.
+    ir.hparams["out"].default = 7
+    assert run_pass(ir, rt=RT).spec("loopy")["shape"] == ["B", 7]
+
+
+def test_a_cell_that_cannot_run_lands_on_its_node():
+    """데이터에 따라 갈라지는 코드는 여기서 실패한다 - 그 실패가 곧 진단이다."""
+    from torchflow.ir import CodeCell, ModuleGraph, Port
+
+    ir = ModuleGraph.model_validate({
+        "graph": {"name": "tiny", "nodes": [
+            {"id": "IN", "label": "x", "type": "torchflow.Input",
+             "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 8], "dtype": "float32"}]},
+            {"id": "C", "label": "cell", "type": "cell:broken"},
+            {"id": "OUT", "label": "logits", "type": "torchflow.Output"}],
+            "edges": [["IN.x", "C.input"], ["C.output", "OUT.input"]]}})
+    ir.code_cells["broken"] = CodeCell(kind="CellModule", file="cells/broken.py",
+                                       ports={"in": [Port(name="x")]},
+                                       source="return x.nonexistent_method()")
+    result = run_pass(ir, rt=RT)
+    assert not result.ok
+    assert result.error["node_id"] == "C"
