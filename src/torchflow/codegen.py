@@ -369,6 +369,8 @@ def _call_args(incoming: dict[str, str], args: dict[str, Any]) -> str:
     """입력이 하나면 위치 인자로 - ``self.norm1(x)``가 ``self.norm1(input=x)``보다 읽힌다."""
     parts = list(incoming.values()) if len(incoming) == 1 else [
         f"{port}={variable}" for port, variable in incoming.items()]
+    parts.append(_args(args))
+    return ", ".join(part for part in parts if part)
 
 
 def _args(args: dict[str, Any]) -> str:

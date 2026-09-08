@@ -1434,6 +1434,7 @@ def create_app(
         다른 그래프의 run은 빼고 준다 - 워커는 계속 돌지만 이 화면의 것이 아니다.
         """
         hub.sync_runs()
+        # 코드가 밖에서 바뀌었는지도 같이 알려 준다 - 2초 폴링이 곧 감시기다(§7.6.2).
         return JSONResponse({"runs": [
             handle.as_dict() for handle in hub.l2.values()
             if hub.graph_id is None or handle.extra.get("graph_id") == hub.graph_id],

@@ -98,6 +98,7 @@ interface State {
   pushRedo: (inverse: Op) => void;
   takeRedo: () => Op | undefined;
   setDirty: (dirty: boolean) => void;
+  openPalette: (at: { x: number; y: number }, from?: string | null) => void;
   setData: (dataset: string, recipe: Recipe | null) => void;
   openData: () => void;
   closeData: () => void;

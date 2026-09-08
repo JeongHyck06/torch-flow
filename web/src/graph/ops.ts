@@ -330,6 +330,7 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
     // 서버가 거부한다 - 실행 취소는 노드부터 되돌아가므로 순서가 맞는다.
     // 몸체를 같이 실어야 이 역 op의 역(다시 실행)이 정의를 되살릴 수 있다.
     case "define_composite":
+      return op("remove_composite", { name: payload.name, body: payload.body });
     case "remove_composite":
       return payload.body === undefined
         ? null : op("define_composite", { name: payload.name, body: payload.body });
