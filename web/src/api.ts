@@ -9,14 +9,18 @@ function authHeaders(): HeadersInit {
   return { Authorization: `token ${useStore.getState().token}` };
 }
 
-export async function fetchGraph(): Promise<{ seq: number; graph: ModuleGraph }> {
+export async function fetchGraph():
+    Promise<{ seq: number; graph: ModuleGraph; dirty?: boolean; project?: string | null }> {
   const response = await fetch("/api/graph", { headers: authHeaders() });
   if (!response.ok) throw new Error(`graph: ${response.status}`);
   return response.json();
 }
 
+export interface DeviceInfo { name: string; label: string }
+
 export async function fetchHealth(): Promise<{
   kernel: { alive: boolean }; attached?: boolean; graph_open?: boolean;
+  devices?: DeviceInfo[];
 }> {
   const response = await fetch("/api/health", { headers: authHeaders() });
   return response.json();
@@ -44,7 +48,10 @@ export interface RecentGraph {
   path: string; name: string; file: string; modified: number; where: string;
 }
 
+export interface RecentProject { dir: string; name: string; opened?: number }
+
 export interface StartInfo {
+  projects?: RecentProject[];
   graph_open: boolean;
   state_dir: string;
   torch_version: string | null;
@@ -65,6 +72,21 @@ export async function fetchRegistry(): Promise<Block[]> {
   return (await response.json()).blocks ?? [];
 }
 
+/** 템플릿과 지금 그래프의 묶음 블록. 팔레트가 잎 블록 옆에 나란히 보여 준다. */
+export interface CompositeEntry {
+  name: string; source: string; doc?: string | null;
+  params: Record<string, { type: string; default?: unknown; choices?: unknown[] }>;
+  ports: { in?: { name: string; shape?: (string | number)[] }[]; out?: { name: string }[] };
+  composite: unknown;
+}
+
+export async function fetchLibrary(): Promise<{ blocks: Block[]; composites: CompositeEntry[] }> {
+  const response = await fetch("/api/registry", { headers: authHeaders() });
+  if (!response.ok) return { blocks: [], composites: [] };
+  const body = await response.json();
+  return { blocks: body.blocks ?? [], composites: body.composites ?? [] };
+}
+
 /** 빈 그래프에서 시작한다. 첫 화면의 진입점 하나(§2.2). */
 /** ``dataset``을 주면 Input/Output이 그 데이터 규격으로 깔린 채 열린다. */
 export async function newGraph(name = "untitled", dataset?: string, recipe?: Recipe | null):
@@ -80,6 +102,26 @@ export async function newGraph(name = "untitled", dataset?: string, recipe?: Rec
 /** 그래프를 닫고 첫 화면으로. 커널은 살아 있다. */
 export async function closeGraph(): Promise<{ ok?: boolean }> {
   const response = await fetch("/api/close", { method: "POST", headers: authHeaders() });
+  return response.json();
+}
+
+/** 프로젝트 폴더 하나에 그래프·좌표·생성 코드·run을 모은다. 이름을 주면 projects/<이름>/. */
+export async function saveProject(body: { name?: string; dir?: string } = {}):
+    Promise<{ ok?: boolean; dir?: string; runs?: number; error?: string }> {
+  const response = await fetch("/api/project/save", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return response.json();
+}
+
+export async function openProject(dir: string): Promise<{ ok?: boolean; name?: string; error?: string }> {
+  const response = await fetch("/api/project/open", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ dir }),
+  });
   return response.json();
 }
 
@@ -121,6 +163,15 @@ export async function openGraph(path: string): Promise<{ ok?: boolean; error?: s
   return response.json();
 }
 
+export async function deleteGraph(path: string): Promise<{ ok?: boolean; error?: string }> {
+  const response = await fetch("/api/delete", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return response.json();
+}
+
 /** 드롭된 소스를 hub가 ast로 읽는다. 실행하지 않는다. */
 export async function inspectSource(source: string):
     Promise<{ candidates?: Candidate[]; error?: string }> {
@@ -132,10 +183,17 @@ export async function inspectSource(source: string):
   return response.json();
 }
 
-/** 커널이 모델을 만들고 한 번 돌려 그래프로 편다. */
+/**
+ * .py를 그래프로 연다. 길이 둘이다(기획서 §7.4).
+ *
+ * `ast`는 코드를 읽기만 해서 **편집 가능한** 그래프를 만들고, `trace`는 커널이
+ * 모델을 실제로 만들어 한 번 돌린다(실측이지만 읽기 전용).
+ */
 export async function importSource(request: {
   filename: string; source: string; factory: string; example: string;
-}): Promise<{ ok?: boolean; error?: string; stage?: string }> {
+  mode?: "ast" | "trace"; class?: string;
+}): Promise<{ ok?: boolean; error?: string; stage?: string;
+              report?: { structural_ratio?: number; problems?: string[] } }> {
   const response = await fetch("/api/import", {
     method: "POST",
     headers: { ...authHeaders(), "Content-Type": "application/json" },
@@ -190,7 +248,7 @@ export async function evalExpression(expr: string, node: string): Promise<EvalRe
 }
 
 export async function fetchCode():
-    Promise<{ code?: string; lines?: number; ir_sha256?: string; error?: string }> {
+    Promise<{ code?: string; lines?: number; ir_sha256?: string; source?: string; error?: string }> {
   const response = await fetch("/api/code", { headers: authHeaders() });
   return response.json();
 }
@@ -212,12 +270,15 @@ export async function saveLayout(key: string, position: { x: number; y: number }
 
 export interface TrainRun {
   run_id: string; state: string; step: number; total: number;
-  device: string; alive: boolean; error: { message?: string } | null;
+  device: string; alive: boolean; error: { message?: string; detail?: string } | null;
+  cpu_retry?: boolean; retry_of?: string;
   reason?: string; nan_step?: number;
   // reported run은 hparam이 동결이라 학습 중 편집이 fork가 된다(§5.7.2).
   kind?: string; smoke?: boolean; parent_run?: string; forked_from?: string;
   // 스케줄러가 있으면 lr은 base이고 실제 lr은 base x schedule(§5.7.1).
   scheduler?: string | null; lr?: number; base_lr?: number;
+  /** 마지막 테스트의 정확도. 테스트한 적 없으면 없다. */
+  test_acc?: number;
   restart_required?: string; message?: string; ok?: boolean;
 }
 
@@ -299,7 +360,19 @@ export async function downloadDataset(name: string): Promise<{ ok?: boolean; err
   return response.json();
 }
 
+export interface DownloadProgress { bytes: number; total: number; active: boolean }
+
+/** 진행률은 디스크의 .part 크기다 - 내려받는 POST가 열려 있어도 이 GET은 따로 답한다. */
+export async function datasetProgress(name: string): Promise<DownloadProgress | null> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(name)}/progress`,
+                               { headers: authHeaders() });
+  if (!response.ok) return null;
+  return response.json();
+}
+
 export interface TrainOptions {
+  /** auto, cpu, mps, cuda, cuda:1 처럼 커널이 알려 준 이름 그대로. */
+  device?: string; retry_run?: string;
   dataset?: string; recipe?: Recipe;
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;
   scheduler?: string; warmup_steps?: number;
@@ -341,7 +414,47 @@ export async function fetchTrainStdout(runId: string, offset: number):
 export async function fetchTraining(): Promise<TrainRun[]> {
   const response = await fetch("/api/train", { headers: authHeaders() });
   if (!response.ok) return [];
-  return (await response.json()).runs ?? [];
+  const body = await response.json();
+  // 코드가 밖에서 바뀌었는지도 이 응답에 실려 온다(§7.6.2) - 따로 감시기를 두지 않는다.
+  useStore.getState().setSourceChange(body.source ?? null);
+  return body.runs ?? [];
+}
+
+/**
+ * 디스크의 코드를 다시 읽어 그래프에 반영한다(§7.5).
+ *
+ * `apply` 없이 부르면 무엇이 달라지는지만 돌려준다 - 자동 적용은 하지 않는다.
+ */
+export async function reimport(request: { path?: string; source?: string; apply?: boolean }):
+    Promise<{ ok?: boolean; error?: string; preview?: string[]; applied?: string[] }> {
+  const response = await fetch("/api/reimport", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return response.json();
+}
+
+export interface TestSample { png: string; pred: number; label: number; prob: number }
+export interface TestResult {
+  ok: boolean; error?: string; log?: string;
+  run_id?: string; dataset?: string; split?: string; count?: number; loss?: number; acc?: number;
+  step?: number; device?: string; classes?: string[];
+  per_class?: { name: string; count: number; correct: number }[];
+  confusion?: number[][]; samples?: TestSample[];
+}
+
+/** 체크포인트를 학습이 보지 않은 분할에 돌린다. 끝날 때까지 기다린다(로컬에서 몇 초). */
+export async function runTest(runId: string): Promise<TestResult> {
+  const response = await fetch(`/api/test/${runId}`, { method: "POST", headers: authHeaders() });
+  return response.json();
+}
+
+/** 마지막 테스트 결과. 아직 없으면 null. */
+export async function fetchTest(runId: string): Promise<TestResult | null> {
+  const response = await fetch(`/api/test/${runId}`, { headers: authHeaders() });
+  if (!response.ok) return null;
+  return response.json();
 }
 
 export interface DetailPanel {

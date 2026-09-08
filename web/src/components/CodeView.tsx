@@ -17,6 +17,7 @@ export function CodeView() {
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState(0);
+  const [source, setSource] = useState("graph/model.tfg.json");
 
   useEffect(() => {
     let cancelled = false;
@@ -25,6 +26,7 @@ export function CodeView() {
       setError(body.error ?? null);
       setCode(body.code ?? "");
       setLines(body.lines ?? 0);
+      setSource(body.source ?? "graph/model.tfg.json");
     }).catch((reason) => setError(String(reason)));
     return () => { cancelled = true; };
   }, [seq, graph]);
@@ -33,7 +35,7 @@ export function CodeView() {
     <section className="codeview" aria-label="생성 코드">
       <div className="codeview__bar mono">
         <span>model.py · {lines}줄 · 읽기 전용</span>
-        <span className="muted">torchflow codegen graph/model.tfg.json --out model.py</span>
+        <span className="muted">torchflow codegen {source} --out model.py</span>
       </div>
       {error
         ? <p className="mono codeview__error">{error}</p>

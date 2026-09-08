@@ -179,8 +179,8 @@ def test_a_stopped_run_leaves_a_checkpoint(tmp_path):
                                                     "scheduler", "rng", "data_rng"}
 
 
-def test_a_dataset_job_logs_accuracy_and_validation(tmp_path):
-    """내장 데이터셋이면 train acc를 매 로그에, test 분할의 val_acc를 eval_every마다 적는다."""
+def make_mnist_job(tmp_path: Path) -> tuple[dict, Path]:
+    """가짜 MNIST 위의 한 층짜리 분류기. 데이터셋 경로를 끝까지 타는 가장 작은 job."""
     from test_datasets import write_fake_mnist
     from torchflow.ir import ModuleGraph
 
@@ -205,8 +205,50 @@ def test_a_dataset_job_logs_accuracy_and_validation(tmp_path):
            "input_shape": ["B", 1, 28, 28], "num_classes": 10,
            "dataset": "mnist", "data_dir": str(tmp_path / "data"), "eval_every": 2,
            "batch": 4, "steps": 4, "lr": 1e-2, "log_every": 1, "seed": 0, "device": "cpu"}
+    return job, run_dir
+
+
+def test_a_dataset_job_logs_accuracy_and_validation(tmp_path):
+    """내장 데이터셋이면 train acc를 매 로그에, test 분할의 val_acc를 eval_every마다 적는다."""
+    job, run_dir = make_mnist_job(tmp_path)
     train(job, run_dir)
 
     scalars = events(run_dir, "scalar")
     assert all("acc" in event for event in scalars if "loss" in event)
     assert [event["step"] for event in scalars if "val_acc" in event] == [2, 4]
+
+
+def test_test_mode_scores_the_checkpoint_on_the_held_out_split(tmp_path):
+    """--test는 ckpt를 학습이 보지 않은 분할에 돌려 정확도·혼동 행렬·샘플 그림을 남긴다."""
+    from torchflow.worker.__main__ import test as run_test
+
+    job, run_dir = make_mnist_job(tmp_path)
+    train(job, run_dir)
+    result = run_test(job, run_dir)
+
+    assert result["ok"] and result["split"] == "test" and result["count"] == 8
+    assert sum(map(sum, result["confusion"])) == 8 and len(result["per_class"]) == 10
+    assert 0.0 <= result["acc"] <= 1.0 and result["samples"] and result["samples"][0]["png"]
+    assert json.loads((run_dir / "test.json").read_text(encoding="utf-8"))["ok"]
+
+
+def test_test_mode_makes_a_holdout_for_the_synthetic_task(tmp_path):
+    """합성 과제는 test 분할이 없다 - 같은 teacher에 학습이 보지 않은 입력을 뽑아 잰다."""
+    from torchflow.worker.__main__ import test as run_test
+
+    job, run_dir = make_job(tmp_path, steps=2)
+    train(job, run_dir)
+    result = run_test(job, run_dir)
+    assert result["ok"] and result["split"] == "합성 홀드아웃" and result["count"] == 1000
+
+
+def test_a_crash_in_the_loop_leaves_a_failed_status(tmp_path):
+    """shape 불일치처럼 첫 forward에서 죽어도 events.jsonl은 failed로 끝나야 hub가 안다."""
+    job, run_dir = make_job(tmp_path, input_shape=["B", 2, 32, 32])    # 3채널 모델에 2채널 입력
+
+    with pytest.raises(RuntimeError):
+        train(job, run_dir)
+
+    assert [event["state"] for event in events(run_dir, "status")][-1] == "failed"
+    error = events(run_dir, "error")[-1]
+    assert error["stage"] == "train" and "RuntimeError" in error["message"]

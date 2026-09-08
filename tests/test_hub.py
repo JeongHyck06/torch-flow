@@ -179,7 +179,8 @@ def test_layout_survives_a_restart(app, client, tmp_path):
                 json={"positions": {"n1": {"x": 5, "y": 6}}})
     restarted = create_app(MINIVIT, state_dir=app.state.hub.state_dir, token=TOKEN)
     try:
-        assert restarted.state.hub.layout["positions"]["n1"] == {"x": 5, "y": 6}
+        # 좌표는 그래프별로 산다 - 같은 그래프를 다시 열면 그대로다.
+        assert restarted.state.hub.positions()["n1"] == {"x": 5, "y": 6}
     finally:
         restarted.state.hub.kernel.stop()
         restarted.state.hub.l1.stop()
@@ -190,7 +191,7 @@ def test_corrupt_layout_falls_back_to_auto_placement(app, tmp_path):
     app.state.hub.layout_path.write_text("{broken", encoding="utf-8")
     reopened = create_app(MINIVIT, state_dir=app.state.hub.state_dir, token=TOKEN)
     try:
-        assert reopened.state.hub.layout == {"positions": {}}
+        assert reopened.state.hub.positions() == {}
     finally:
         reopened.state.hub.kernel.stop()
         reopened.state.hub.l1.stop()
@@ -214,7 +215,7 @@ def test_start_endpoint_lists_templates_and_marks_missing_ones(client):
     payload = client.get("/api/start", headers={"Authorization": f"token {TOKEN}"}).json()
     templates = {entry["id"]: entry for entry in payload["templates"]}
     assert templates["resnet18"]["available"] is True
-    assert templates["resnet18"]["metric"] == "≈95.0 % top-1"
+    assert templates["resnet18"]["metric"] == "문헌값 ≈95.0 % · 앱에서 미검증"
     assert templates["mnist_cnn"]["available"] is True
     # 아직 없는 템플릿을 있는 척하지 않는다.
     assert templates["nanogpt"]["available"] is False
@@ -341,6 +342,32 @@ def test_new_graph_starts_empty_and_saves(tmp_path):
         saved = client.post("/api/save", headers=auth, json={"path": str(target)}).json()
         assert saved["ok"] and saved["problems"] == []
         assert Path(saved["path"]).is_file()
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()
+
+
+def test_delete_removes_only_a_listed_graph(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        client.post("/api/new", headers=auth, json={"name": "scratch"})
+        target = tmp_path / "graph" / "scratch.tfg.json"
+        client.post("/api/save", headers=auth, json={"path": str(target)})
+        client.post("/api/close", headers=auth)
+        assert [e["file"] for e in client.get("/api/start", headers=auth).json()["recent"]] == ["scratch.tfg.json"]
+
+        # 목록에 없는 파일은 경로를 알아도 못 지운다.
+        other = tmp_path / "keep.txt"
+        other.write_text("x")
+        assert client.post("/api/delete", headers=auth, json={"path": str(other)}).status_code == 404
+        assert other.is_file()
+
+        assert client.post("/api/delete", headers=auth, json={"path": str(target)}).json()["ok"]
+        assert not target.exists()
+        assert client.get("/api/start", headers=auth).json()["recent"] == []
     finally:
         app.state.hub.kernel.stop()
         app.state.hub.l1.stop()
@@ -687,11 +714,27 @@ def test_training_on_a_dataset_checks_the_input_spec(app, client, tmp_path):
     auth = {"Authorization": f"token {TOKEN}"}
     app.state.hub.data_dir = tmp_path / "data"
     listed = client.get("/api/datasets", headers=auth).json()["datasets"]
-    assert [(entry["name"], entry["available"]) for entry in listed] == [("mnist", False)]
+    assert [(entry["name"], entry["available"]) for entry in listed] == [("mnist", False), ("cifar10", False)]
 
     response = client.post("/api/train", headers=auth, json={"dataset": "mnist", "steps": 2})
     assert response.status_code == 400 and "1, 28, 28" in response.json()["error"]
     assert client.post("/api/datasets/nope/download", headers=auth).status_code == 404
+
+
+def test_download_progress_reads_the_partial_file_and_refuses_a_second_download(app, client, tmp_path):
+    """진행률은 디스크만 본다. 겹쳐 받으면 두 스레드가 같은 .part를 덮어쓰므로 409로 막는다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.data_dir = tmp_path / "data"
+    (tmp_path / "data" / "cifar10").mkdir(parents=True)
+    (tmp_path / "data" / "cifar10" / "cifar-10-python.tar.gz.part").write_bytes(b"x" * 4096)
+
+    body = client.get("/api/datasets/cifar10/progress", headers=auth).json()
+    assert body == {"bytes": 4096, "total": 163 * 1024 * 1024, "active": False}
+    assert client.get("/api/datasets/nope/progress", headers=auth).status_code == 404
+
+    app.state.hub.downloading.add("cifar10")
+    assert client.get("/api/datasets/cifar10/progress", headers=auth).json()["active"] is True
+    assert client.post("/api/datasets/cifar10/download", headers=auth).status_code == 409
 
 
 def test_a_new_graph_can_start_from_a_dataset(tmp_path):
@@ -705,7 +748,7 @@ def test_a_new_graph_can_start_from_a_dataset(tmp_path):
         app.state.hub.data_dir = tmp_path / "data"
         write_image_folder(tmp_path / "data")
         names = [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]]
-        assert names == ["mnist", "shapes"]
+        assert names == ["mnist", "cifar10", "shapes"]
 
         assert client.post("/api/new", headers=auth, json={"dataset": "shapes"}).json()["name"] == "shapes"
         graph = client.get("/api/graph", headers=auth).json()["graph"]["graph"]
@@ -770,7 +813,7 @@ def test_dropped_files_land_under_data(app, client, tmp_path):
     response = client.put("/api/datasets/table/files?path=t.csv", headers=auth, content=body)
     assert response.status_code == 200 and (tmp_path / "data" / "table" / "t.csv").read_bytes() == body
     assert client.put("/api/datasets/table/files?path=../evil.csv", headers=auth, content=body).status_code == 400
-    assert [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]] == ["mnist", "table"]
+    assert [entry["name"] for entry in client.get("/api/datasets", headers=auth).json()["datasets"]] == ["mnist", "cifar10", "table"]
 
 
 def test_train_block_feeds_the_job(app, client, tmp_path, monkeypatch):
@@ -822,3 +865,384 @@ def test_train_block_feeds_the_job(app, client, tmp_path, monkeypatch):
     smoke = client.post("/api/train", headers=auth, json={"smoke": True}).json()
     assert smoke["ok"], smoke
     assert started["job"]["steps"] == 20 and started["job"]["optimizer"] == "sgd"
+
+
+def test_test_endpoint_runs_the_worker_and_caches_the_result(app, client, trained, monkeypatch):
+    """테스트는 워커의 --test 프로세스가 돌고 hub는 test.json을 돌려준다. 다시 열면 캐시다."""
+    run_id, handle, auth = trained
+    assert client.get(f"/api/test/{run_id}", headers=auth).status_code == 404
+
+    def fake_run(command, **kwargs):
+        assert "--test" in command
+        (handle.directory / "test.json").write_text('{"ok": true, "acc": 0.5}', encoding="utf-8")
+
+    monkeypatch.setattr("torchflow.hub.runs.subprocess.run", fake_run)
+    body = client.post(f"/api/test/{run_id}", headers=auth).json()
+    assert body["ok"] and body["acc"] == 0.5
+    assert client.get(f"/api/test/{run_id}", headers=auth).json()["acc"] == 0.5
+
+    (handle.directory / "ckpt.pt").unlink()
+    assert client.post(f"/api/test/{run_id}", headers=auth).status_code == 400
+
+
+def test_training_refuses_a_model_with_shape_errors(app, client):
+    """모양 계산이 실패한 블록이 있으면 워커를 띄우지 않고 블록 이름을 댄다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    hub = app.state.hub
+    node = next(node for node in hub.store.ir.graph.nodes if node.type is None)
+    hub.node_states[node.id] = {"state": "error", "error": {"kind": "shape", "message": "boom"}}
+
+    response = client.post("/api/train", headers=auth, json={})
+
+    assert response.status_code == 400
+    assert node.label in response.json()["error"] and response.json()["broken"] == [node.label]
+    assert not hub.l2
+
+
+def test_dirty_survives_a_reload(tmp_path):
+    """저장 여부는 hub가 안다 - 새로고침해도 '저장 안 됨'이 남는다."""
+    app = create_app(state_dir=tmp_path / "state", token=TOKEN)
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        client.post("/api/new", headers=auth, json={"name": "scratch"})
+        assert client.get("/api/graph", headers=auth).json()["dirty"] is False
+        client.post("/api/ops", headers=auth, json={
+            "client_id": "c", "tmp_seq": 1, "kind": "rename",
+            "payload": {"name": "renamed", "previous": "scratch"}})
+        assert client.get("/api/graph", headers=auth).json()["dirty"] is True
+        assert client.post("/api/save", headers=auth,
+                           json={"path": str(tmp_path / "graph" / "renamed.tfg.json")}).status_code == 200
+        assert client.get("/api/graph", headers=auth).json()["dirty"] is False
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()
+
+
+def test_a_dead_worker_ends_as_failed(app, tmp_path):
+    """워커가 traceback으로 죽어 events.jsonl이 running에서 끝나도 화면은 failed를 본다."""
+    import subprocess
+
+    hub = app.state.hub
+    directory = tmp_path / "runs" / "run-dead"
+    directory.mkdir(parents=True)
+    (directory / "events.jsonl").write_text(
+        '{"kind": "status", "state": "running", "steps": 500, "step": 0}\n', encoding="utf-8")
+    process = subprocess.Popen([sys.executable, "-c", "raise SystemExit(1)"])
+    process.wait()
+    handle = l2.RunHandle(run_id="run-dead", directory=directory, process=process)
+    hub.l2["run-dead"] = handle
+    hub.tracker.ensure_run("run-dead", kind="exploratory", name="x", graph_id="g", manifest={})
+
+    hub.sync_runs()
+
+    assert handle.state == "failed" and "exit 1" in handle.error["message"]
+    # 끝 상태를 남긴 run이나 아직 도는 run은 건드리지 않는다.
+    alive = l2.RunHandle(run_id="run-alive", directory=directory)
+    alive.state = "running"
+    (directory / "heartbeat").write_text("now", encoding="utf-8")
+    hub.l2["run-alive"] = alive
+    hub.sync_runs()
+    assert alive.state == "running"
+
+
+def test_a_project_folder_holds_graph_layout_code_and_runs(tmp_path, monkeypatch):
+    """프로젝트 저장은 폴더 하나에 그래프·좌표·생성 코드·run을 모으고, 열면 그대로 돌아온다."""
+    monkeypatch.chdir(tmp_path)
+    app = create_app(MINIVIT, state_dir=tmp_path / "state", token=TOKEN, rt={"num_classes": 10})
+    auth = {"Authorization": f"token {TOKEN}"}
+    try:
+        client = TestClient(app, base_url="http://127.0.0.1:8765")
+        hub = app.state.hub
+        # 이 그래프의 run 하나 (워커 없이 폴더만).
+        run_dir = hub.runs_dir / "run-one"
+        run_dir.mkdir(parents=True)
+        (run_dir / "job.json").write_text(json.dumps({"graph_id": hub.graph_id, "steps": 3}), encoding="utf-8")
+        (run_dir / "events.jsonl").write_text('{"kind": "status", "state": "done", "steps": 3, "step": 3}\n',
+                                              encoding="utf-8")
+        client.post("/api/layout", headers=auth, json={"positions": {"01J9Q4B2": {"x": 10, "y": 20}}})
+
+        saved = client.post("/api/project/save", headers=auth, json={"name": "my-vit"}).json()
+        folder = Path(saved["dir"])
+        assert saved["ok"] and folder == tmp_path / "projects" / "my-vit"
+        assert (folder / "graph.tfg.json").is_file() and (folder / "layout.json").is_file()
+        assert (folder / "model.py").is_file() and (folder / "runs" / "run-one" / "job.json").is_file()
+        assert client.get("/api/graph", headers=auth).json()["dirty"] is False
+        assert client.get("/api/graph", headers=auth).json()["project"] == str(folder)
+
+        # 새 run은 프로젝트 폴더 안에 생긴다.
+        assert hub.runs_dir == folder / "runs"
+
+        # 다른 그래프로 갔다가 프로젝트를 열면 좌표와 run이 돌아온다.
+        client.post("/api/new", headers=auth, json={"name": "scratch"})
+        opened = client.post("/api/project/open", headers=auth, json={"dir": str(folder)}).json()
+        assert opened["ok"] and opened["name"] == "MiniViT"
+        assert client.get("/api/layout", headers=auth).json()["positions"]["01J9Q4B2"] == {"x": 10, "y": 20}
+        assert "run-one" in {run["run_id"] for run in client.get("/api/train", headers=auth).json()["runs"]}
+        recent = client.get("/api/start", headers=auth).json()["projects"]
+        assert recent and recent[0]["dir"] == str(folder) and recent[0]["name"] == "MiniViT"
+        assert client.post("/api/project/open", headers=auth, json={"dir": str(tmp_path / "nope")}).status_code == 404
+    finally:
+        app.state.hub.kernel.stop()
+        app.state.hub.l1.stop()
+
+
+def test_opening_a_template_fits_the_input_to_its_data(app, client, tmp_path):
+    """템플릿이 데이터를 달고 오면 Input 규격은 그 데이터를 따른다(ResNet-18은 224로 그려져 있다)."""
+    from test_datasets import write_fake_cifar
+
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.data_dir = tmp_path / "data"
+    write_fake_cifar(tmp_path / "data")
+    templates = {entry["id"]: entry for entry in client.get("/api/start", headers=auth).json()["templates"]}
+    assert client.post("/api/open", headers=auth, json={"path": templates["resnet18"]["path"]}).status_code == 200
+    graph = client.get("/api/graph", headers=auth).json()["graph"]["graph"]
+    entry = next(node for node in graph["nodes"] if node["type"] == "torchflow.Input")
+    assert entry["ports_out"][0]["shape"] == ["B", 3, 32, 32]
+
+
+def test_registry_lists_template_composites(client):
+    """팔레트가 꺼내 쓰는 묶음 블록: ResNet BasicBlock이 정의째 실려 온다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    composites = {entry["name"]: entry for entry in client.get("/api/registry", headers=auth).json()["composites"]}
+    block = composites["BasicBlock"]
+    assert block["source"].startswith("ResNet-18") and set(block["params"]) == {"in_ch", "out_ch", "stride", "shortcut"}
+    assert block["ports"]["in"][0]["name"] == "x" and block["composite"]["nodes"]
+
+
+# ── 학습 실패 안내와 CPU 재실행 (초보자 복구 경로) ──────────────────────────────
+
+MPS_UNSUPPORTED = ("RuntimeError: Adaptive pool MPS: input sizes must be divisible by output "
+                   "sizes. Non-divisible input sizes are not implemented on MPS device yet.")
+
+
+@pytest.mark.parametrize("message, retryable", [
+    (MPS_UNSUPPORTED, True),
+    ("NotImplementedError: The operator 'aten::_foo' is not currently implemented for the MPS device", True),
+    # 아래는 전부 CPU로 옮긴다고 풀리지 않는다 - 모든 실패를 MPS 탓으로 돌리면 안 된다.
+    ("RuntimeError: mat1 and mat2 shapes cannot be multiplied (64x1568 and 128x10)", False),
+    ("torch.OutOfMemoryError: CUDA out of memory", False),
+    ("RuntimeError: Placeholder storage has not been allocated on MPS device!", False),
+    ("ValueError: num_samples should be a positive integer", False),
+])
+def test_only_mps_unsupported_ops_offer_a_cpu_retry(message, retryable):
+    assert l2.cpu_retryable({"message": message}) is retryable
+    assert l2.cpu_retryable(None) is False
+
+
+def test_the_worker_traceback_reaches_the_failure_card(tmp_path):
+    """워커가 보낸 traceback이 error.detail로 남아야 '오류 원문 보기'가 한 줄이 아니다."""
+    from torchflow.hub.tracker import Tracker
+
+    directory = tmp_path / "run"
+    directory.mkdir()
+    tracker = Tracker(tmp_path / "runs.db")
+    tracker.ensure_run("r")
+    handle = l2.RunHandle(run_id="r", directory=directory)
+    (directory / "events.jsonl").write_text(
+        json.dumps({"kind": "status", "state": "running", "steps": 500, "step": 0}) + "\n"
+        + json.dumps({"kind": "error", "stage": "train", "message": MPS_UNSUPPORTED,
+                      "traceback": "Traceback (most recent call last):\n  File x\n" + MPS_UNSUPPORTED}) + "\n"
+        + json.dumps({"kind": "status", "state": "failed"}) + "\n", encoding="utf-8")
+
+    l2.merge(handle, tracker)
+    tracker.close()
+
+    body = handle.as_dict()
+    assert body["state"] == "failed" and body["cpu_retry"] is True
+    assert body["error"]["message"] == MPS_UNSUPPORTED
+    assert "Traceback (most recent call last)" in body["error"]["detail"]
+
+
+def test_a_cpu_retry_keeps_the_model_and_settings_and_only_swaps_the_device(tmp_path, monkeypatch):
+    """재실행은 편집 중인 그래프가 아니라 실패한 run이 저장해 둔 job·코드를 그대로 쓴다."""
+    monkeypatch.setattr("torchflow.hub.runs._spawn", lambda directory, python=None: None)
+    root = tmp_path / "runs"
+    failed_dir = root / "run-failed"
+    failed_dir.mkdir(parents=True)
+    job = {"class_name": "DigitCNN3Conv", "model_args": {"seed": 0}, "dataset": "mnist",
+           "batch": 64, "steps": 500, "lr": 0.001, "weight_decay": 0.0001, "optimizer": "adamw",
+           "seed": 0, "device": "auto", "resume": "ckpt.pt", "code": str(failed_dir / "model.py")}
+    (failed_dir / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    (failed_dir / "model.py").write_text("# 실패한 그 모델\n", encoding="utf-8")
+    handle = l2.RunHandle(run_id="run-failed", directory=failed_dir)
+    handle.extra.update({"graph_id": "g1", "kind": "exploratory", "smoke": False})
+
+    child = l2.retry_cpu(handle, root)
+    written = json.loads((child.directory / "job.json").read_text(encoding="utf-8"))
+
+    assert written["device"] == "cpu"
+    # 모델·데이터·학습 설정은 글자 하나 바뀌지 않는다.
+    for key in ("class_name", "model_args", "dataset", "batch", "steps", "lr",
+                "weight_decay", "optimizer", "seed"):
+        assert written[key] == job[key]
+    # 체크포인트 재개는 떼어 낸다 - 실패한 run에는 이어 갈 체크포인트가 없다.
+    assert "resume" not in written
+    # 코드는 복사본이되 내용은 같고, 경로는 새 run 것이어야 원본을 지워도 돈다.
+    assert (child.directory / "model.py").read_text(encoding="utf-8") == "# 실패한 그 모델\n"
+    assert written["code"] == str(child.directory / "model.py")
+    assert child.extra["retry_of"] == "run-failed" and child.extra["graph_id"] == "g1"
+
+
+def test_one_runs_failure_does_not_leak_into_another_run(tmp_path):
+    """run마다 상태와 오류가 따로 산다 - 실패 카드가 엉뚱한 run에 붙으면 안 된다."""
+    from torchflow.hub.tracker import Tracker
+
+    tracker = Tracker(tmp_path / "runs.db")
+    handles = {}
+    for name, state in (("run-bad", "failed"), ("run-good", "running")):
+        directory = tmp_path / name
+        directory.mkdir()
+        tracker.ensure_run(name)
+        handles[name] = l2.RunHandle(run_id=name, directory=directory)
+        (directory / "heartbeat").write_text("now", encoding="utf-8")
+    (handles["run-bad"].directory / "events.jsonl").write_text(
+        json.dumps({"kind": "error", "stage": "train", "message": MPS_UNSUPPORTED}) + "\n"
+        + json.dumps({"kind": "status", "state": "failed"}) + "\n", encoding="utf-8")
+    (handles["run-good"].directory / "events.jsonl").write_text(
+        json.dumps({"kind": "status", "state": "running", "steps": 500, "step": 7}) + "\n",
+        encoding="utf-8")
+    for handle in handles.values():
+        l2.merge(handle, tracker)
+    tracker.close()
+
+    bad, good = handles["run-bad"].as_dict(), handles["run-good"].as_dict()
+    assert bad["state"] == "failed" and bad["cpu_retry"] is True
+    assert good["state"] == "running" and good["step"] == 7
+    assert good["error"] is None and good["cpu_retry"] is False
+
+
+def test_a_killed_hub_leaves_the_worker_training(app, tmp_path):
+    """카오스 테스트: hub를 SIGKILL해도 학습은 계속되고, 다시 뜬 hub가 곡선을 잃지 않는다.
+
+    hub와 워커를 잇는 것은 파일 두 개뿐이라는 설계(§5.5.3)가 실제로 성립하는지 본다.
+    여기서 hub 역할은 워커를 띄우고 잠드는 자식 프로세스가 대신한다 - pytest 자신을
+    죽일 수는 없으니.
+    """
+    import os
+    import signal
+    import subprocess
+    import sys
+    import textwrap
+    import time
+
+    pytest.importorskip("torch")
+    from test_worker import make_job
+
+    from torchflow import codegen
+    from torchflow.ir import load
+
+    job, _ = make_job(tmp_path / "seed", steps=40, log_every=1)
+    runs_dir = tmp_path / "runs"
+    (tmp_path / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    (tmp_path / "model.py").write_text(codegen.generate(load(MINIVIT), version="0.0.1"),
+                                       encoding="utf-8")
+
+    script = tmp_path / "fake_hub.py"
+    script.write_text(textwrap.dedent(f"""
+        import json, time
+        from pathlib import Path
+        from torchflow.hub import runs as l2
+        here = Path({str(tmp_path)!r})
+        handle = l2.start(run_id="chaos", root=here / "runs",
+                          job=json.loads((here / "job.json").read_text()),
+                          code=(here / "model.py").read_text())
+        print(handle.process.pid, flush=True)
+        time.sleep(600)
+    """), encoding="utf-8")
+
+    parent = subprocess.Popen([sys.executable, "-u", str(script)],
+                              stdout=subprocess.PIPE, text=True)
+    worker_pid = int(parent.stdout.readline())
+    parent.send_signal(signal.SIGKILL)
+    assert parent.wait(timeout=10) != 0
+
+    os.kill(worker_pid, 0)          # 살아 있지 않으면 ProcessLookupError로 여기서 터진다
+
+    events = runs_dir / "chaos" / "events.jsonl"
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        lines = events.read_text(encoding="utf-8").splitlines() if events.exists() else []
+        if any(json.loads(line).get("state") == "done" for line in lines):
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail("hub가 죽은 뒤 워커가 학습을 끝내지 못했다")
+
+    hub = app.state.hub
+    hub.runs_dir = runs_dir
+    assert hub.recover() == ["chaos"]
+    assert hub.l2["chaos"].state == "done"
+    assert [step for step, _ in hub.tracker.curve("chaos", "loss")] == list(range(1, 41))
+
+
+def test_code_edited_outside_is_noticed_and_reimported_on_demand(app, client, tmp_path):
+    """§7.6.2: 우리가 쓴 sha와 다르면 알리고, 반영은 사람이 누른 뒤에 한다."""
+    from torchflow import package
+
+    hub = app.state.hub
+    auth = {"Authorization": f"token {TOKEN}"}
+    project = tmp_path / "proj"
+    hub.save_project(project)
+    assert package.check(project) == [], "저장한 프로젝트는 리뷰 계약을 통과해야 한다"
+    assert hub.source_change() is None, "방금 우리가 쓴 파일은 변경이 아니다"
+
+    code = project / "model.py"
+    code.write_text(code.read_text(encoding="utf-8")
+                    .replace("nn.LayerNorm", "nn.BatchNorm1d", 1), encoding="utf-8")
+    change = hub.source_change()
+    assert change and change["path"] == str(code)
+    assert client.get("/api/train", headers=auth).json()["source"]["path"] == str(code)
+
+    preview = client.post("/api/reimport", headers=auth, json={"path": str(code)}).json()
+    assert preview["ok"] and preview["preview"], "무엇이 달라지는지 먼저 보여 준다"
+    before = [node.id for node in hub.store.ir.graph.nodes]
+
+    applied = client.post("/api/reimport", headers=auth,
+                          json={"path": str(code), "apply": True}).json()
+    assert applied["ok"]
+    assert [node.id for node in hub.store.ir.graph.nodes] == before, \
+        "속성 이름이 그대로면 노드 id도 그대로다(§7.5)"
+
+
+def test_ast_import_opens_an_editable_graph(app, client, tmp_path):
+    """경로 1로 열면 traced가 아니다 - 바로 편집할 수 있어야 한다(§7.4)."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    source = ("from torch import nn\n\n\n"
+              "class Tiny(nn.Module):\n"
+              "    def __init__(self):\n"
+              "        super().__init__()\n"
+              "        self.fc = nn.Linear(4, 3)\n\n"
+              "    def forward(self, x):\n"
+              "        return self.fc(x)\n")
+    body = client.post("/api/import", headers=auth,
+                       json={"filename": "tiny.py", "source": source, "mode": "ast",
+                             "example": "x=B,4:f32"}).json()
+    assert body["ok"] and body["name"] == "Tiny"
+    assert body["report"]["structural_ratio"] == 1.0
+    hub = app.state.hub
+    assert not hub.traced
+    entry = next(node for node in hub.store.ir.graph.nodes if node.type == "torchflow.Input")
+    assert entry.ports_out[0].shape == ["B", 4]
+
+
+def test_the_training_device_list_comes_from_the_kernel(app, client):
+    """원격 GPU 서버에서 hub를 띄우면 이 목록이 그 서버의 카드가 된다."""
+    from torchflow import protocol as proto
+
+    hub = app.state.hub
+    hub.kernel.ready = proto.Ready(device="cuda:0", devices=["cuda:0", "cuda:1"],
+                                   torch_version="2.8.0")
+    assert hub.devices() == [{"name": "cuda:0", "label": "GPU 0 (cuda)"},
+                             {"name": "cuda:1", "label": "GPU 1 (cuda)"}]
+    body = client.get("/api/health", headers={"Authorization": f"token {TOKEN}"}).json()
+    assert body["devices"][1]["name"] == "cuda:1"
+
+
+def test_training_refuses_a_device_the_worker_cannot_parse(app, client):
+    auth = {"Authorization": f"token {TOKEN}"}
+    body = client.post("/api/train", headers=auth, json={"device": "gpu0", "steps": 1}).json()
+    assert "학습 장치" in body["error"]
+    # 카드가 여럿인 서버에서 두 번째 카드를 고르는 것은 정상이다 - 장치 때문에 막히지 않는다.
+    second = client.post("/api/train", headers=auth, json={"device": "cuda:1", "steps": 1}).json()
+    assert "학습 장치" not in str(second.get("error", ""))

@@ -14,6 +14,7 @@ from pathlib import Path
 import click
 
 from . import __version__
+from .package import BACKENDS as PACKAGE_BACKENDS
 from .paper import PRESETS
 
 
@@ -132,14 +133,22 @@ def probe(graph: str, batch: int, objective: str, rt: tuple[str, ...]) -> None:
 @main.command()
 @click.argument("graph", type=click.Path(exists=True, dir_okay=False))
 @click.option("--out", type=click.Path(dir_okay=False), default=None,
-              help="쓸 파일. 없으면 표준출력으로")
+              help="쓸 파일. 없으면 표준출력으로 (model-only)")
+@click.option("--unit", type=click.Choice(["model-only", "package"]), default="model-only",
+              show_default=True, help="출력 단위 (§7.3)")
+@click.option("--target", type=click.Path(file_okay=False), default=None,
+              help="package 단위가 풀릴 폴더")
+@click.option("--backend", type=click.Choice(list(PACKAGE_BACKENDS)),
+              default="argparse-dataclass", show_default=True, help="설정 백엔드")
 @click.option("--annotate", is_flag=True, help="L0를 돌려 문장 끝에 shape 주석을 단다 (torch 필요)")
 @click.option("--rt", multiple=True)
-def codegen(graph: str, out: str | None, annotate: bool, rt: tuple[str, ...]) -> None:
-    """그래프를 PyTorch 코드로 옮긴다 (§7.2, model-only)."""
+def codegen(graph: str, out: str | None, unit: str, target: str | None, backend: str,
+            annotate: bool, rt: tuple[str, ...]) -> None:
+    """그래프를 PyTorch 코드로 옮긴다 (§7.2, §7.3)."""
     from pathlib import Path
 
     from . import codegen as generator
+    from . import package as packager
     from .ir import load
 
     ir = load(graph)
@@ -150,6 +159,17 @@ def codegen(graph: str, out: str | None, annotate: bool, rt: tuple[str, ...]) ->
         result = run_pass(ir, rt=_kv(rt))
         specs = {report.node_id: {"spec": report.spec} for report in result.nodes}
 
+    if unit == "package":
+        if not target:
+            raise click.UsageError("package 단위에는 --target 폴더가 필요합니다")
+        written = packager.build(ir, target, version=__version__, source=graph, specs=specs,
+                                 backend=backend, graph_path=graph)
+        for path in written:
+            click.echo(f"  {path}")
+        click.echo(f"  {len(written)}개 파일 · ir {generator.ir_hash(ir)[:16]} → {target}")
+        click.echo(f"  돌려 보기: cd {target} && ./reproduce.sh")
+        return
+
     code = generator.generate(ir, version=__version__, source=graph, specs=specs)
     if out is None:
         click.echo(code)
@@ -157,7 +177,196 @@ def codegen(graph: str, out: str | None, annotate: bool, rt: tuple[str, ...]) ->
     path = Path(out)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(code, encoding="utf-8")
+    # 소스맵은 프로젝트 뿌리(지금 폴더)에 남긴다 - CI의 torchflow check가 여기서 읽는다(§7.6.2).
+    packager.write_sourcemap(Path.cwd(), graph=graph, ir=ir, unit="model-only", files=[path],
+                             version=__version__, source=graph)
     click.echo(f"  {len(code.splitlines())} 줄 · ir {generator.ir_hash(ir)[:16]} → {path}")
+
+
+@main.command("import")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", type=click.Path(dir_okay=False), default=None,
+              help="쓸 그래프 파일 (.tfg.json). 없으면 요약만 찍는다")
+@click.option("--class", "class_name", default=None, help="최상위 클래스 (없으면 짐작)")
+@click.option("--example-input", "example", default="",
+              help="Input 규격. 예: x=B,3,32,32:f32")
+@click.option("--merge", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="재import: 이 그래프에서 라벨과 프로브를 물려받는다 (§7.5)")
+def import_code(file: str, out: str | None, class_name: str | None, example: str,
+                merge: str | None) -> None:
+    """.py를 읽어(실행하지 않고) 편집 가능한 그래프로 만든다 (§7.4 경로 1)."""
+    from . import astimport
+    from .ir import load, save, validate
+    from .pysource import parse_example_spec
+
+    source = Path(file).read_text(encoding="utf-8")
+    try:
+        ir, report = astimport.import_source(source, filename=file, name=class_name,
+                                             previous=load(merge) if merge else None)
+    except astimport.AstImportError as exc:
+        raise click.ClickException(str(exc)) from None
+
+    if example:
+        for node in ir.graph.nodes:
+            if (node.type or "").split("@")[0] != "torchflow.Input" or not node.ports_out:
+                continue
+            specs = parse_example_spec(example)
+            for index, port in enumerate(node.ports_out):
+                spec = specs.get(port.name) or list(specs.values())[index:index + 1]
+                spec = spec if isinstance(spec, dict) else (spec[0] if spec else None)
+                if spec:
+                    port.shape = list(spec.get("shape") or [])
+                    port.dtype = spec.get("dtype") or "float32"
+
+    click.echo(f"  클래스 {', '.join(report['classes'])}")
+    click.echo(f"  structural {report['structural']} · cell {report['cell']} · "
+               f"비율 {report['structural_ratio'] * 100:.0f}%")
+    for problem in report["problems"]:
+        click.secho(f"  ! {problem}", fg="yellow")
+    for problem in validate(ir):
+        click.secho(f"  {problem}", fg="red")
+    if out:
+        save(ir, out)
+        click.echo(f"  → {out}")
+
+
+@main.command("merge")
+@click.argument("base", type=click.Path(exists=True, dir_okay=False))
+@click.argument("ours", type=click.Path(exists=True, dir_okay=False))
+@click.argument("theirs", type=click.Path(exists=True, dir_okay=False))
+def merge_graphs(base: str, ours: str, theirs: str) -> None:
+    """git 병합 드라이버 (§10.2). 결과를 OURS 자리에 쓰고, 충돌이 남으면 1로 끝난다.
+
+    한 번만 설정해 두면 git이 알아서 부른다:
+
+        git config merge.torchflow.name "TorchFlow graph merge"
+        git config merge.torchflow.driver "torchflow merge %O %A %B"
+    """
+    from . import merge as merger
+    from .ir import load, save
+
+    merged, conflicts = merger.merge(load(base), load(ours), load(theirs))
+    save(merged, ours)
+    for conflict in conflicts:
+        click.secho(f"  충돌 {conflict}", fg="red")
+    if conflicts:
+        click.echo(f"  {len(conflicts)}군데는 손으로 정해야 합니다 - 나머지는 합쳐 두었습니다")
+        sys.exit(1)
+    click.secho("  자동으로 합쳤습니다", fg="green")
+
+
+@main.command()
+@click.argument("graph", type=click.Path(exists=True, dir_okay=False))
+def show(graph: str) -> None:
+    """그래프를 사람이 읽는 줄로 편다 (§10.2의 git textconv).
+
+        git config diff.torchflow.textconv "torchflow show"
+    """
+    from . import merge as merger
+    from .ir import load
+
+    click.echo(merger.summary(load(graph)), nl=False)
+
+
+@main.command()
+@click.option("--state-dir", default=".torchflow", show_default=True)
+@click.option("--axis", default="variant", show_default=True,
+              help="행을 가르는 축. manifest의 점 경로 (variant, job.lr, job.scheduler ...)")
+@click.option("--metric", "metrics", multiple=True, default=("val_acc",), show_default=True,
+              help="열이 될 지표. 여러 번 줄 수 있다")
+@click.option("--format", "shape", type=click.Choice(["latex", "markdown", "csv"]),
+              default="latex", show_default=True)
+@click.option("--all", "include_exploratory", is_flag=True,
+              help="exploratory run도 넣는다 (표에 단검으로 표시)")
+@click.option("--out", type=click.Path(dir_okay=False), default=None)
+def table(state_dir: str, axis: str, metrics: tuple[str, ...], shape: str,
+          include_exploratory: bool, out: str | None) -> None:
+    """기록된 run에서 ablation 표를 만든다 (§6.4). 시드는 mean±std로 접는다."""
+    from . import table as tables
+    from .hub.tracker import Tracker
+
+    tracker = Tracker(Path(state_dir) / "runs.db")
+    runs = tracker.runs(limit=500)
+    final = {}
+    for run in runs:
+        values = {}
+        for metric in metrics:
+            curve = tracker.curve(run.id, metric)
+            if curve:
+                values[metric] = curve[-1][1]
+        final[run.id] = values
+    built = tables.build(runs, axis=axis, metrics=list(metrics), final=final,
+                         include_exploratory=include_exploratory)
+    if not built.rows:
+        raise click.ClickException(
+            "표에 넣을 run이 없습니다 - reported로 표시한 run이 있어야 합니다 (--all로 전부 넣기)")
+    text = {"latex": tables.to_latex, "markdown": tables.to_markdown,
+            "csv": tables.to_csv}[shape](built)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(text, encoding="utf-8")
+        click.echo(f"  {len(built.rows)}행 · {len(metrics)}열 → {out}")
+    else:
+        click.echo(text)
+
+
+@main.command()
+@click.argument("project", type=click.Path(exists=True, file_okay=False), default=".")
+def check(project: str) -> None:
+    """리뷰 계약을 검사한다 (§10.2): 코드가 그래프와 같은가, 손으로 고쳐지지 않았는가."""
+    from . import package as packager
+
+    problems = packager.check(project)
+    for problem in problems:
+        click.secho(f"  {problem}", fg="red")
+    if problems:
+        sys.exit(1)
+    click.secho("  통과 - 생성 코드가 그래프와 일치합니다", fg="green")
+
+
+@main.command()
+@click.argument("revisions", default="HEAD~1..HEAD")
+@click.option("--graph", "graph_path", type=click.Path(), default=None,
+              help="비교할 그래프 파일 (없으면 .sourcemap.json에서 찾는다)")
+@click.option("--markdown", "as_markdown", is_flag=True, help="PR 본문에 붙일 형태로")
+def diff(revisions: str, graph_path: str | None, as_markdown: bool) -> None:
+    """두 커밋 사이의 그래프 변경을 요약한다 (§10.2). 예: torchflow diff main..HEAD"""
+    import subprocess
+
+    from . import graphdiff
+    from .ir import ModuleGraph
+
+    base, _, head = revisions.partition("..")
+    if not head:
+        raise click.UsageError("base..head 형태로 주세요 (예: main..HEAD)")
+    if graph_path is None:
+        from . import package as packager
+
+        try:
+            recorded = json.loads(Path(packager.SOURCEMAP).read_text(encoding="utf-8"))
+            graph_path = recorded["graph"]
+        except (OSError, KeyError, json.JSONDecodeError):
+            raise click.UsageError("--graph 로 그래프 파일을 지정하세요") from None
+
+    def at(revision: str) -> ModuleGraph:
+        try:
+            blob = subprocess.run(["git", "show", f"{revision}:{graph_path}"],
+                                  capture_output=True, check=True).stdout
+        except subprocess.CalledProcessError as exc:
+            raise click.ClickException(
+                f"{revision}:{graph_path} 를 읽지 못했습니다: "
+                f"{exc.stderr.decode(errors='replace').strip()}") from None
+        return ModuleGraph.model_validate_json(blob)
+
+    before, after = at(base), at(head)
+    if as_markdown:
+        click.echo(graphdiff.markdown(before, after))
+        return
+    lines = graphdiff.summarize(before, after)
+    if not lines:
+        click.echo("  그래프는 그대로입니다")
+    for line in lines:
+        click.echo(f"  {line}")
 
 
 @main.command()
@@ -270,7 +479,9 @@ def view(graph: str | None, port: int, host: str, state_dir: str, rt: tuple[str,
         # 않아 잠금이 남는다. SIGTERM은 우리가 받아 정상 종료로 바꾼다.
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
-        uvicorn.run(app, host=host, port=port, log_level="warning")
+        # Ctrl+C 뒤에 브라우저 탭이 붙들고 있는 연결(2초 폴링, WebSocket)을 기다리느라 hub가 안 내려간
+        # 적이 있다 - 3초 뒤에는 남은 연결을 끊고 내려간다.
+        uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
     finally:
         if owns_lock:
             lock.unlink(missing_ok=True)

@@ -137,6 +137,9 @@ class Probe(_Base):
 class CodeCell(_Base):
     kind: Literal["CellModule", "CellFunction", "CellStep", "CellHook", "CellData"]
     file: str
+    # 본문 바이트. 그래프로 못 편 코드는 여기 그대로 살아 있고 codegen이 되돌려 쓴다
+    # (§7.4.2 승격 규칙 - 손으로 쓴 코드가 다음 codegen에서 사라지면 안 된다).
+    source: str | None = None
     ports: dict[str, list[Port]] = Field(default_factory=dict)
     shape_fn: str = "cpu_probe"
     export_compatible: bool = False
@@ -174,6 +177,8 @@ class ModuleGraph(_Base):
     composites: dict[str, Composite] = Field(default_factory=dict)
     graph: Graph
     code_cells: dict[str, CodeCell] = Field(default_factory=dict)
+    # 이름 붙인 ablation(§4.4.3). 값은 인자·Switch 활성·hparam 기본값의 스냅샷이다.
+    variant_sets: dict[str, dict[str, Any]] = Field(default_factory=dict)
     experiment: dict[str, Any] | None = None
 
 

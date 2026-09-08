@@ -1,7 +1,8 @@
 // 상단 바 - Figma Screens 기준. 크롬은 무채색이고 색은 그래프에서만 나온다.
 
 import { useEffect, useState } from "react";
-import { closeGraph, estimateMemory, runProbe, saveGraph } from "../api";
+import { ReimportBanner } from "./ReimportBanner";
+import { closeGraph, estimateMemory, runProbe, saveProject } from "../api";
 import { applyEdit } from "../edit";
 import { op } from "../graph/ops";
 import { useStore } from "../store";
@@ -43,11 +44,24 @@ export function TopBar() {
     void applyEdit(op("rename", { name: trimmed, previous: name }));
   };
 
+  const project = useStore((state) => state.project);
+  const setProject = useStore((state) => state.setProject);
+  // 저장은 프로젝트 폴더 하나에 전부 모은다(그래프·좌표·생성 코드·run). 처음이면 이름을 묻고
+  // projects/<이름>/ 을 만든다. 그다음부터는 그 폴더에 덮어쓴다.
   const save = async () => {
+    let body: { name?: string; dir?: string } = {};
+    if (!project) {
+      const answer = window.prompt("프로젝트 이름 (projects/<이름>/ 폴더에 저장됩니다)", name || "untitled");
+      if (answer === null) return;
+      body = { name: answer.trim() || name || "untitled" };
+    }
     setSaving("…");
-    const result = await saveGraph();
+    const result = await saveProject(body);
     setSaving(result.error ? result.error : null);
-    if (!result.error) setDirty(false);
+    if (!result.error) {
+      setDirty(false);
+      setProject(result.dir ?? null);
+    }
   };
 
   const probe = async () => {
@@ -99,10 +113,13 @@ export function TopBar() {
         <button className="savestate__button" onClick={save} disabled={saving === "…"}>
           저장
         </button>
-        <span className="savestate__label">
+        <span className="savestate__label" title={project ?? "아직 폴더에 저장하지 않았습니다"}>
           {saving && saving !== "…" ? saving : dirty ? "저장 안 됨" : "저장됨"}
+          {project && !saving ? ` · ${project.split("/").filter(Boolean).pop()}/` : ""}
         </span>
       </span>
+
+      <ReimportBanner />
 
       <nav className="crumbs" aria-label="그래프 경로">
         {(scopes.length > 1 ? scopes : []).map((scope, index) => (
@@ -124,68 +141,83 @@ export function TopBar() {
                 onClick={() => setTab("model")}>Model</button>
         <button className={`tabs__item${tab === "code" ? " tabs__item--on" : ""}`}
                 onClick={() => setTab("code")}>Code</button>
-        <button className="tabs__item" disabled title="최소 L2 워커는 M7입니다">Experiment</button>
-        <button className="tabs__item" disabled title="run 비교는 v1입니다">Runs</button>
+        <button className="tabs__item" disabled title="실험 비교 화면은 준비 중입니다">Experiment</button>
+        <button className="tabs__item" disabled title="run 비교 화면은 준비 중입니다">Runs</button>
       </nav>
 
-      <div className="probe">
-        <button
-          className="probe__run"
-          onClick={probe}
-          disabled={probing || attached}
-          title={attached
-            ? "Attach 모드에서는 사용자 프로세스가 probe를 돌립니다 (sess.probe())"
-            : "L1 probe 1회 — 목적함수의 조상 폐쇄를 forward+backward"}
-        >
-          {probing ? "Probe…" : "Probe"}
-        </button>
-        {probeObjective && <span className="probe__obj">obj: {probeObjective}</span>}
+      <div className="totals">
+        <span className="totals__item" title="학습되는 파라미터 수">Σ {formatCount(totals.params)} params</span>
         {probeNote && <span className="probe__note warn mono">{probeNote}</span>}
-        <label className="probe__toggle">
-          <input type="checkbox" checked={gradOverlay} onChange={toggleGradOverlay} />
-          Grad-Flow
-        </label>
         {attached && <span className="badge badge--attach">attached</span>}
       </div>
 
-      {/* 논문용 그림(§6.4). 토큰이 쿼리로 지나가므로 링크 하나면 받아진다. */}
-      <div className="export">
-        <span className="export__label">그림</span>
-        {(["svg", "pdf"] as const).map((format) => (
-          <a
-            key={format}
-            className="export__link"
-            href={`/api/export?format=${format}&token=${encodeURIComponent(token)}`}
-            title="흑백 안전 · IR 해시 포함 (NeurIPS 5.5 in)"
-          >
-            {format.toUpperCase()}
-          </a>
-        ))}
-      </div>
+      {/* 연구용 도구는 한 메뉴 뒤에. 처음 보는 사람의 상단 바에는 이름·저장·탭·파라미터 수만 남긴다. */}
+      <details className="tools">
+        <summary className="tools__summary" title="Probe · Grad-Flow · 메모리 추정 · 논문 그림">도구</summary>
+        <div className="tools__menu">
+          <div className="tools__row">
+            <button
+              className="probe__run"
+              onClick={probe}
+              disabled={probing || attached}
+              title={attached
+                ? "Attach 모드에서는 사용자 프로세스가 probe를 돌립니다 (sess.probe())"
+                : "예시 배치를 한 번 흘려 층별 활성값 분포와 기울기 크기를 잽니다 (forward + backward 1회)"}
+            >
+              {probing ? "Probe…" : "Probe"}
+            </button>
+            <span className="tools__hint">예시 배치 한 번으로 층별 활성값·기울기 재기</span>
+          </div>
+          {probeObjective && <div className="tools__row"><span className="probe__obj">obj: {probeObjective}</span></div>}
+          <div className="tools__row">
+            <label className="probe__toggle" title="Probe가 잰 층별 기울기 크기를 캔버스 블록에 배지로 겹쳐 보여 줍니다">
+              <input type="checkbox" checked={gradOverlay} onChange={toggleGradOverlay} />
+              Grad-Flow
+            </label>
+            <span className="tools__hint">기울기 크기를 블록 배지로 겹쳐 보기</span>
+          </div>
+          <div className="tools__row">
+            <label className="totals__batch">
+              배치 B
+              <input
+                type="range" min={1} max={256} step={1} value={totals.batch}
+                onChange={(event) => setTotals({ batch: Number(event.target.value) })}
+                aria-label="추정 배치 크기"
+              />
+              <span className="mono">{totals.batch}</span>
+            </label>
+            {totals.band && (
+              <span className="totals__item totals__item--band mono"
+                    title="cuDNN workspace·할당자 파편화를 포함한 밴드">
+                메모리 est. {totals.band[0].toFixed(2)}–{totals.band[1].toFixed(2)} GB
+              </span>
+            )}
+          </div>
+          {/* 논문용 그림(§6.4). 토큰이 쿼리로 지나가므로 링크 하나면 받아진다. */}
+          <div className="tools__row export">
+            <span className="export__label">논문 그림</span>
+            {(["svg", "pdf"] as const).map((format) => (
+              <a
+                key={format}
+                className="export__link"
+                href={`/api/export?format=${format}&token=${encodeURIComponent(token)}`}
+                title="흑백 안전 · IR 해시 포함 (NeurIPS 5.5 in)"
+              >
+                {format.toUpperCase()}
+              </a>
+            ))}
+          </div>
+          <div className="tools__row status">
+            <span className={`dot ${connected ? "dot--on" : "dot--off"}`} />
+            <span>hub {connected ? "연결됨" : "끊김"}</span>
+            <span className={`dot ${kernelAlive ? "dot--on" : "dot--off"}`} />
+            <span title="블록의 출력 shape를 계산하는 프로세스">모양 계산 커널 {kernelAlive ? "동작" : "꺼짐"}</span>
+          </div>
+        </div>
+      </details>
 
-      <div className="totals">
-        <span className="totals__item">Σ {formatCount(totals.params)} params</span>
-        {totals.band && (
-          <span className="totals__item totals__item--band"
-                title="cuDNN workspace·할당자 파편화를 포함한 밴드">
-            est. {totals.band[0].toFixed(2)}–{totals.band[1].toFixed(2)} GB @B={totals.batch}
-          </span>
-        )}
-        <label className="totals__batch">
-          B
-          <input
-            type="range" min={1} max={256} step={1} value={totals.batch}
-            onChange={(event) => setTotals({ batch: Number(event.target.value) })}
-            aria-label="추정 배치 크기"
-          />
-        </label>
-      </div>
-
-      <div className="status">
-        <span className={`dot ${connected ? "dot--on" : "dot--off"}`} />
-        hub
-        <span className={`dot ${kernelAlive ? "dot--on" : "dot--off"}`} />
-        L0
+      <div className="status" title={`hub ${connected ? "연결됨" : "끊김"} · 모양 계산 커널 ${kernelAlive ? "동작" : "꺼짐"}`}>
+        <span className={`dot ${connected && kernelAlive ? "dot--on" : "dot--off"}`} />
       </div>
     </header>
   );

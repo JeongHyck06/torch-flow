@@ -13,7 +13,6 @@ import { op } from "../graph/ops";
 import type { Block } from "../graph/ops";
 import { SYNTHETIC, currentScope, useStore } from "../store";
 import { formatRatio, formatShape } from "../theme";
-import { startRun } from "../train";
 
 export function Inspector() {
   const graph = useStore((state) => state.graph);
@@ -22,9 +21,6 @@ export function Inspector() {
   const states = useStore((state) => state.nodeStates);
   const dataset = useStore((state) => state.dataset);
   const openData = useStore((state) => state.openData);
-  const runPanel = useStore((state) => state.runPanel);
-  const toggleRunPanel = useStore((state) => state.toggleRunPanel);
-  const [trainError, setTrainError] = useState<string | null>(null);
   const scope = currentScope({ graph, scopes });
   const stateKey = selected
     ? (scopes[scopes.length - 1].callPath
@@ -46,11 +42,14 @@ export function Inspector() {
   if (!scope || !selected) {
     return (
       <aside className="inspector" aria-label="Inspector">
+        {graph && <VariantSets sets={(graph.variant_sets ?? {}) as Record<string, unknown>} />}
         <h3>단축키</h3>
         <dl className="rows">
           <div><dt>노드 이동</dt><dd>← →</dd></div>
           <div><dt>선택</dt><dd>Enter</dd></div>
           <div><dt>컴포지트 진입</dt><dd>]</dd></div>
+          <div><dt>여러 개 고르기</dt><dd>Space · Cmd+클릭</dd></div>
+          <div><dt>묶음 블록으로 묶기</dt><dd>Cmd+G</dd></div>
           <div><dt>나가기</dt><dd>Esc</dd></div>
           <div><dt>전체 보기</dt><dd>f</dd></div>
           <div><dt>위치 조정</dt><dd>드래그</dd></div>
@@ -67,39 +66,62 @@ export function Inspector() {
   const composite = scopes[scopes.length - 1].name === "$graph"
     ? null : scopes[scopes.length - 1].name;
   const kind = (node?.type ?? instance?.type ?? "").split("@")[0];
-  const schema = blocks.find((block) => block.type.split("@")[0] === kind)?.params ?? {};
+  // 묶음 블록의 인자 스키마는 레지스트리가 아니라 그래프 안의 컴포지트 정의에 있다.
+  const schema: Record<string, { type: string; default?: unknown; choices?: unknown[] }> =
+    kind.startsWith("composite:")
+      ? ((graph?.composites?.[kind.slice("composite:".length)]?.params ?? {}) as
+          Record<string, { type: string; default?: unknown; choices?: unknown[] }>)
+      : (blocks.find((block) => block.type.split("@")[0] === kind)?.params ?? {});
   // 인자는 두 곳에 있다: 모듈 생성 인자는 인스턴스에, 호출 인자는 노드에.
   const owner = instance
     ? { instance: node?.call as string, args: instance.args ?? {} }
     : { node: selected, args: node?.args ?? {} };
   const fields = { ...Object.fromEntries(Object.keys(schema).map((name) => [name, undefined])),
                    ...owner.args };
+  // 앞 블록의 출력 shape. 크기가 안 맞는 인자를 버튼 하나로 맞추는 데 쓴다.
+  const callPath = scopes[scopes.length - 1].callPath;
+  const incoming = (scope.edges ?? []).find(([, dst]) => String(dst).split(".")[0] === selected);
+  const upstreamId = incoming ? String(incoming[0]).split(".")[0] : null;
+  const upstream = upstreamId
+    ? (states[callPath ? `${callPath}/${upstreamId}` : upstreamId]?.spec?.shape as (string | number)[] | undefined)
+    : undefined;
+  const compositePort = kind.startsWith("composite:")
+    ? (graph?.composites?.[kind.slice("composite:".length)]?.ports?.in?.[0]?.shape as (string | number)[] | undefined)
+    : undefined;
+  const suggestion = suggestFix(kind, fields, upstream, compositePort);
+  const showFix = suggestion && (state?.error || fields[suggestion.path] === undefined);
 
   return (
     <aside className="inspector" aria-label="Inspector">
+      {/* 선택이 바뀌면 내용이 새로 떠오른다(key). 등록부 조회는 aside 바깥이라 다시 돌지 않는다. */}
+      <div className="inspector__body" key={selected}>
       <h2>{node?.label}</h2>
       <p className="inspector__type">{(node?.type ?? instance?.type ?? "").split("@")[0]}</p>
 
-      <h3>Module</h3>
-      <dl className="rows">
-        <div>
-          <dt>출력</dt>
-          <dd>{formatShape(state?.spec?.shape as (string | number)[] | undefined)}</dd>
-        </div>
-        {state?.spec?.dtype ? <div><dt>dtype</dt><dd>{String(state.spec.dtype)}</dd></div> : null}
-        {badges.measured ? (
-          <div>
-            <dt>실측 (L1)</dt>
-            <dd>{formatShape((badges.measured as { shape?: (string | number)[] }).shape)}</dd>
-          </div>
-        ) : null}
-        {badges.elapsed_ms !== undefined ? (
-          <div>
-            <dt>{badges.cache_hit ? "캐시" : "실행"}</dt>
-            <dd>{badges.cache_hit ? "hit" : `${Number(badges.elapsed_ms).toFixed(1)} ms`}</dd>
-          </div>
-        ) : null}
-      </dl>
+      {kind !== "torchflow.Train" && (
+        <>
+          <h3>Module</h3>
+          <dl className="rows">
+            <div>
+              <dt>출력</dt>
+              <dd>{formatShape(state?.spec?.shape as (string | number)[] | undefined)}</dd>
+            </div>
+            {state?.spec?.dtype ? <div><dt>dtype</dt><dd>{String(state.spec.dtype)}</dd></div> : null}
+            {badges.measured ? (
+              <div>
+                <dt title="예시 배치를 한 번 흘려 실제로 나온 크기입니다">실제로 잰 크기</dt>
+                <dd>{formatShape((badges.measured as { shape?: (string | number)[] }).shape)}</dd>
+              </div>
+            ) : null}
+            {badges.elapsed_ms !== undefined ? (
+              <div>
+                <dt>{badges.cache_hit ? "캐시" : "실행"}</dt>
+                <dd>{badges.cache_hit ? "hit" : `${Number(badges.elapsed_ms).toFixed(1)} ms`}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </>
+      )}
 
       {kind === "torchflow.Input" && (
         <>
@@ -116,7 +138,7 @@ export function Inspector() {
         </>
       )}
 
-      {node?.ports_out?.length ? (
+      {kind === "torchflow.Input" && node?.ports_out?.length ? (
         <>
           <h3>입력 규격</h3>
           <dl className="rows">
@@ -160,7 +182,7 @@ export function Inspector() {
             {Object.entries(fields).map(([key, value]) => (
               <div key={key}>
                 <dt>{key}</dt>
-                <dd>
+                <dd className="rowvalue">
                   <ParamField
                     name={key}
                     value={value}
@@ -171,6 +193,12 @@ export function Inspector() {
                       path: key, value: next,
                     }))}
                   />
+                  <HParamToggle
+                    name={key} value={value}
+                    target={{ ...(composite ? { composite } : {}),
+                              ...(owner.instance ? { instance: owner.instance }
+                                                 : { node: owner.node }) }}
+                  />
                 </dd>
               </div>
             ))}
@@ -178,23 +206,31 @@ export function Inspector() {
         </>
       )}
 
+      {instance && (
+        <SwitchEditor
+          instance={instance} instanceId={node?.call as string}
+          composite={composite} blocks={blocks}
+        />
+      )}
+
       {kind === "torchflow.Train" && (
-        <>
-          <p className="mono muted">optimizer는 adamw 또는 sgd, scheduler는 none 또는 cosine입니다</p>
-          <div className="inspector__actions">
-            <button className="solid" onClick={() => {
-              setTrainError(null);
-              void startRun().then((result) => {
-                if (result.error) setTrainError(result.error);
-                else if (!runPanel) toggleRunPanel();
-              });
-            }}>
-              학습 시작
-            </button>
-            <button className="ghost" onClick={() => { if (!runPanel) toggleRunPanel(); }}>Run 패널</button>
-          </div>
-          {trainError && <p className="mono inspector__error">{trainError}</p>}
-        </>
+        <p className="mono muted">
+          값을 고치면 다음 실행에 반영됩니다 · 시작은 단계 표시줄의 4 학습 ·
+          steps는 배치 수, batch는 한 번에 보는 샘플 수, lr은 한 걸음의 크기입니다
+        </p>
+      )}
+
+      {showFix && suggestion && (
+        <div className="inspector__fix">
+          <p className="mono muted">{suggestion.why}</p>
+          <button className="ghost" onClick={() => void applyEdit(op("set_param", {
+            ...(composite ? { composite } : {}),
+            ...(owner.instance ? { instance: owner.instance } : { node: owner.node }),
+            path: suggestion.path, value: suggestion.value,
+          }))}>
+            {suggestion.path}를 {suggestion.value}로 맞추기
+          </button>
+        </div>
       )}
 
       {badges.grad_ratio !== undefined && (
@@ -237,9 +273,17 @@ export function Inspector() {
       {state?.error && (
         <>
           <h3>진단 · {String(state.error.kind)}</h3>
+          {suggestion && (
+            <p className="inspector__error">
+              {fields[suggestion.path] === undefined
+                ? `${suggestion.path}가 비어 있습니다 - 위의 맞추기 버튼이 앞 블록 출력에서 채웁니다`
+                : `앞 블록의 출력과 ${suggestion.path} 값이 맞지 않습니다`}
+            </p>
+          )}
           <p className="mono inspector__error">{String(state.error.message)}</p>
         </>
       )}
+      </div>
     </aside>
   );
 }
@@ -248,18 +292,78 @@ export function Inspector() {
  * 값 하나를 고치는 칸. 타입은 레지스트리 스키마에서 오고, 없으면 값에서 짐작한다.
  *
  * 커밋 시점은 blur와 Enter다 - 글자 하나마다 op를 보내면 journal이 타자 기록이 된다.
- * 슬라이더와 pointer-up 코얼레싱(§5.5.1)은 아직 없다.
+ * 슬라이더는 드래그 내내 화면만 움직이고 **놓을 때 op 하나**를 보낸다(§5.5.1 코얼레싱).
+ * 키보드로 슬라이더를 움직일 때는 놓는 순간이 없으므로 80 ms 뒤에 한 번 보낸다(§5.4의 L0 디바운스).
  */
+/** 슬라이더를 붙일 만한 인자인지. 범위를 지어낼 수 없으면 숫자 칸만 둔다. */
+function sliderRange(name: string, kind: string, value: unknown):
+    { min: number; max: number; step: number } | null {
+  if (kind === "float") {
+    // 0~1이 확실한 것들만. lr처럼 로그 축이 필요한 값에 선형 슬라이더를 붙이면 쓸모가 없다.
+    return /^(p|dropout|drop_prob|momentum)$/.test(name) ? { min: 0, max: 1, step: 0.01 } : null;
+  }
+  if (kind !== "int" || typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return null;
+  }
+  // 지금 값 언저리를 훑는다. 더 멀리 갈 일은 숫자 칸에 직접 적는다.
+  return { min: 1, max: Math.max(8, value * 4), step: 1 };
+}
+
+/** 앞 블록 출력에서 바로 정해지는 인자. 사람이 곱셈으로 셀 필요가 없는 것들이다. */
+const CHANNEL_ARG: Record<string, string> = {
+  "torch.nn.Conv1d": "in_channels", "torch.nn.Conv2d": "in_channels", "torch.nn.Conv3d": "in_channels",
+  "torch.nn.ConvTranspose2d": "in_channels",
+  "torch.nn.BatchNorm1d": "num_features", "torch.nn.BatchNorm2d": "num_features",
+  "torch.nn.BatchNorm3d": "num_features", "torch.nn.InstanceNorm2d": "num_features",
+  "torch.nn.GroupNorm": "num_channels",
+};
+
+function suggestFix(kind: string, args: Record<string, unknown>,
+                    upstream: (string | number)[] | undefined,
+                    compositePort?: (string | number)[]):
+    { path: string; value: number; why: string } | null {
+  if (!upstream || !upstream.length) return null;
+  const shape = `[${upstream.join(", ")}]`;
+  const last = upstream[upstream.length - 1];
+  if (compositePort) {
+    // 묶음 블록의 입력 포트 [B, in_ch, H, W]에서 심볼 자리가 곧 인자 이름이다.
+    for (let index = 1; index < compositePort.length; index += 1) {
+      const symbol = compositePort[index];
+      const value = upstream[index];
+      if (typeof symbol === "string" && symbol !== "B" && typeof value === "number"
+          && symbol in args && args[symbol] !== value && /^[a-z_]+$/i.test(symbol)) {
+        return { path: symbol, value, why: `앞 블록 출력 ${shape}에서 ${symbol} 자리가 ${value}입니다` };
+      }
+    }
+    return null;
+  }
+  if (kind === "torch.nn.Linear" && typeof last === "number" && args.in_features !== last) {
+    return { path: "in_features", value: last, why: `앞 블록 출력 ${shape}의 마지막 차원이 ${last}입니다` };
+  }
+  if (kind === "torch.nn.LayerNorm" && typeof last === "number" && args.normalized_shape !== last) {
+    return { path: "normalized_shape", value: last, why: `앞 블록 출력 ${shape}의 마지막 차원이 ${last}입니다` };
+  }
+  const arg = CHANNEL_ARG[kind];
+  const channels = upstream[1];
+  if (arg && typeof channels === "number" && args[arg] !== channels) {
+    return { path: arg, value: channels, why: `앞 블록 출력 ${shape}의 채널 수가 ${channels}입니다` };
+  }
+  return null;
+}
+
 function ParamField({ name, value, schema, onCommit }: {
   name: string;
   value: unknown;
-  schema?: { type: string; default?: unknown };
+  schema?: { type: string; default?: unknown; choices?: unknown[] };
   onCommit: (next: unknown) => void;
 }) {
   const reference = refOf(value);
   const kind = schema?.type ?? typeOf(value);
   const [draft, setDraft] = useState(() => text(value));
   const committed = useRef(text(value));
+  const dragging = useRef(false);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
 
   useEffect(() => { setDraft(text(value)); committed.current = text(value); }, [value]);
 
@@ -269,19 +373,79 @@ function ParamField({ name, value, schema, onCommit }: {
   }
 
   if (kind === "bool") {
+    // 인자를 안 적었으면 torch 기본값이 돈다 - 체크박스도 그 값을 보여야 한다. 전에는 bias를
+    // 안 적은 Conv2d가 꺼진 것처럼 보였다.
+    const unset = value === undefined || value === null;
     return (
       <input
-        type="checkbox" checked={value === true} aria-label={name}
+        type="checkbox" checked={unset ? schema?.default === true : value === true} aria-label={name}
+        className={unset ? "field--default" : undefined}
+        title={unset ? `기본값 ${String(schema?.default ?? false)}` : undefined}
         onChange={(event) => onCommit(event.target.checked)}
       />
     );
   }
 
-  const commit = () => {
-    if (draft === committed.current) return;
-    committed.current = draft;
-    onCommit(parse(draft, kind));
+  if (Array.isArray(schema?.choices) && schema.choices.length) {
+    return (
+      <select
+        className="mono field" aria-label={name}
+        value={String(value ?? schema.default ?? "")}
+        onChange={(event) => onCommit(event.target.value)}
+      >
+        {schema.choices.map((choice) => (
+          <option key={String(choice)} value={String(choice)}>{String(choice)}</option>
+        ))}
+      </select>
+    );
+  }
+
+  const commit = (next = draft) => {
+    if (next === committed.current) return;
+    committed.current = next;
+    onCommit(parse(next, kind));
   };
+
+  const range = sliderRange(name, kind, value);
+  if (range) {
+    const numeric = Number(draft);
+    return (
+      <span className="field__slider">
+        <input
+          type="range"
+          aria-label={`${name} 슬라이더`}
+          min={Math.min(range.min, Number.isNaN(numeric) ? range.min : numeric)}
+          max={Math.max(range.max, Number.isNaN(numeric) ? range.max : numeric)}
+          step={range.step}
+          value={Number.isNaN(numeric) ? range.min : numeric}
+          onPointerDown={() => { dragging.current = true; }}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            // 드래그 중에는 아무것도 보내지 않는다 - 놓을 때 한 번이 journal에 남을 편집이다.
+            if (dragging.current) return;
+            window.clearTimeout(timer.current);
+            timer.current = window.setTimeout(() => commit(event.target.value), 80);
+          }}
+          onPointerUp={(event) => {
+            dragging.current = false;
+            commit((event.target as HTMLInputElement).value);
+          }}
+        />
+        <input
+          className="mono field field--num"
+          value={draft}
+          spellCheck={false}
+          aria-label={name}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => commit()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") { commit(); (event.target as HTMLInputElement).blur(); }
+            if (event.key === "Escape") setDraft(committed.current);
+          }}
+        />
+      </span>
+    );
+  }
 
   return (
     <input
@@ -291,7 +455,7 @@ function ParamField({ name, value, schema, onCommit }: {
       spellCheck={false}
       aria-label={name}
       onChange={(event) => setDraft(event.target.value)}
-      onBlur={commit}
+      onBlur={() => commit()}
       onKeyDown={(event) => {
         if (event.key === "Enter") { commit(); (event.target as HTMLInputElement).blur(); }
         if (event.key === "Escape") setDraft(committed.current);
@@ -363,5 +527,196 @@ function Histogram({ bins }: { bins: number[] }) {
         />
       ))}
     </svg>
+  );
+}
+
+/**
+ * 이름 붙인 ablation 목록 (기획서 §4.4.3 Variant Set).
+ *
+ * "지금 상태"를 통째로 저장해 두고 한 번에 되돌아온다. 담기는 것은 값이다 -
+ * 인자, Switch 활성 변형, enabled, hparam 기본값. 블록을 더하고 지우는 구조 변경은
+ * 담기지 않는다(그것까지는 v1).
+ */
+function VariantSets({ sets }: { sets: Record<string, unknown> }) {
+  const names = Object.keys(sets);
+  const save = () => {
+    const name = window.prompt("변형 이름 (예: no-aux-loss, post-norm)", `variant${names.length + 1}`);
+    if (!name?.trim()) return;
+    void applyEdit(op("save_variant", { name: name.trim() }))
+      .then((error) => error && useStore.getState().setNotice(error));
+  };
+  return (
+    <>
+      <h3>변형 세트</h3>
+      {names.length === 0 ? (
+        <p className="mono muted">지금 값들을 이름 붙여 저장해 두면 한 번에 돌아옵니다</p>
+      ) : (
+        <dl className="rows">
+          {names.map((name) => (
+            <div key={name}>
+              <dt>{name}</dt>
+              <dd className="rowvalue">
+                <button className="rowaction" title="이 변형의 값으로 되돌립니다"
+                        onClick={() => void applyEdit(op("apply_variant", { name }))}>
+                  적용
+                </button>
+                <button className="rowaction" title="이 변형을 지웁니다"
+                        onClick={() => void applyEdit(op("remove_variant",
+                                                        { name, values: sets[name] }))}>
+                  지우기
+                </button>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <button className="ghost inspector__action" onClick={save}>지금 상태를 변형으로 저장</button>
+    </>
+  );
+}
+
+/**
+ * 값 하나를 하이퍼파라미터로 올리고 내린다 (기획서 §4.3, §8.2.3).
+ *
+ * 올리면 그 값을 쓰는 자리가 전부 한 곳을 가리키게 되고, 상단에서 한 번 고치면
+ * 같이 움직인다. 내리면 지금 값이 그 자리에 박히고 아무도 안 쓰는 hparam은 사라진다.
+ */
+function HParamToggle({ name, value, target }: {
+  name: string;
+  value: unknown;
+  target: Record<string, unknown>;
+}) {
+  const reference = refOf(value);
+  if (reference === null && (value === undefined || value === null || typeof value === "object")) {
+    return null;
+  }
+  const promoted = Boolean(reference?.startsWith("$hp"));
+  const hparam = promoted && reference ? reference.split(": ")[1] : name;
+  return (
+    <button
+      className="rowaction"
+      title={promoted ? `${hparam} 참조를 지금 값으로 내립니다`
+                      : `이 값을 하이퍼파라미터 ${name}로 올립니다`}
+      onClick={() => {
+        void applyEdit(op(promoted ? "demote_hp" : "promote_hp",
+                          { ...target, path: name, name: hparam }))
+          .then((error) => error && useStore.getState().setNotice(error));
+      }}
+    >
+      {promoted ? "값으로" : "hp"}
+    </button>
+  );
+}
+
+/**
+ * Ablation Switch (§4.4.2). 변형을 고르면 그래프가 그 변형으로 다시 돈다.
+ *
+ * forward는 변형과 무관한 단일 문장이므로(생성 코드의 불변식) 여기서 무엇을 고르든
+ * 코드의 모양은 같고 `__init__`의 분기만 달라진다.
+ */
+function SwitchEditor({ instance, instanceId, composite, blocks }: {
+  instance: { type?: string; args?: Record<string, unknown>; label?: string;
+              active?: unknown; variants?: Record<string, Record<string, unknown>> };
+  instanceId: string;
+  composite: string | null;
+  blocks: Block[];
+}) {
+  const [adding, setAdding] = useState("");
+  const scoped = composite ? { composite } : {};
+  const isSwitch = instance.type === "torchflow.Switch";
+
+  if (!isSwitch) {
+    return (
+      <>
+        <h3>비교</h3>
+        <button
+          className="ghost inspector__action"
+          title="이 블록을 A/B로 바꿔 가며 재 볼 수 있게 만듭니다. 변형은 여기서 더합니다"
+          onClick={() => void applyEdit(op("set_instance", {
+            ...scoped, instance: instanceId,
+            body: {
+              label: instance.label, type: "torchflow.Switch", active: "baseline",
+              variants: {
+                baseline: { type: instance.type, args: instance.args ?? {} },
+                // 블록을 통째로 빼 보는 것이 가장 흔한 ablation이다.
+                없음: { type: "torch.nn.Identity", args: {} },
+              },
+            },
+          }))}
+        >
+          변형으로 만들기 (A/B)
+        </button>
+      </>
+    );
+  }
+
+  const variants = (instance.variants ?? {}) as Record<string, { type: string;
+                                                                 args?: Record<string, unknown> }>;
+  const active = typeof instance.active === "string" ? instance.active : null;
+  const write = (next: Record<string, { type: string; args?: Record<string, unknown> }>,
+                 nextActive: string) =>
+    void applyEdit(op("set_instance", {
+      ...scoped, instance: instanceId,
+      body: { label: instance.label, type: "torchflow.Switch", active: nextActive,
+              variants: next },
+    })).then((error) => error && useStore.getState().setNotice(error));
+
+  return (
+    <>
+      <h3>변형 (Ablation)</h3>
+      <dl className="rows">
+        {Object.entries(variants).map(([name, variant]) => (
+          <div key={name}>
+            <dt>
+              <label className="variant">
+                <input
+                  type="radio" name={`variant-${instanceId}`} checked={active === name}
+                  onChange={() => void applyEdit(op("set_switch_active",
+                                                    { ...scoped, instance: instanceId, active: name }))}
+                />
+                {name}
+              </label>
+            </dt>
+            <dd className="rowvalue">
+              <span className="mono muted">{variant.type.split(".").pop()}</span>
+              {Object.keys(variants).length > 1 && (
+                <button
+                  className="rowaction" title={`${name} 변형을 지웁니다`}
+                  onClick={() => {
+                    const rest = Object.fromEntries(
+                      Object.entries(variants).filter(([key]) => key !== name));
+                    write(rest, active === name ? Object.keys(rest)[0] : (active ?? ""));
+                  }}
+                >
+                  지우기
+                </button>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="inspector__addvariant">
+        <select className="mono field field--wide" value={adding} aria-label="변형으로 더할 블록"
+                onChange={(event) => setAdding(event.target.value)}>
+          <option value="">변형 추가…</option>
+          {blocks.filter((block) => block.source !== "composite").map((block) => (
+            <option key={block.type} value={block.type}>{block.label}</option>
+          ))}
+        </select>
+        <button
+          className="ghost" disabled={!adding}
+          onClick={() => {
+            const block = blocks.find((one) => one.type === adding);
+            if (!block) return;
+            let name = block.label;
+            for (let index = 2; name in variants; index += 1) name = `${block.label}${index}`;
+            write({ ...variants, [name]: { type: block.type, args: {} } }, active ?? name);
+            setAdding("");
+          }}
+        >
+          추가
+        </button>
+      </div>
+    </>
   );
 }

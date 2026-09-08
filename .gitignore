@@ -36,3 +36,6 @@ CLAUDE.md
 
 # OS
 .DS_Store
+
+# 프로젝트 폴더(그래프·좌표·코드·run·데이터). 사용자 데이터라 커밋하지 않는다.
+projects/

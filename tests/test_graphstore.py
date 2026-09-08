@@ -185,3 +185,154 @@ def test_rename_changes_the_graph_name_and_is_undoable(minivit):
 
     with pytest.raises(OpError):
         store.apply({"kind": "rename", "payload": {"name": "  "}})
+
+
+def test_a_graph_keeps_one_train_block(minivit):
+    """단계 표시줄을 연타해도, 클라이언트가 폭주해도 학습 블록은 하나다."""
+    store = GraphStore(minivit)
+    train = {"id": "T1", "label": "train", "type": "torchflow.Train", "args": {"steps": 10}}
+    store.apply(op("add_node", node=train))
+    with pytest.raises(OpError, match="하나면"):
+        store.apply(op("add_node", node={**train, "id": "T2", "type": "torchflow.Train@0.0.1"}))
+    assert sum(1 for node in store.ir.graph.nodes if (node.type or "").startswith("torchflow.Train")) == 1
+
+
+def test_define_and_remove_composite(minivit):
+    """팔레트가 묶음 블록을 꺼내 쓸 때: 정의 넣기 -> 부르기 -> (부르는 노드가 있으면) 지우기 거부."""
+    store = GraphStore(minivit)
+    body = {"doc": "x2", "params": {"k": {"type": "int"}},
+            "ports": {"in": [{"name": "x"}], "out": [{"name": "y"}]},
+            "instances": {}, "nodes": [], "edges": []}
+    store.apply(op("define_composite", name="Twice", body=body))
+    assert "Twice" in store.ir.composites
+    store.apply(op("define_composite", name="Twice", body=body))     # 같은 몸체는 통과
+    with pytest.raises(OpError, match="몸체가 다릅니다"):
+        store.apply(op("define_composite", name="Twice", body={**body, "doc": "other"}))
+
+    store.apply(op("add_node", instance={"id": "I1", "label": "twice", "type": "composite:Twice", "args": {"k": 2}},
+                   node={"id": "N1", "label": "twice", "method": "forward"}))
+    with pytest.raises(OpError, match="부르는 블록"):
+        store.apply(op("remove_composite", name="Twice"))
+    store.apply(op("remove_node", node="N1"))
+    store.apply(op("remove_composite", name="Twice"))
+    assert "Twice" not in store.ir.composites
+
+
+def test_grouping_batch_moves_nodes_into_a_composite(minivit):
+    """`Cmd+G`가 보내는 묶기 batch. 클라이언트가 만드는 op 순서 그대로 서버에서 통과해야 한다.
+
+    묶은 뒤에도 바깥에서 본 배선은 같다: Input이 새 블록으로, 새 블록이 Output으로.
+    """
+    from torchflow import codegen
+    from torchflow.ir import ModuleGraph, validate
+
+    ir = ModuleGraph.model_validate({
+        "graph": {
+            "name": "Net",
+            "instances": {"i-conv": {"label": "conv", "type": "torch.nn.Conv2d",
+                                     "args": {"in_channels": 3, "out_channels": 8,
+                                              "kernel_size": 3, "padding": 1}},
+                          "i-relu": {"label": "act", "type": "torch.nn.ReLU", "args": {}}},
+            "nodes": [
+                {"id": "IN", "label": "input", "type": "torchflow.Input",
+                 "ports_out": [{"name": "x", "shape": ["B", 3, 32, 32]}]},
+                {"id": "C", "label": "conv", "call": "i-conv", "method": "forward"},
+                {"id": "R", "label": "act", "call": "i-relu", "method": "forward"},
+                {"id": "OUT", "label": "out", "type": "torchflow.Output"},
+            ],
+            "edges": [["IN.x", "C.input"], ["C.output", "R.input"], ["R.output", "OUT.input"]],
+        },
+    })
+    store = GraphStore(ir)
+    body = {"ports": {"in": [{"name": "x"}], "out": [{"name": "output"}]},
+            "instances": {"i-conv": ir.graph.instances["i-conv"].model_dump(exclude_none=True),
+                          "i-relu": ir.graph.instances["i-relu"].model_dump(exclude_none=True)},
+            "nodes": [{"id": "C", "label": "conv", "call": "i-conv", "method": "forward"},
+                      {"id": "R", "label": "act", "call": "i-relu", "method": "forward"}],
+            "edges": [["C.output", "R.input"], ["$in.x", "C.input"], ["R.output", "$out.output"]]}
+    store.apply({"client_id": "c-1", "tmp_seq": 1, "kind": "batch", "payload": {}, "ops": [
+        op("define_composite", name="Group", body=body),
+        op("remove_node", node="C"),
+        op("remove_node", node="R"),
+        op("add_node",
+           instance={"id": "i-group", "label": "group", "type": "composite:Group", "args": {}},
+           node={"id": "G", "label": "group", "method": "forward",
+                 "ports_out": [{"name": "output"}]}),
+        op("connect", src="IN.x", dst="G.x"),
+        op("connect", src="G.output", dst="OUT.input"),
+    ]})
+
+    assert [node.id for node in store.ir.graph.nodes] == ["IN", "OUT", "G"]
+    assert sorted(store.ir.graph.edges) == [("G.output", "OUT.input"), ("IN.x", "G.x")]
+    assert "i-conv" not in store.ir.graph.instances, "묶인 인스턴스는 컴포지트로 옮겨간다"
+    assert validate(store.ir) == []
+
+    code = codegen.generate(store.ir)
+    assert "class Group(nn.Module):" in code
+    assert "self.group(x)" in code
+
+
+def test_promote_and_demote_a_hyperparameter(minivit):
+    """값 하나를 상단으로 올리고 다시 내린다(§4.3). 둘은 서로의 역이다."""
+    store = GraphStore(minivit)
+    before = store.ir.graph.instances["01J9I103"].args["in_features"]
+    store.apply(op("promote_hp", instance="01J9I103", path="in_features", name="width"))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] == {"$hp": "width"}
+    assert store.ir.hparams["width"].default == before
+
+    store.apply(op("demote_hp", instance="01J9I103", path="in_features", name="width",
+                   value=before))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] == before
+    assert "width" not in store.ir.hparams, "아무도 안 쓰는 하이퍼파라미터는 남지 않는다"
+
+
+def test_promote_refuses_to_hijack_an_existing_name(minivit):
+    store = GraphStore(minivit)
+    with pytest.raises(OpError, match="이미"):
+        store.apply(op("promote_hp", instance="01J9I103", path="in_features", name="dim"))
+
+
+def test_making_a_block_switchable(minivit):
+    """평범한 블록 -> Switch. 변형을 고르는 편집은 전부 set_instance 하나로 표현된다(§4.4.2)."""
+    store = GraphStore(minivit)
+    original = store.ir.graph.instances["01J9I103"].model_dump(exclude_none=True)
+    store.apply(op("set_instance", instance="01J9I103", body={
+        "label": "head", "type": "torchflow.Switch", "active": "baseline",
+        "variants": {"baseline": {"type": original["type"], "args": original["args"]},
+                     "없음": {"type": "torch.nn.Identity", "args": {}}}}))
+    switch = store.ir.graph.instances["01J9I103"]
+    assert switch.type == "torchflow.Switch" and set(switch.variants) == {"baseline", "없음"}
+
+    store.apply(op("set_switch_active", instance="01J9I103", active="없음"))
+    assert store.ir.graph.instances["01J9I103"].active == "없음"
+
+    with pytest.raises(OpError, match="변형이 하나 이상"):
+        store.apply(op("set_instance", instance="01J9I103",
+                       body={"label": "head", "type": "torchflow.Switch", "variants": {}}))
+
+
+def test_variant_sets_save_and_restore_values(minivit):
+    """이름 붙인 ablation(§4.4.3). 값만 담고 구조는 담지 않는다."""
+    store = GraphStore(minivit)
+    store.apply(op("save_variant", name="baseline"))
+    assert "baseline" in store.ir.variant_sets
+
+    store.apply(op("set_param", instance="01J9I103", path="in_features", value=999))
+    store.apply(op("save_variant", name="wide"))
+    store.apply(op("apply_variant", name="baseline"))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] != 999
+    store.apply(op("apply_variant", name="wide"))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] == 999
+
+    with pytest.raises(OpError, match="그런 변형이 없습니다"):
+        store.apply(op("apply_variant", name="ghost"))
+
+
+def test_a_variant_survives_being_saved_and_loaded(minivit, tmp_path):
+    store = GraphStore(minivit)
+    store.apply(op("save_variant", name="baseline"))
+    store.save(tmp_path / "graph.tfg.json")
+
+    from torchflow.ir import load
+
+    assert "baseline" in load(tmp_path / "graph.tfg.json").variant_sets

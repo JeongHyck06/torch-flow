@@ -145,6 +145,8 @@ class Ready(_Msg):
     pid: int = 0
     torch_version: str | None = None
     device: str = "cpu"
+    # 이 컴퓨터에서 쓸 수 있는 가속기 전부(cuda:0, cuda:1, mps ...). 학습 장치를 고르는 데 쓴다.
+    devices: list[str] = Field(default_factory=list)
     registry_path: str | None = None
 
 

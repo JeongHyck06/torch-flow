@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { evalExpression } from "../api";
 import type { EvalResult } from "../api";
-import { useStore } from "../store";
+import { currentScope, useStore } from "../store";
 
 interface Entry { expr: string; result: EvalResult }
 
@@ -19,8 +19,10 @@ export function Console() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [busy, setBusy] = useState(false);
 
+  const graph = useStore((state) => state.graph);
   const callPath = scopes[scopes.length - 1].callPath;
   const node = selected ? (callPath ? `${callPath}/${selected}` : selected) : "";
+  const label = currentScope({ graph, scopes })?.nodes?.find((one) => one.id === selected)?.label;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -63,8 +65,8 @@ export function Console() {
       </div>
 
       <form className="console__prompt mono" onSubmit={submit}>
-        <span className="console__node" title="선택 노드">
-          {selected ? selected : "노드 미선택"}
+        <span className="console__node" title={selected ? `선택 노드 · ${selected}` : "선택 노드"}>
+          {selected ? (label ?? selected) : "노드 미선택"}
         </span>
         <input
           className="console__input mono"

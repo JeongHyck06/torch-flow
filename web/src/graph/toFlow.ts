@@ -4,12 +4,39 @@ import type { Edge, Node as FlowNode } from "@xyflow/react";
 import type { Composite, Graph, NodeState } from "../types.gen";
 import type { Lod, NodeCardData } from "../components/NodeCard";
 import type { NodeStateName } from "../theme";
-import { DTYPE_COLOR, categoryOf, edgeWidth, gradColor, gradRange } from "../theme";
+import { DTYPE_COLOR, LOD_WIDTH, categoryOf, edgeWidth, gradColor, gradRange } from "../theme";
 import { layeredLayout } from "./layout";
 
+// LOD별 노드 높이 어림값(flow px). 겹침 판정에만 쓴다.
+const NODE_HEIGHT: Record<Lod, number> = { far: 44, mid: 84, near: 128, focus: 128 };
+const OVERLAP_GAP = 24;
+
+/**
+ * 사용자가 옮긴 노드(layout.json)와 자동 배치 노드는 서로를 모른다 - 실제로 Input 위에
+ * Output이 얹혀 더블클릭이 막혔다. 고정 노드는 두고, 자동 배치 노드가 이미 놓인 것과 겹치면
+ * 그 아래로 밀어낸다.
+ */
+function resolveOverlaps(nodes: FlowNode[], fixed: Set<string>, lod: Lod): void {
+  const width = LOD_WIDTH[lod];
+  const height = NODE_HEIGHT[lod];
+  const placed = nodes.filter((node) => fixed.has(node.id));
+  for (const node of nodes) {
+    if (fixed.has(node.id)) continue;
+    for (let guard = 0; guard < 24; guard += 1) {
+      const hit = placed.find((other) =>
+        Math.abs(other.position.x - node.position.x) < width + OVERLAP_GAP
+        && Math.abs(other.position.y - node.position.y) < height + OVERLAP_GAP);
+      if (!hit) break;
+      node.position = { x: node.position.x, y: hit.position.y + height + OVERLAP_GAP };
+    }
+    placed.push(node);
+  }
+}
+
 export function lodOf(zoom: number): Lod {
-  if (zoom < 0.35) return "far";
-  if (zoom < 0.8) return "mid";
+  // 0.55 아래에서는 12px 본문이 화면에서 7px도 안 된다 - 제목만 남기고 글자를 줌에 반비례해 키운다(CSS --zoom).
+  if (zoom < 0.55) return "far";
+  if (zoom < 0.9) return "mid";
   if (zoom < 1.6) return "near";
   return "focus";
 }
@@ -140,6 +167,8 @@ export function toFlow(
       selectable: true,
     };
   });
+  resolveOverlaps(nodes, new Set(irNodes.filter((node) => options.positions?.[keyOf(node.id)])
+    .map((node) => node.id)), options.lod);
 
   const edges: Edge[] = irEdges
     .filter(([src, dst]) => !src.startsWith("$in") && !dst.startsWith("$out"))

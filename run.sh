@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # TorchFlow hub를 띄운다.
 #
-#   ./run.sh                              예제 그래프(MiniViT)로 시작
+#   ./run.sh                              첫 화면(프로젝트·템플릿 고르기)에서 시작
 #   ./run.sh --port 8799                  옵션은 그대로 넘어간다
-#   ./run.sh graph/my.tfg.json --rt num_classes=100
-#   ./run.sh --new                        빈 첫 화면에서 시작
+#   ./run.sh graph/my.tfg.json --rt num_classes=100   그래프 파일을 바로 연다
+#   ./run.sh --minivit                    예제 그래프(MiniViT)로 바로 시작
 #
-# 예제 그래프는 num_classes를 런타임 상수로 받는다. IR이 런타임 상수의 기본값을
-# 들고 있지 않아서(스키마에 자리가 없다) 여기서 대신 채워 준다.
+# 템플릿은 첫 화면에서 열면 num_classes 같은 런타임 상수를 스스로 채운다. 파일을 직접 열 때만
+# --rt로 넘긴다.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,7 +16,8 @@ python=".venv/bin/python"
 
 if [ "${1-}" = "--new" ]; then
     shift
-elif [ $# -eq 0 ] || [ "${1#-}" != "$1" ]; then
+elif [ "${1-}" = "--minivit" ]; then
+    shift
     set -- examples/minivit.tfg.json --rt num_classes=10 "$@"
 fi
 

@@ -22,14 +22,15 @@ export interface StatusStyle {
 }
 
 export const STATUS: Record<NodeStateName, StatusStyle> = {
-  idle:      { ring: null, dashed: false, glyph: "",    color: "var(--text-muted)",     label: "idle" },
-  stale:     { ring: "var(--state-stale)",   dashed: true,  glyph: "◌", color: "var(--state-stale)",   label: "stale", dim: true },
-  queued:    { ring: "var(--state-queued)",  dashed: true,  glyph: "···", color: "var(--state-queued)",  label: "queued" },
-  running:   { ring: "var(--state-running)", dashed: false, glyph: "◐", color: "var(--state-running)", label: "running" },
-  ok:        { ring: null, dashed: false, glyph: "",    color: "var(--state-ok)",       label: "ok" },
-  "ok.warn": { ring: "var(--state-warn)",    dashed: false, glyph: "~", color: "var(--state-warn)",    label: "warning" },
-  error:     { ring: "var(--state-error)",   dashed: false, glyph: "!", color: "var(--state-error)",   label: "error" },
-  blocked:   { ring: "var(--state-blocked)", dashed: false, glyph: "⊘", color: "var(--state-blocked)", label: "blocked", dim: true },
+  // label은 노드 툴팁과 스크린리더 문장에 그대로 읽힌다 - 영어 상태명을 내보내지 않는다.
+  idle:      { ring: null, dashed: false, glyph: "",    color: "var(--text-muted)",     label: "대기" },
+  stale:     { ring: "var(--state-stale)",   dashed: true,  glyph: "◌", color: "var(--state-stale)",   label: "다시 계산 필요", dim: true },
+  queued:    { ring: "var(--state-queued)",  dashed: true,  glyph: "···", color: "var(--state-queued)",  label: "계산 차례 기다림" },
+  running:   { ring: "var(--state-running)", dashed: false, glyph: "◐", color: "var(--state-running)", label: "계산 중" },
+  ok:        { ring: null, dashed: false, glyph: "",    color: "var(--state-ok)",       label: "정상" },
+  "ok.warn": { ring: "var(--state-warn)",    dashed: false, glyph: "~", color: "var(--state-warn)",    label: "주의" },
+  error:     { ring: "var(--state-error)",   dashed: false, glyph: "!", color: "var(--state-error)",   label: "오류" },
+  blocked:   { ring: "var(--state-blocked)", dashed: false, glyph: "⊘", color: "var(--state-blocked)", label: "앞 블록 오류로 멈춤", dim: true },
 };
 
 // 카테고리 17개 -> 계열 단계. 단계는 Figma의 category/* 변수 그대로다.

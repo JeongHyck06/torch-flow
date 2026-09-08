@@ -22,6 +22,8 @@ import gzip
 import io
 import math
 import struct
+import pickle
+import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -42,7 +44,35 @@ CATALOGUE: dict[str, dict[str, Any]] = {
         # torchvision.transforms.Normalize((0.1307,), (0.3081,))와 같은 값.
         "mean": 0.1307, "std": 0.3081,
     },
+    # ResNet-18·MiniViT 템플릿이 배우는 데이터. 없으면 두 템플릿은 무작위 합성 과제로 돌아
+    # 정확도가 10 % 근처에서 끝난다 - 사람은 그것을 "모델이 고장났다"로 읽는다.
+    "cifar10": {
+        "label": "CIFAR-10", "shape": [3, 32, 32], "classes": 10, "size_mb": 163,
+        "url": "https://www.cs.toronto.edu/~kriz/",
+        "files": {"archive": "cifar-10-python.tar.gz"},
+        "format": "cifar",
+        "names": ["airplane", "automobile", "bird", "cat", "deer",
+                  "dog", "frog", "horse", "ship", "truck"],
+        "mean": [0.4914, 0.4822, 0.4465], "std": [0.2470, 0.2435, 0.2616],
+    },
 }
+
+CIFAR_TRAIN = [f"cifar-10-batches-py/data_batch_{index}" for index in range(1, 6)]
+CIFAR_TEST = ["cifar-10-batches-py/test_batch"]
+
+
+def _cifar_batches(archive: Path, members: list[str]) -> tuple[bytes, list[int]]:
+    """tar 안의 pickle 배치들 -> (픽셀 바이트, 라벨). 픽셀은 이미지마다 R·G·B 평면 1024바이트씩."""
+    pixels, labels = [], []
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in members:
+            stream = tar.extractfile(member)
+            if stream is None:
+                raise OSError(f"{archive.name}에 {member}가 없습니다")
+            batch = pickle.load(stream, encoding="bytes")
+            pixels.append(bytes(batch[b"data"]))
+            labels.extend(int(label) for label in batch[b"labels"])
+    return b"".join(pixels), labels
 
 
 def folder(name: str, base: str | Path) -> Path:
@@ -52,6 +82,20 @@ def folder(name: str, base: str | Path) -> Path:
 def available(name: str, base: str | Path) -> bool:
     return all((folder(name, base) / filename).is_file()
                for filename in CATALOGUE[name]["files"].values())
+
+
+def progress(name: str, base: str | Path) -> dict[str, int]:
+    """받은 바이트와 예상 총량. 받는 중인 파일은 ``.part``라 디스크만 보면 진행률이 나온다 -
+    다운로드 스레드가 따로 보고하지 않아도 되고, 다른 창이 시작한 다운로드도 보인다."""
+    entry = CATALOGUE[name]
+    target = folder(name, base)
+    got = 0
+    for filename in entry["files"].values():
+        for path in (target / filename, target / f"{filename}.part"):
+            if path.is_file():
+                got += path.stat().st_size
+                break
+    return {"bytes": got, "total": int(entry["size_mb"] * 1024 * 1024)}
 
 
 def download(name: str, base: str | Path) -> list[Path]:
@@ -71,27 +115,49 @@ def download(name: str, base: str | Path) -> list[Path]:
     return written
 
 
-def read_idx(path: Path):
-    """IDX(gzip) -> uint8 텐서. 헤더는 magic 4바이트(0, 0, 타입, 차원 수) + 차원별 int32 big-endian."""
-    import torch
-
+def _idx(path: Path) -> tuple[tuple[int, ...], bytes]:
+    """IDX(gzip) -> (모양, 원시 바이트). 헤더는 magic 4바이트(0, 0, 타입, 차원 수) + 차원별 int32 big-endian."""
     with gzip.open(path, "rb") as stream:
         raw = stream.read()
     dims = raw[3]
-    shape = struct.unpack(">" + "I" * dims, raw[4:4 + 4 * dims])
-    return torch.frombuffer(bytearray(raw[4 + 4 * dims:]), dtype=torch.uint8).reshape(shape)
+    return struct.unpack(">" + "I" * dims, raw[4:4 + 4 * dims]), raw[4 + 4 * dims:]
+
+
+def read_idx(path: Path):
+    """IDX(gzip) -> uint8 텐서."""
+    import torch
+
+    shape, raw = _idx(path)
+    return torch.frombuffer(bytearray(raw), dtype=torch.uint8).reshape(shape)
 
 
 def load(name: str, base: str | Path) -> dict[str, tuple]:
     """``{"train": (x, y), "test": (x, y)}``. x는 정규화된 float32 ``[N, C, H, W]``, y는 int64."""
     entry = CATALOGUE[name]
     target = folder(name, base)
+    if entry.get("format") == "cifar":
+        return _load_cifar(target / entry["files"]["archive"], entry)
     splits = {}
     for split in ("train", "test"):
         images = read_idx(target / entry["files"][f"{split}_images"]).float().div_(255)
         images = images.sub_(entry["mean"]).div_(entry["std"]).reshape(-1, *entry["shape"])
         labels = read_idx(target / entry["files"][f"{split}_labels"]).long()
         splits[split] = (images, labels)
+    return splits
+
+
+def _load_cifar(archive: Path, entry: dict[str, Any]) -> dict[str, tuple]:
+    # ponytail: 5만 장을 float32로 통째로 올린다(약 600 MB). 그 위는 디스크 캐시가 필요하다.
+    import torch
+
+    mean = torch.tensor(entry["mean"]).view(1, 3, 1, 1)
+    std = torch.tensor(entry["std"]).view(1, 3, 1, 1)
+    splits = {}
+    for split, members in (("train", CIFAR_TRAIN), ("test", CIFAR_TEST)):
+        raw, labels = _cifar_batches(archive, members)
+        images = torch.frombuffer(bytearray(raw), dtype=torch.uint8).reshape(-1, *entry["shape"])
+        images = images.float().div_(255).sub_(mean).div_(std)
+        splits[split] = (images, torch.tensor(labels, dtype=torch.int64))
     return splits
 
 
@@ -102,6 +168,7 @@ LABEL_COLUMNS = ("label", "target", "y", "class")
 MISSING = {"", "na", "n/a", "nan", "null", "none", "?"}
 MAX_SIDE = 64          # 자동 인식 기본값. 레시피의 size가 이긴다.
 MAX_UNIQUES = 100      # 고유값이 이보다 많은 열은 정답(클래스) 열로 쓰지 않는다.
+MAX_PREVIEW_CLASSES = 10   # 미리보기 격자는 이 수까지만 - 클래스 100개면 격자가 화면을 넘긴다.
 VAL_FRACTION = 0.2     # test 분할이 없는 사용자 데이터는 시드 0으로 8:2 나눈다.
 SIZES = (28, 32, 48, 64, 96, 128)
 
@@ -365,25 +432,90 @@ def preview(spec: dict[str, Any], base: str | Path, recipe: dict[str, Any] | Non
         effective["class_counts"] = counts
         extra = {"columns": spec["columns"], "rows": rows[:5], "header": header}
     elif spec["kind"] == "image_folder":
-        extra = {"thumbnails": _thumbnails(folder, effective)}
+        extra = {"thumbnails": _safe_thumbnails(lambda: _folder_samples(folder, effective))}
+    elif spec["kind"] == "builtin" and spec["available"]:
+        # 내장 데이터는 레시피가 없지만 무엇이 들었는지는 보여야 한다. 라벨 파일은 작다.
+        entry = CATALOGUE[spec["name"]]
+        if entry.get("format") == "cifar":
+            archive = folder / entry["files"]["archive"]
+            labels = bytes(_cifar_batches(archive, CIFAR_TRAIN)[1])
+            held = len(_cifar_batches(archive, CIFAR_TEST)[1])
+        else:
+            labels = _idx(folder / entry["files"]["train_labels"])[1]
+            held = _idx(folder / entry["files"]["test_labels"])[0][0]
+        names = entry.get("names") or [str(label) for label in range(entry["classes"])]
+        counts = {name: labels.count(label) for label, name in enumerate(names)}
+        effective.update(class_names=names, class_counts=counts, count=len(labels) + held,
+                         split={"train": len(labels), "val": held})
+        extra = {"thumbnails": _safe_thumbnails(lambda: _builtin_samples(folder, spec["name"], labels))}
     return {"base": spec, "spec": effective, "preview": extra}
 
 
-def _thumbnails(folder: Path, effective: dict[str, Any], per_class: int = 6, tile: int = 40) -> dict | None:
-    """클래스마다 앞쪽 몇 장을 한 PNG에 격자로. PIL이 없으면 None."""
+def _safe_thumbnails(build) -> dict | None:
+    """PIL이 없으면 격자 없이 간다 - 적재 때 워커가 분명히 말한다."""
     try:
-        from PIL import Image
+        return _thumbnails(build())
     except ImportError:
         return None
+
+
+def _folder_samples(folder: Path, effective: dict[str, Any], per_class: int = 6) -> dict[str, list]:
+    from PIL import Image
+
     files = _image_files(folder)
-    names = effective["class_names"][:8]
     mode = "L" if effective["shape"][0] == 1 else "RGB"
-    sheet = Image.new("RGB", (per_class * tile, max(len(names), 1) * tile), (249, 250, 251))
-    for row, name in enumerate(names):
-        for column, path in enumerate(files.get(name, [])[:per_class]):
+    samples: dict[str, list] = {}
+    for name in effective["class_names"][:MAX_PREVIEW_CLASSES]:
+        samples[name] = []
+        for path in files.get(name, [])[:per_class]:
             with Image.open(path) as image:
-                sheet.paste(image.convert(mode).resize((tile, tile)).convert("RGB"),
-                            (column * tile, row * tile))
+                samples[name].append(image.convert(mode))
+    return samples
+
+
+def _builtin_samples(folder: Path, name: str, labels: bytes, per_class: int = 6) -> dict[str, list]:
+    """IDX 이미지에서 클래스마다 앞쪽 몇 장. torch 없이 바이트를 그대로 PIL에 넣는다."""
+    from PIL import Image
+
+    entry = CATALOGUE[name]
+    names = entry.get("names") or [str(label) for label in range(entry["classes"])]
+    if entry.get("format") == "cifar":
+        # 미리보기는 첫 배치(1만 장)면 충분하다. 평면(RRR…GGG…BBB)을 채널로 합친다.
+        pixels, first = _cifar_batches(folder / entry["files"]["archive"], CIFAR_TRAIN[:1])
+        labels = bytes(first)
+        rows = cols = entry["shape"][1]
+        plane = rows * cols
+
+        def tile(at: int):
+            start = at * 3 * plane
+            return Image.merge("RGB", [Image.frombytes("L", (cols, rows),
+                                                       pixels[start + channel * plane:start + (channel + 1) * plane])
+                                       for channel in range(3)])
+    else:
+        (_, rows, cols), pixels = _idx(folder / entry["files"]["train_images"])
+        size = rows * cols
+
+        def tile(at: int):
+            return Image.frombytes("L", (cols, rows), pixels[at * size:(at + 1) * size])
+    samples: dict[str, list] = {}
+    for label in range(min(entry["classes"], MAX_PREVIEW_CLASSES)):
+        images, at = [], -1
+        while len(images) < per_class and (at := labels.find(bytes([label]), at + 1)) >= 0:
+            images.append(tile(at))
+        samples[names[label]] = images
+    return samples
+
+
+def _thumbnails(samples: dict[str, list], tile: int = 40) -> dict:
+    """{클래스: [PIL 이미지]} -> 클래스마다 한 줄인 격자 PNG 하나."""
+    from PIL import Image
+
+    names = list(samples)[:MAX_PREVIEW_CLASSES]
+    per_class = max((len(samples[name]) for name in names), default=0)
+    sheet = Image.new("RGB", (max(per_class, 1) * tile, max(len(names), 1) * tile), (249, 250, 251))
+    for row, name in enumerate(names):
+        for column, image in enumerate(samples[name]):
+            sheet.paste(image.resize((tile, tile)).convert("RGB"), (column * tile, row * tile))
     buffer = io.BytesIO()
     sheet.save(buffer, format="PNG")
     return {"png": base64.b64encode(buffer.getvalue()).decode(), "labels": names,

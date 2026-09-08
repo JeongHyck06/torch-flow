@@ -173,13 +173,14 @@ export function NodeCard({ data }: NodeProps) {
                 <span className="badge badge--ok">✓ {node.elapsedMs.toFixed(0)} ms</span>
               )}
               {node.gradRatio !== undefined && (
-                <span className={`badge ${node.gradWarn ? "badge--warn" : "badge--ok"}`}>
-                  {node.gradWarn ? "~ " : ""}grad {formatRatio(node.gradRatio)}
+                <span className={`badge ${node.gradWarn ? "badge--warn" : "badge--ok"}`}
+                      title="기울기 크기 ÷ 가중치 크기. 너무 작으면 이 블록이 거의 배우지 않습니다">
+                  {node.gradWarn ? "~ " : ""}기울기 {formatRatio(node.gradRatio)}
                 </span>
               )}
               {node.folded && node.gradNorm !== undefined && (
                 <span className={`badge ${node.gradWarn ? "badge--warn" : ""}`}
-                      title="접힌 내부의 최대 ‖g‖ (§6.1)">
+                      title="접어 둔 안쪽 블록들의 기울기 크기 중 가장 큰 값">
                   max {node.gradNorm.toExponential(1)}
                 </span>
               )}

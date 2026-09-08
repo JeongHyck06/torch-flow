@@ -15,6 +15,33 @@
 @import "@fontsource/ibm-plex-mono/latin-500.css";
 @import "./tokens.css";
 
+/* ── 모션과 재질. 색 토큰은 tokens.css(Figma)의 것이고, 이건 코드의 것이다 ──────
+ * 이징은 빠르게 나가서 부드럽게 멈추는 곡선 하나. 재질(반투명 + 블러)과 옅은 그림자는
+ * 캔버스 위에 잠깐 뜨는 것(팔레트, 데이터 창, 단계 표시줄, 손잡이)에만 쓴다 - 붙어 있는
+ * 패널은 여전히 헤어라인이다. prefers-reduced-motion이면 아래의 규칙이 모두 0ms가 된다. */
+:root {
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 140ms;
+  --dur: 220ms;
+  --dur-slow: 340ms;
+  --material-popover: rgba(255, 255, 255, 0.78);
+  --material-sheet: rgba(255, 255, 255, 0.93);
+  --blur-popover: saturate(180%) blur(20px);
+  --shadow-popover: 0 12px 32px rgba(25, 31, 40, 0.12), 0 1px 2px rgba(25, 31, 40, 0.06);
+}
+@keyframes tf-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tf-rise-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes tf-rise-in-centered {
+  from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes tf-pop-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px) scale(0.985); }
+  to { opacity: 1; transform: translateX(-50%); }
+}
+@keyframes tf-draw { to { stroke-dashoffset: 0; } }
+@keyframes tf-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+
 * { box-sizing: border-box; }
 
 body {
@@ -118,8 +145,42 @@ body {
   padding: 1px 4px; background: none; color: var(--text-primary);
 }
 .field--wide { width: 150px; }
+/* 슬라이더 + 숫자 칸. 값 열 폭(96px)은 그대로 두고 안에서 나눠 쓴다. */
+.field__slider { display: flex; align-items: center; gap: 6px; }
+.field__slider input[type="range"] { width: 72px; accent-color: var(--text-primary); }
+.field--num { width: 52px; }
 .field:hover { border-color: var(--border-subtle); }
 .field:focus { outline: none; border-color: var(--text-primary); background: var(--surface-panel); }
+
+/* Inspector 행의 보조 동작 - hp 승격, 변형 적용 같은 작은 버튼. */
+.rowvalue { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.rowaction {
+  font-size: 11px; color: var(--text-muted); background: none; padding: 1px 5px;
+  border: 1px solid var(--border-subtle); border-radius: 4px; cursor: pointer;
+}
+.rowaction:hover { color: var(--text-primary); border-color: var(--text-primary); }
+.variant { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.inspector__addvariant { display: flex; gap: 6px; margin-top: 6px; }
+
+/* 코드가 밖에서 바뀌었을 때의 알림과 확인 창 (기획서 7.6.2). */
+.reimport__chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  border: 1px solid var(--border-subtle); border-radius: 999px; padding: 2px 10px;
+  background: var(--surface-panel); color: var(--text-primary); cursor: pointer;
+}
+.reimport__chip:hover { border-color: var(--text-primary); }
+.reimport__scrim {
+  position: fixed; inset: 0; background: rgba(17, 19, 24, 0.35); z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+}
+.reimport {
+  width: min(560px, 90vw); background: var(--surface-panel); border-radius: 12px;
+  border: 1px solid var(--border-subtle); padding: 20px; display: grid; gap: 10px;
+  box-shadow: 0 24px 60px rgba(17, 19, 24, 0.24);
+}
+.reimport h3 { margin: 0; font-size: 15px; }
+.reimport__list { margin: 0; padding-left: 18px; max-height: 240px; overflow-y: auto; font-size: 12px; }
+.reimport__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 .export { display: flex; align-items: center; gap: 8px; }
 .export__label { font-size: 12px; color: var(--text-muted); }
@@ -135,6 +196,7 @@ body {
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--state-idle); }
 .dot--on { background: var(--state-ok); }
 .dot--off { background: var(--state-error); }
+.dot--warn { background: var(--state-warn, var(--state-queued)); }
 
 :where(button, input, a):focus-visible { outline: 2px solid var(--state-queued); outline-offset: 1px; }
 
@@ -184,15 +246,23 @@ body {
 
 /* ── 노드 ────────────────────────────────────────────────────────── */
 
-.node { position: relative; }
+.node { position: relative; animation: tf-fade-in var(--dur) var(--ease); }
 
 .node__card {
   background: var(--surface-node);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-node);
   overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease);
 }
-.node__card--selected { border-color: var(--text-primary); }
+.node:hover .node__card { border-color: var(--text-muted); }
+.node__card--selected, .node:hover .node__card--selected { border-color: var(--text-primary); }
+/* 줌이 낮을수록 글자를 키워 화면에서는 늘 읽힌다(--zoom은 Canvas가 준다). flow px 상한으로 카드가 무한정 커지지 않게. */
+.node--far .node__title { font-size: clamp(14px, calc(13px / var(--zoom, 1)), 26px); }
+.node--mid .node__title { font-size: clamp(14px, calc(13px / var(--zoom, 1)), 20px); }
+.node--mid .node__params, .node--mid .node__shape {
+  font-size: clamp(12px, calc(11px / var(--zoom, 1)), 16px);
+}
 .node--focused .node__card { box-shadow: none; border-color: var(--state-queued); }
 
 .node__strip { height: var(--size-header-strip); }
@@ -239,12 +309,20 @@ body {
 /* 상태 링 — 카드에서 6px 떨어진 별도 사각형 */
 .node__ring {
   position: absolute; inset: -6px; border-width: 2px; border-radius: 18px;
-  pointer-events: none;
+  pointer-events: none; transition: border-color var(--dur) var(--ease);
 }
 
+/* 보이는 점은 10px, 잡히는 영역은 22px(데스크톱 최소 컨트롤 20pt). 실제로 선 잇기가 자주 빗나갔다. */
 .port {
-  width: 10px; height: 10px;
+  width: 26px; height: 26px; background: transparent; border: 0; border-radius: 50%;
+}
+.port::after {
+  content: ""; position: absolute; inset: 8px; border-radius: 50%; box-sizing: border-box;
   background: var(--dtype-f32); border: 2px solid var(--surface-node);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.port:hover::after, .react-flow__handle.connectingto::after, .react-flow__handle.valid::after {
+  transform: scale(1.4);
 }
 
 /* ── React Flow 덮어쓰기 ─────────────────────────────────────────── */
@@ -340,6 +418,15 @@ body {
 .templates__name { font-size: 14px; font-weight: 500; }
 .templates__recipe { font-size: 12px; color: var(--text-muted); }
 .templates__metric { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+.templates__item { display: flex; align-items: stretch; }
+.templates__item .templates__row { flex: 1 0 0; min-width: 0; }
+.templates__delete {
+  background: none; border: 0; border-bottom: 1px solid var(--border-subtle); cursor: pointer;
+  font: 500 12px var(--font-sans); color: var(--text-muted); padding: 0 0 0 12px;
+  transition: color var(--dur-fast) var(--ease);
+}
+.templates__delete:hover:not(:disabled) { color: var(--state-ink-error); }
+.templates__delete:disabled { cursor: default; }
 
 .snippet {
   display: flex; flex-direction: column; gap: 5px;
@@ -356,11 +443,11 @@ body {
 
 .templates__row--on .templates__name { color: var(--state-ok); }
 .datacard { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
-.datacard h3 {
+.datacard h3, .testpanel h3 {
   margin: 12px 0 6px; font-size: 11px; font-weight: 500; letter-spacing: 0.04em;
   text-transform: uppercase; color: var(--text-muted);
 }
-.datacard h3:first-child { margin-top: 0; }
+.datacard h3:first-child, .testpanel h3:first-child { margin-top: 0; }
 .datacard__checks { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; }
 .datacard__checks label { display: flex; align-items: center; gap: 5px; }
 .datacard__bars { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
@@ -400,18 +487,37 @@ body {
 .blockdetail__fill { position: absolute; left: 0; top: 1px; height: 6px; border-radius: 2px; background: var(--dtype-f32); }
 .blockdetail__fill--before { top: 1px; background: var(--border-default); }
 
+/* 테스트 탭 - 데이터 카드와 같은 두 열. 색은 오답의 error 하나뿐이다. */
+.testpanel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+.testpanel h3 .muted { text-transform: none; letter-spacing: 0; margin-left: 6px; font-weight: 400; }
+.testpanel__matrix th, .testpanel__matrix td { text-align: right; }
+.testpanel__matrix tbody th { color: var(--text-secondary); font-weight: 500; }
+.testpanel__hit { font-weight: 600; }
+.testpanel__miss { color: var(--state-ink-error); }
+.testpanel__tiles { display: flex; flex-wrap: wrap; gap: 8px; }
+.testpanel__tile { display: flex; flex-direction: column; align-items: center; gap: 3px; margin: 0; width: 56px; }
+.testpanel__tile img {
+  width: 56px; height: 56px; image-rendering: pixelated;
+  border: 1px solid var(--border-subtle); border-radius: 3px;
+}
+.testpanel__tile--wrong img { border-color: var(--state-error); }
+.testpanel__tile figcaption { font-size: 11px; text-align: center; line-height: 1.3; }
+.testpanel__truth { display: block; color: var(--state-ink-error); }
+
 /* ── Input 데이터 창 · 팔레트와 같은 떠 있는 패널(헤어라인, radius 12, 그림자 없음) ── */
 
 .datadialog__scrim {
   position: absolute; inset: 0; z-index: 8;
-  background: var(--surface-canvas); opacity: 0.6;
+  background: var(--surface-canvas); opacity: 0.6; animation: tf-fade-in var(--dur) var(--ease);
 }
 .datadialog {
   position: absolute; z-index: 9; left: 50%; top: 32px; transform: translateX(-50%);
   width: min(940px, calc(100% - 48px)); max-height: calc(100% - 64px);
   display: flex; flex-direction: column;
-  background: var(--surface-panel);
+  background: var(--material-sheet);
+  -webkit-backdrop-filter: var(--blur-popover); backdrop-filter: var(--blur-popover);
   border: 1px solid var(--border-default); border-radius: var(--radius-panel); overflow: hidden;
+  box-shadow: var(--shadow-popover); animation: tf-pop-in var(--dur-slow) var(--ease);
 }
 .datadialog__head {
   display: flex; align-items: center; gap: 12px;
@@ -439,7 +545,18 @@ body {
   display: flex; justify-content: flex-end; gap: 8px;
   padding: 10px 16px; border-top: 1px solid var(--border-subtle);
 }
+/* 트랙은 시트 재질 위에 놓이므로 --surface-canvas면 묻힌다. 눌린 홈처럼 한 단 어둡게. */
+.datadialog__progress {
+  appearance: none; -webkit-appearance: none; width: 220px; height: 6px;
+  border: 0; border-radius: 3px; background: var(--surface-active);
+}
+.datadialog__progress::-webkit-progress-bar { background: var(--surface-active); border-radius: 3px; }
+.datadialog__progress::-webkit-progress-value { background: var(--state-running); border-radius: 3px; }
+.datadialog__progress::-moz-progress-bar { background: var(--state-running); border-radius: 3px; }
 .inspector__action { margin-top: 10px; }
+.inspector__fix { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.inspector__fix p { margin: 0; }
+.field--default { opacity: 0.55; }
 .inspector__actions { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ── 단계 표시줄 · 캔버스 왼쪽 위. 색 없이 글리프와 굵기로만 상태를 말한다 ── */
@@ -447,8 +564,9 @@ body {
 .stages {
   position: absolute; top: 12px; left: 12px; z-index: 5;
   display: flex; list-style: none; margin: 0; padding: 0;
-  background: var(--surface-panel); border: 1px solid var(--border-default); border-radius: 8px;
-  overflow: hidden;
+  background: var(--material-popover); -webkit-backdrop-filter: var(--blur-popover); backdrop-filter: var(--blur-popover);
+  border: 1px solid var(--border-default); border-radius: 8px;
+  overflow: hidden; animation: tf-fade-in var(--dur-slow) var(--ease);
 }
 .stages__item + .stages__item { border-left: 1px solid var(--border-subtle); }
 .stages__button {
@@ -462,6 +580,51 @@ body {
 .stages__item--done .stages__button, .stages__item--active .stages__button { color: var(--text-primary); }
 .stages__item--active .stages__name { text-decoration: underline; text-underline-offset: 3px; }
 .stages__item--error .stages__button, .stages__item--error .stages__detail { color: var(--state-ink-warn); }
+/* 회색 배경(선택·hover) 위의 muted는 4.5:1이 안 된다 - 한 단계 진하게. */
+.layers__row--on .layers__shape, .palette__row--on .palette__category,
+.stages__button:hover .stages__detail { color: var(--text-secondary); }
+.stages__button { transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.stages__item--active .stages__glyph { animation: tf-breathe 1.8s ease-in-out infinite; }
+.stages__help { align-self: stretch; justify-content: center; padding: 6px 10px; font-family: var(--font-mono); }
+.stages__help[aria-pressed="true"] { color: var(--text-primary); }
+
+/* ── 단계별 안내문 · 단계 표시줄 바로 아래. 같은 재질, 한 문단, 행동 버튼 하나 ── */
+
+.guide {
+  position: absolute; top: 66px; left: 12px; z-index: 5; max-width: 440px;
+  margin: 0; padding: 10px 14px 10px;
+  background: var(--material-popover); -webkit-backdrop-filter: var(--blur-popover); backdrop-filter: var(--blur-popover);
+  border: 1px solid var(--border-default); border-radius: 8px;
+  font: 400 12px/1.55 var(--font-sans); color: var(--text-primary);
+  animation: tf-fade-in var(--dur-slow) var(--ease);
+}
+.guide__kicker { margin: 0 0 2px; font-size: 11px; letter-spacing: 0.04em; color: var(--text-muted); }
+.guide__text { margin: 0; }
+.guide__notice { margin: 6px 0 0; font-size: 11px; color: var(--state-ink-warn); }
+.guide__actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* ── 상단 바 도구 메뉴 · 네이티브 details, 떠 있는 것이라 팝오버 재질 ── */
+
+.tools { position: relative; }
+.tools__summary {
+  list-style: none; cursor: pointer; padding: 4px 10px; border-radius: 6px;
+  font: 500 12px var(--font-sans); color: var(--text-secondary); border: 1px solid transparent;
+}
+.tools__summary::-webkit-details-marker { display: none; }
+.tools__summary:hover, .tools[open] > .tools__summary { background: var(--surface-dock); color: var(--text-primary); }
+.tools__menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 320px;
+  padding: 8px 12px; display: flex; flex-direction: column; gap: 6px;
+  background: var(--material-popover); -webkit-backdrop-filter: var(--blur-popover); backdrop-filter: var(--blur-popover);
+  border: 1px solid var(--border-default); border-radius: 8px; box-shadow: var(--shadow-popover);
+  animation: tf-fade-in var(--dur-fast) var(--ease);
+}
+.tools__row { display: flex; align-items: center; gap: 10px; min-height: 26px; font-size: 12px; }
+.tools__hint { color: var(--text-muted); font-size: 11px; }
+.tools__row .totals__batch { display: flex; align-items: center; gap: 6px; }
+
+.runpanel__tab--dim { color: var(--text-muted); }
+.runpanel__tab--divided { margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--border-subtle); }
 
 .datafolder { display: flex; gap: 8px; margin-top: 10px; }
 .datafolder input {
@@ -487,6 +650,21 @@ body {
 }
 .solid { background: var(--surface-action); color: var(--text-on-action); border: 0; }
 .ghost:disabled, .solid:disabled { opacity: 0.45; cursor: default; }
+.ghost, .solid, .trainer__run, .trainer__stop, .runpanel__tab, .runpanel__close, .templates__row,
+.layers__row, .dropband__half {
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
+              filter var(--dur-fast) var(--ease);
+}
+.ghost:hover:not(:disabled) { background: var(--surface-active); }
+.solid:hover:not(:disabled), .trainer__run:hover:not(:disabled) { filter: brightness(1.25); }
+.trainer__stop:hover:not(:disabled) { background: var(--surface-dock); color: var(--text-primary); }
+.ghost:active:not(:disabled), .solid:active:not(:disabled), .trainer__run:active:not(:disabled),
+.trainer__stop:active:not(:disabled), .stages__button:active { transform: scale(0.97); }
+.templates__row:hover:not(:disabled) { background: var(--surface-canvas); }
+.inspector__body { animation: tf-fade-in var(--dur) var(--ease); }
+.react-flow__edge-path { transition: stroke var(--dur-fast) var(--ease); }
+.emptycanvas { animation: tf-fade-in var(--dur-slow) var(--ease); }
 
 .start__footer {
   margin-top: auto; padding: 24px 0 28px;
@@ -499,9 +677,12 @@ body {
 .palette__scrim { position: absolute; inset: 0; z-index: 8; }
 .palette {
   position: absolute; z-index: 9; left: 50%; top: 140px; transform: translateX(-50%);
-  width: 392px; background: var(--surface-panel);
+  width: 392px; background: var(--material-popover);
+  -webkit-backdrop-filter: var(--blur-popover); backdrop-filter: var(--blur-popover);
   border: 1px solid var(--border-default); border-radius: 12px; overflow: hidden;
+  box-shadow: var(--shadow-popover); animation: tf-pop-in var(--dur) var(--ease);
 }
+.palette__row { transition: background-color var(--dur-fast) var(--ease); }
 .palette__search {
   display: flex; align-items: center; gap: 8px; padding: 10px 14px;
   border-bottom: 1px solid var(--border-subtle);
@@ -549,17 +730,21 @@ body {
 .canvas { position: relative; display: flex; flex-direction: column; }
 .canvas > .react-flow { flex: 1; min-height: 0; }
 
+/* 아래 가운데. 왼쪽 아래는 캔버스 확대·전체 보기 버튼 자리라 겹쳤다. */
 .runpanel__handle {
-  position: absolute; left: 12px; bottom: 12px; z-index: 5;
-  background: var(--surface-panel); border: 1px solid var(--border-default);
-  border-radius: 6px; padding: 5px 10px; cursor: pointer;
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5;
+  background: var(--material-popover); -webkit-backdrop-filter: var(--blur-popover); backdrop-filter: var(--blur-popover);
+  border: 1px solid var(--border-default); border-radius: 999px; padding: 6px 14px; cursor: pointer;
   font: 500 12px var(--font-sans); color: var(--text-secondary);
+  animation: tf-rise-in-centered var(--dur) var(--ease);
+  transition: color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
 }
-.runpanel__handle:hover { color: var(--text-primary); }
+.runpanel__handle:hover { color: var(--text-primary); background: var(--surface-panel); }
 
 .runpanel {
   position: relative; flex-shrink: 0; height: 232px; display: flex; flex-direction: column;
   background: var(--surface-panel); border-top: 1px solid var(--border-subtle);
+  animation: tf-rise-in var(--dur) var(--ease);
 }
 /* 위쪽 헤어라인이 손잡이다. 6px 높이라 보이지는 않고 잡힌다. */
 .runpanel__grip {
@@ -635,12 +820,16 @@ body {
 .trainer__progress { font-size: 12px; color: var(--text-secondary); }
 .trainer__note { font-size: 11px; }
 
-.curves__legend { display: flex; align-items: center; gap: 14px; font-size: 12px; margin-bottom: 8px; }
+.curves__legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; margin-bottom: 8px; }
+.curves__legend > span { white-space: nowrap; }
 .curves__key { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); }
-.curves__swatch { width: 10px; height: 2px; border-radius: 1px; }
+.curves__key { display: inline-flex; align-items: center; gap: 6px; }
+.curves__swatch { flex-shrink: 0; width: 18px; height: 4px; }
 /* 곡선은 패널이 커지는 만큼 같이 커진다. */
 .runpanel__body > .curves { flex: 1 1 150px; min-height: 150px; display: flex; flex-direction: column; }
 .curves__plot { width: 100%; height: 150px; flex: 1; min-height: 0; }
+/* 곡선은 왼쪽부터 그려진다. 값이 갱신될 때는 다시 그리지 않는다(요소가 유지된다). */
+.curves__plot polyline { stroke-dasharray: 4000; stroke-dashoffset: 4000; animation: tf-draw 700ms var(--ease) forwards; }
 
 /* ── 모듈 트리 (Figma 02 Attach mode 왼쪽) ────────────────────────── */
 
@@ -664,7 +853,7 @@ body {
 .layers__row--on { background: var(--surface-active); }
 .layers__thumb { display: flex; flex-shrink: 0; width: 34px; height: 22px; }
 .layers__thumb > * { width: 34px; height: 22px; border-radius: 3px; }
-.layers__blank { border: 1px solid var(--border-subtle); }
+.layers__blank { border: 0; }   /* 그림이 없을 때 빈 칸. 테두리를 두면 체크박스처럼 읽힌다 */
 .layers__text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
 .layers__name {
   font-size: 12px; font-weight: 600; letter-spacing: -0.01em;
@@ -677,3 +866,17 @@ body {
 
 .trainlog__head { font-size: 11px; margin-bottom: 6px; }
 .trainlog { max-height: 240px; overflow: auto; line-height: 1.55; }
+
+/* 실패 안내. 색은 tokens.css의 오류 토큰만 쓴다 - 이 파일에 생색은 없다. */
+.training-failure {
+  flex-basis: 100%; padding: 16px; border-radius: 8px;
+  border: 1px solid var(--state-error); background: var(--state-bg-error);
+  color: var(--state-ink-error);
+}
+.training-failure p { margin: 8px 0; }
+.training-failure pre {
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto;
+  font-size: 12px; color: var(--text-secondary);
+}
+.training-failure details { margin: 12px 0; }
+.training-failure summary { cursor: pointer; }

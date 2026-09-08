@@ -1,139 +1,746 @@
 {
   "schema_version": "1.0.0",
-  "meta": {"app_version": "0.0.1", "id": "01J9Q3ZK"},
+  "meta": {
+    "app_version": "0.0.1",
+    "id": "01J9Q3ZK"
+  },
   "hparams": {
-    "dim":       {"type": "int",   "default": 192},
-    "heads":     {"type": "int",   "default": 6},
-    "depth":     {"type": "int",   "default": 6},
-    "patch":     {"type": "int",   "default": 4},
-    "attn_type": {"type": "enum",  "choices": ["baseline", "none"], "default": "baseline"},
-    "init_std":  {"type": "float", "default": 0.02, "space": {"loguniform": [0.005, 0.1]}}
+    "dim": {
+      "type": "int",
+      "default": 192
+    },
+    "heads": {
+      "type": "int",
+      "default": 6
+    },
+    "depth": {
+      "type": "int",
+      "default": 6
+    },
+    "patch": {
+      "type": "int",
+      "default": 4
+    },
+    "attn_type": {
+      "type": "enum",
+      "choices": [
+        "baseline",
+        "none"
+      ],
+      "default": "baseline"
+    },
+    "init_std": {
+      "type": "float",
+      "default": 0.02,
+      "space": {
+        "loguniform": [
+          0.005,
+          0.1
+        ]
+      }
+    }
   },
   "composites": {
     "PatchEmbed": {
       "doc": "Conv patchifier followed by a flatten/transpose to token sequence.",
-      "params": {"patch": {"type": "int"}, "in_ch": {"type": "int"}, "dim": {"type": "int"}},
-      "ports": {"in":  [{"name": "x", "type": "Tensor", "shape": ["B", "in_ch", "H", "W"]}],
-                "out": [{"name": "y", "type": "Tensor", "shape": ["B", "L", "dim"]}]},
+      "params": {
+        "patch": {
+          "type": "int"
+        },
+        "in_ch": {
+          "type": "int"
+        },
+        "dim": {
+          "type": "int"
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "in_ch",
+              "H",
+              "W"
+            ]
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ]
+      },
       "instances": {
-        "01J9I301": {"label": "proj", "type": "torch.nn.Conv2d",
-                     "args": {"in_channels": {"$p": "in_ch"}, "out_channels": {"$p": "dim"},
-                              "kernel_size": {"$p": "patch"}, "stride": {"$p": "patch"}}}
+        "01J9I301": {
+          "label": "proj",
+          "type": "torch.nn.Conv2d",
+          "args": {
+            "in_channels": {
+              "$p": "in_ch"
+            },
+            "out_channels": {
+              "$p": "dim"
+            },
+            "kernel_size": {
+              "$p": "patch"
+            },
+            "stride": {
+              "$p": "patch"
+            }
+          }
+        }
       },
       "nodes": [
-        {"label": "proj",      "id": "01J9Q4C1", "call": "01J9I301", "method": "forward"},
-        {"label": "flatten",   "id": "01J9Q4C2", "type": "torch.flatten", "args": {"start_dim": 2}},
-        {"label": "transpose", "id": "01J9Q4C3", "type": "torch.transpose", "args": {"dim0": 1, "dim1": 2}}
+        {
+          "label": "proj",
+          "id": "01J9Q4C1",
+          "call": "01J9I301",
+          "method": "forward"
+        },
+        {
+          "label": "flatten",
+          "id": "01J9Q4C2",
+          "type": "torch.flatten",
+          "args": {
+            "start_dim": 2
+          }
+        },
+        {
+          "label": "transpose",
+          "id": "01J9Q4C3",
+          "type": "torch.transpose",
+          "args": {
+            "dim0": 1,
+            "dim1": 2
+          }
+        }
       ],
-      "edges": [["$in.x", "01J9Q4C1.input"], ["01J9Q4C1.output", "01J9Q4C2.input"],
-                ["01J9Q4C2.output", "01J9Q4C3.input"], ["01J9Q4C3.output", "$out.y"]]
+      "edges": [
+        [
+          "$in.x",
+          "01J9Q4C1.input"
+        ],
+        [
+          "01J9Q4C1.output",
+          "01J9Q4C2.input"
+        ],
+        [
+          "01J9Q4C2.output",
+          "01J9Q4C3.input"
+        ],
+        [
+          "01J9Q4C3.output",
+          "$out.y"
+        ]
+      ]
     },
     "MLP": {
-      "params": {"dim": {"type": "int"}, "mult": {"type": "int"}},
-      "ports": {"in":  [{"name": "x", "type": "Tensor", "shape": ["B", "L", "dim"]}],
-                "out": [{"name": "y", "type": "Tensor", "shape": ["B", "L", "dim"]}]},
+      "params": {
+        "dim": {
+          "type": "int"
+        },
+        "mult": {
+          "type": "int"
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ]
+      },
       "instances": {
-        "01J9I401": {"label": "fc1", "type": "torch.nn.Linear",
-                     "args": {"in_features": {"$p": "dim"}, "out_features": {"$expr": "p.dim * p.mult"}}},
-        "01J9I402": {"label": "act", "type": "torch.nn.GELU"},
-        "01J9I403": {"label": "fc2", "type": "torch.nn.Linear",
-                     "args": {"in_features": {"$expr": "p.dim * p.mult"}, "out_features": {"$p": "dim"}}}
+        "01J9I401": {
+          "label": "fc1",
+          "type": "torch.nn.Linear",
+          "args": {
+            "in_features": {
+              "$p": "dim"
+            },
+            "out_features": {
+              "$expr": "p.dim * p.mult"
+            }
+          }
+        },
+        "01J9I402": {
+          "label": "act",
+          "type": "torch.nn.GELU"
+        },
+        "01J9I403": {
+          "label": "fc2",
+          "type": "torch.nn.Linear",
+          "args": {
+            "in_features": {
+              "$expr": "p.dim * p.mult"
+            },
+            "out_features": {
+              "$p": "dim"
+            }
+          }
+        }
       },
       "nodes": [
-        {"label": "fc1", "id": "01J9Q4D1", "call": "01J9I401", "method": "forward"},
-        {"label": "act", "id": "01J9Q4D2", "call": "01J9I402", "method": "forward"},
-        {"label": "fc2", "id": "01J9Q4D3", "call": "01J9I403", "method": "forward"}
+        {
+          "label": "fc1",
+          "id": "01J9Q4D1",
+          "call": "01J9I401",
+          "method": "forward"
+        },
+        {
+          "label": "act",
+          "id": "01J9Q4D2",
+          "call": "01J9I402",
+          "method": "forward"
+        },
+        {
+          "label": "fc2",
+          "id": "01J9Q4D3",
+          "call": "01J9I403",
+          "method": "forward"
+        }
       ],
-      "edges": [["$in.x", "01J9Q4D1.input"], ["01J9Q4D1.output", "01J9Q4D2.input"],
-                ["01J9Q4D2.output", "01J9Q4D3.input"], ["01J9Q4D3.output", "$out.y"]]
+      "edges": [
+        [
+          "$in.x",
+          "01J9Q4D1.input"
+        ],
+        [
+          "01J9Q4D1.output",
+          "01J9Q4D2.input"
+        ],
+        [
+          "01J9Q4D2.output",
+          "01J9Q4D3.input"
+        ],
+        [
+          "01J9Q4D3.output",
+          "$out.y"
+        ]
+      ]
     },
     "SelfAttentionMHA": {
       "doc": "Adapter composite: nn.MultiheadAttention driven as self-attention (catalog #44b).",
-      "params": {"dim": {"type": "int"}, "heads": {"type": "int"}},
-      "ports": {"in":  [{"name": "x", "type": "Tensor", "shape": ["B", "L", "dim"]}],
-                "out": [{"name": "y", "type": "Tensor", "shape": ["B", "L", "dim"]}]},
+      "params": {
+        "dim": {
+          "type": "int"
+        },
+        "heads": {
+          "type": "int"
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ]
+      },
       "instances": {
-        "01J9I501": {"label": "mha", "type": "torch.nn.MultiheadAttention",
-                     "args": {"embed_dim": {"$p": "dim"}, "num_heads": {"$p": "heads"}, "batch_first": true}}
+        "01J9I501": {
+          "label": "mha",
+          "type": "torch.nn.MultiheadAttention",
+          "args": {
+            "embed_dim": {
+              "$p": "dim"
+            },
+            "num_heads": {
+              "$p": "heads"
+            },
+            "batch_first": true
+          }
+        }
       },
       "nodes": [
-        {"label": "mha", "id": "01J9Q4F1", "call": "01J9I501", "method": "forward",
-         "args": {"need_weights": false},
-         "ports_out": [{"name": "y", "type": "Tensor"}, {"name": "weights", "type": "Tensor"}]}
+        {
+          "label": "mha",
+          "id": "01J9Q4F1",
+          "call": "01J9I501",
+          "method": "forward",
+          "args": {
+            "need_weights": false
+          },
+          "ports_out": [
+            {
+              "name": "y",
+              "type": "Tensor"
+            },
+            {
+              "name": "weights",
+              "type": "Tensor"
+            }
+          ]
+        }
       ],
-      "edges": [["$in.x", "01J9Q4F1.query"], ["$in.x", "01J9Q4F1.key"], ["$in.x", "01J9Q4F1.value"],
-                ["01J9Q4F1.y", "$out.y"]]
+      "edges": [
+        [
+          "$in.x",
+          "01J9Q4F1.query"
+        ],
+        [
+          "$in.x",
+          "01J9Q4F1.key"
+        ],
+        [
+          "$in.x",
+          "01J9Q4F1.value"
+        ],
+        [
+          "01J9Q4F1.y",
+          "$out.y"
+        ]
+      ]
     },
     "NoAttention": {
       "doc": "Ablation variant: drops attention entirely, keeping the port signature.",
-      "params": {"dim": {"type": "int"}, "heads": {"type": "int"}},
-      "ports": {"in":  [{"name": "x", "type": "Tensor", "shape": ["B", "L", "dim"]}],
-                "out": [{"name": "y", "type": "Tensor", "shape": ["B", "L", "dim"]}]},
-      "instances": {"01J9I601": {"label": "id", "type": "torch.nn.Identity"}},
-      "nodes": [{"label": "id", "id": "01J9Q4G1", "call": "01J9I601", "method": "forward"}],
-      "edges": [["$in.x", "01J9Q4G1.input"], ["01J9Q4G1.output", "$out.y"]]
+      "params": {
+        "dim": {
+          "type": "int"
+        },
+        "heads": {
+          "type": "int"
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ]
+      },
+      "instances": {
+        "01J9I601": {
+          "label": "id",
+          "type": "torch.nn.Identity"
+        }
+      },
+      "nodes": [
+        {
+          "label": "id",
+          "id": "01J9Q4G1",
+          "call": "01J9I601",
+          "method": "forward"
+        }
+      ],
+      "edges": [
+        [
+          "$in.x",
+          "01J9Q4G1.input"
+        ],
+        [
+          "01J9Q4G1.output",
+          "$out.y"
+        ]
+      ]
     },
     "Block": {
       "doc": "Pre-norm transformer block with switchable attention.",
-      "params": {"dim": {"type": "int"}, "heads": {"type": "int"},
-                 "attn_type": {"type": "enum", "choices": ["baseline", "none"]}},
-      "ports": {"in":  [{"name": "x", "type": "Tensor", "shape": ["B", "L", "dim"]}],
-                "out": [{"name": "y", "type": "Tensor", "shape": ["B", "L", "dim"]}]},
+      "params": {
+        "dim": {
+          "type": "int"
+        },
+        "heads": {
+          "type": "int"
+        },
+        "attn_type": {
+          "type": "enum",
+          "choices": [
+            "baseline",
+            "none"
+          ]
+        }
+      },
+      "ports": {
+        "in": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ],
+        "out": [
+          {
+            "name": "y",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              "L",
+              "dim"
+            ]
+          }
+        ]
+      },
       "instances": {
-        "01J9I001": {"label": "norm1", "type": "torch.nn.LayerNorm", "args": {"normalized_shape": {"$p": "dim"}}},
-        "01J9I002": {"label": "attn", "type": "torchflow.Switch", "active": {"$p": "attn_type"},
+        "01J9I001": {
+          "label": "norm1",
+          "type": "torch.nn.LayerNorm",
+          "args": {
+            "normalized_shape": {
+              "$p": "dim"
+            }
+          }
+        },
+        "01J9I002": {
+          "label": "attn",
+          "type": "torchflow.Switch",
+          "active": {
+            "$p": "attn_type"
+          },
           "variants": {
-            "baseline": {"type": "composite:SelfAttentionMHA", "label": "MHA",
-                         "args": {"dim": {"$p": "dim"}, "heads": {"$p": "heads"}}},
-            "none":     {"type": "composite:NoAttention", "label": "No attention",
-                         "args": {"dim": {"$p": "dim"}, "heads": {"$p": "heads"}}}
-          }},
-        "01J9I003": {"label": "norm2", "type": "torch.nn.LayerNorm", "args": {"normalized_shape": {"$p": "dim"}}},
-        "01J9I004": {"label": "mlp", "type": "composite:MLP", "args": {"dim": {"$p": "dim"}, "mult": 4}}
+            "baseline": {
+              "type": "composite:SelfAttentionMHA",
+              "label": "MHA",
+              "args": {
+                "dim": {
+                  "$p": "dim"
+                },
+                "heads": {
+                  "$p": "heads"
+                }
+              }
+            },
+            "none": {
+              "type": "composite:NoAttention",
+              "label": "No attention",
+              "args": {
+                "dim": {
+                  "$p": "dim"
+                },
+                "heads": {
+                  "$p": "heads"
+                }
+              }
+            }
+          }
+        },
+        "01J9I003": {
+          "label": "norm2",
+          "type": "torch.nn.LayerNorm",
+          "args": {
+            "normalized_shape": {
+              "$p": "dim"
+            }
+          }
+        },
+        "01J9I004": {
+          "label": "mlp",
+          "type": "composite:MLP",
+          "args": {
+            "dim": {
+              "$p": "dim"
+            },
+            "mult": 4
+          }
+        }
       },
       "nodes": [
-        {"label": "norm1", "id": "01J9Q4A1", "call": "01J9I001", "method": "forward"},
-        {"label": "attn",  "id": "01J9Q4A2", "call": "01J9I002", "method": "forward",
-         "ports_out": [{"name": "y", "type": "Tensor"}]},
-        {"label": "add1",  "id": "01J9Q4A3", "type": "torch.add"},
-        {"label": "norm2", "id": "01J9Q4A4", "call": "01J9I003", "method": "forward"},
-        {"label": "mlp",   "id": "01J9Q4A5", "call": "01J9I004", "method": "forward",
-         "ports_out": [{"name": "y", "type": "Tensor"}]},
-        {"label": "add2",  "id": "01J9Q4A6", "type": "torch.add"}
+        {
+          "label": "norm1",
+          "id": "01J9Q4A1",
+          "call": "01J9I001",
+          "method": "forward"
+        },
+        {
+          "label": "attn",
+          "id": "01J9Q4A2",
+          "call": "01J9I002",
+          "method": "forward",
+          "ports_out": [
+            {
+              "name": "y",
+              "type": "Tensor"
+            }
+          ]
+        },
+        {
+          "label": "add1",
+          "id": "01J9Q4A3",
+          "type": "torch.add"
+        },
+        {
+          "label": "norm2",
+          "id": "01J9Q4A4",
+          "call": "01J9I003",
+          "method": "forward"
+        },
+        {
+          "label": "mlp",
+          "id": "01J9Q4A5",
+          "call": "01J9I004",
+          "method": "forward",
+          "ports_out": [
+            {
+              "name": "y",
+              "type": "Tensor"
+            }
+          ]
+        },
+        {
+          "label": "add2",
+          "id": "01J9Q4A6",
+          "type": "torch.add"
+        }
       ],
-      "edges": [["$in.x", "01J9Q4A1.input"], ["01J9Q4A1.output", "01J9Q4A2.x"], ["$in.x", "01J9Q4A3.input"],
-                ["01J9Q4A2.y", "01J9Q4A3.other"], ["01J9Q4A3.output", "01J9Q4A4.input"],
-                ["01J9Q4A4.output", "01J9Q4A5.x"], ["01J9Q4A3.output", "01J9Q4A6.input"],
-                ["01J9Q4A5.y", "01J9Q4A6.other"], ["01J9Q4A6.output", "$out.y"]]
+      "edges": [
+        [
+          "$in.x",
+          "01J9Q4A1.input"
+        ],
+        [
+          "01J9Q4A1.output",
+          "01J9Q4A2.x"
+        ],
+        [
+          "$in.x",
+          "01J9Q4A3.input"
+        ],
+        [
+          "01J9Q4A2.y",
+          "01J9Q4A3.other"
+        ],
+        [
+          "01J9Q4A3.output",
+          "01J9Q4A4.input"
+        ],
+        [
+          "01J9Q4A4.output",
+          "01J9Q4A5.x"
+        ],
+        [
+          "01J9Q4A3.output",
+          "01J9Q4A6.input"
+        ],
+        [
+          "01J9Q4A5.y",
+          "01J9Q4A6.other"
+        ],
+        [
+          "01J9Q4A6.output",
+          "$out.y"
+        ]
+      ]
     }
   },
   "graph": {
     "name": "MiniViT",
     "instances": {
-      "01J9I101": {"label": "patch", "type": "composite:PatchEmbed",
-                   "args": {"patch": {"$hp": "patch"}, "in_ch": 3, "dim": {"$hp": "dim"}}},
-      "01J9I102": {"label": "blocks", "type": "torchflow.Repeat", "body": "composite:Block",
-                   "count": {"$hp": "depth"}, "mode": "sequential",
-                   "bind": {"dim": {"$hp": "dim"}, "heads": {"$hp": "heads"}, "attn_type": {"$hp": "attn_type"}}},
-      "01J9I103": {"label": "head", "type": "torch.nn.Linear",
-                   "args": {"in_features": {"$hp": "dim"}, "out_features": {"$expr": "rt.num_classes"}}}
+      "01J9I101": {
+        "label": "patch",
+        "type": "composite:PatchEmbed",
+        "args": {
+          "patch": {
+            "$hp": "patch"
+          },
+          "in_ch": 3,
+          "dim": {
+            "$hp": "dim"
+          }
+        }
+      },
+      "01J9I102": {
+        "label": "blocks",
+        "type": "torchflow.Repeat",
+        "body": "composite:Block",
+        "count": {
+          "$hp": "depth"
+        },
+        "mode": "sequential",
+        "bind": {
+          "dim": {
+            "$hp": "dim"
+          },
+          "heads": {
+            "$hp": "heads"
+          },
+          "attn_type": {
+            "$hp": "attn_type"
+          }
+        }
+      },
+      "01J9I103": {
+        "label": "head",
+        "type": "torch.nn.Linear",
+        "args": {
+          "in_features": {
+            "$hp": "dim"
+          },
+          "out_features": {
+            "$expr": "rt.num_classes"
+          }
+        }
+      }
     },
     "nodes": [
-      {"label": "x", "id": "01J9Q4B1", "type": "torchflow.Input",
-       "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 3, 32, 32], "dtype": "float32"}]},
-      {"label": "patch",  "id": "01J9Q4B2", "call": "01J9I101", "ports_out": [{"name": "y", "type": "Tensor"}]},
-      {"label": "blocks", "id": "01J9Q4B3", "call": "01J9I102", "ports_out": [{"name": "y", "type": "Tensor"}]},
-      {"label": "pool",   "id": "01J9Q4B4", "type": "torch.mean", "args": {"dim": 1}},
-      {"label": "head",   "id": "01J9Q4B5", "call": "01J9I103", "method": "forward"},
-      {"label": "logits", "id": "01J9Q4B6", "type": "torchflow.Output"}
+      {
+        "label": "x",
+        "id": "01J9Q4B1",
+        "type": "torchflow.Input",
+        "ports_out": [
+          {
+            "name": "x",
+            "type": "Tensor",
+            "shape": [
+              "B",
+              3,
+              32,
+              32
+            ],
+            "dtype": "float32"
+          }
+        ]
+      },
+      {
+        "label": "patch",
+        "id": "01J9Q4B2",
+        "call": "01J9I101",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "blocks",
+        "id": "01J9Q4B3",
+        "call": "01J9I102",
+        "ports_out": [
+          {
+            "name": "y",
+            "type": "Tensor"
+          }
+        ]
+      },
+      {
+        "label": "pool",
+        "id": "01J9Q4B4",
+        "type": "torch.mean",
+        "args": {
+          "dim": 1
+        }
+      },
+      {
+        "label": "head",
+        "id": "01J9Q4B5",
+        "call": "01J9I103",
+        "method": "forward"
+      },
+      {
+        "label": "logits",
+        "id": "01J9Q4B6",
+        "type": "torchflow.Output"
+      }
     ],
-    "edges": [["01J9Q4B1.x", "01J9Q4B2.x"], ["01J9Q4B2.y", "01J9Q4B3.x"], ["01J9Q4B3.y", "01J9Q4B4.input"],
-              ["01J9Q4B4.output", "01J9Q4B5.input"], ["01J9Q4B5.output", "01J9Q4B6.input"]],
+    "edges": [
+      [
+        "01J9Q4B1.x",
+        "01J9Q4B2.x"
+      ],
+      [
+        "01J9Q4B2.y",
+        "01J9Q4B3.x"
+      ],
+      [
+        "01J9Q4B3.y",
+        "01J9Q4B4.input"
+      ],
+      [
+        "01J9Q4B4.output",
+        "01J9Q4B5.input"
+      ],
+      [
+        "01J9Q4B5.output",
+        "01J9Q4B6.input"
+      ]
+    ],
     "probes": [
-      {"label": "gradflow", "id": "01J9Q4P1", "type": "probe.GradFlow",
-       "on_edge": ["01J9Q4B3.y", "01J9Q4B4.input"], "auto_policy": "on_l0_ok"}
+      {
+        "label": "gradflow",
+        "id": "01J9Q4P1",
+        "type": "probe.GradFlow",
+        "on_edge": [
+          "01J9Q4B3.y",
+          "01J9Q4B4.input"
+        ],
+        "auto_policy": "on_l0_ok"
+      }
     ],
-    "init": {"policy": "trunc_normal", "std": {"$hp": "init_std"}},
+    "init": {
+      "policy": "trunc_normal",
+      "std": {
+        "$hp": "init_std"
+      }
+    },
     "probe_objective": "auto"
+  },
+  "experiment": {
+    "data": {
+      "name": "cifar10",
+      "recipe": {}
+    }
   }
 }

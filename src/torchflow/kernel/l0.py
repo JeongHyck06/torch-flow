@@ -52,6 +52,13 @@ _SHAPE_HINTS = (
 OPTIMIZER_STATE_MULTIPLIER = {"sgd": 0.0, "sgd_momentum": 1.0, "adam": 2.0, "adamw": 2.0, "adam8bit": 0.5}
 
 
+def _functional(torch):
+    """cell 코드가 흔히 쓰는 ``F``. import 줄이 셀 안에 없어도 돌게 한다."""
+    import torch.nn.functional as functional
+
+    return functional
+
+
 def _digest(payload: Any) -> str:
     return hashlib.blake2b(
         json.dumps(payload, sort_keys=True, default=str).encode(), digest_size=16
@@ -427,6 +434,10 @@ class L0Pass:
 
         args = {k: self._resolve(node.id, v, env) for k, v in node.args.items()}
 
+        if (node.type or "").split("@")[0].startswith("cell:"):
+            return self._call_cell(node, scope, node.type.split(":", 1)[1], env, kwargs,
+                                   path, call_path)
+
         if node.call is not None:
             instance = scope.instances.get(node.call)
             if instance is None:
@@ -477,22 +488,10 @@ class L0Pass:
                 node, kind.split(":", 1)[1], args, kwargs, path, call_path)
 
         if kind.startswith("cell:"):
-            # ponytail: Code Cell의 CPU 실측 shape는 M8. 지금은 노드에 귀속해 실패시킨다.
-            raise L0Error(node.id, f"code cells are not executable yet ({kind})", kind="kernel")
+            return self._call_cell(node, self.ir.graph, kind.split(":", 1)[1], env, kwargs,
+                                   path, call_path)
 
-        # 모듈 캐시 키에 인자를 포함시켜, 인자가 바뀌면 자동으로 새 모듈이 된다.
-        # 같은 인스턴스를 참조하는 호출 노드는 같은 키를 얻어 가중치를 공유한다.
-        module_key = _digest({"path": path, "type": kind, "args": args})
-        module = self.session.modules.get(module_key)
-        if module is None:
-            try:
-                module = self._instantiate(node, kind, args, module_key, call_path or node.id)
-            except Exception as exc:
-                raise self._fail(node.id, exc) from exc
-            self.session.modules[module_key] = module
-        self._used_modules.add(module_key)
-        # _exec_node가 이미 "스코프 경로 + 노드 id"를 call_path로 넘겨준다.
-        self.node_modules[call_path or node.id] = module_key
+        module, module_key = self._module(node, kind, args, path, call_path)
 
         key = self._node_key(f"{module_key}:{node.method}:{node.id}", node_args or {}, kwargs)
         cached = self._lookup(key)
@@ -504,6 +503,68 @@ class L0Pass:
         outputs = self._pack(node, self._invoke(node.id, method, kwargs, node_args or {}))
         self._store(key, outputs)
         return outputs
+
+    def _module(self, node: Node, kind: str, args: dict, path: str, call_path: str):
+        """이 자리에 필요한 살아 있는 모듈 하나. 캐시가 있으면 그것을 쓴다.
+
+        캐시 키에 인자가 들어가므로 인자가 바뀌면 자동으로 새 모듈이 되고, 같은
+        인스턴스를 가리키는 호출 노드들은 같은 키를 얻어 가중치를 공유한다.
+        """
+        module_key = _digest({"path": path, "type": kind, "args": args})
+        module = self.session.modules.get(module_key)
+        if module is None:
+            try:
+                module = self._instantiate(node, kind, args, module_key, call_path or node.id)
+            except Exception as exc:
+                raise self._fail(node.id, exc) from exc
+            self.session.modules[module_key] = module
+        self._used_modules.add(module_key)
+        # _exec_node가 이미 "스코프 경로 + 노드 id"를 call_path로 넘겨준다.
+        self.node_modules[call_path or node.id] = module_key
+        return module, module_key
+
+    def _call_cell(self, node: Node, scope, cell_id: str, env, kwargs, path, call_path):
+        """Code Cell 하나를 실제로 돌린다 (기획서 §4.5, §7.4.2).
+
+        그래프로 펴지 못한 forward다. 코드를 그대로 실행하고 나온 텐서의 shape만 가져온다 -
+        자식 모듈(``children_ports``)은 그래프가 아는 그 인스턴스들이라 캐시도 공유한다.
+        데이터에 따라 갈라지는 코드는 여기서 실패하고, 그 실패가 곧 "이건 못 편다"는 답이다.
+        """
+        cell = self.ir.code_cells.get(cell_id)
+        if cell is None or not cell.source:
+            raise L0Error(node.id, f"code cell {cell_id} 의 코드가 없습니다", kind="kernel")
+
+        holder = self.torch.nn.Module()
+        for instance_id, instance in scope.instances.items():
+            args = {k: self._resolve(node.id, v, env) for k, v in (instance.args or {}).items()}
+            child, _ = self._module(node, instance.type, args, f"{path}/{instance_id}",
+                                    f"{call_path}/{instance_id}" if call_path else instance_id)
+            if isinstance(child, self.torch.nn.Module):
+                holder.add_module(instance.label, child)
+            else:
+                setattr(holder, instance.label, child)
+
+        names = [port.name for port in cell.ports.get("in", [])] or list(kwargs)
+        source = "\n".join(f"    {line}" if line.strip() else ""
+                            for line in cell.source.splitlines())
+        text = f"def _cell(self, {', '.join(names)}):\n{source}\n"
+        namespace: dict[str, Any] = {}
+        try:
+            exec(compile(text, cell.file, "exec"),  # noqa: S102 - 사용자 코드다. 커널에서만 돈다
+                 {"torch": self.torch, "nn": self.torch.nn, "F": _functional(self.torch)}, namespace)
+        except SyntaxError as exc:
+            raise L0Error(node.id, f"cell 코드를 읽지 못했습니다: {exc}", kind="kernel") from exc
+
+        values = list(kwargs.values())
+        if len(values) < len(names):
+            raise L0Error(node.id, f"입력 포트가 연결되지 않았습니다: {names[len(values):]}",
+                          kind="input")
+        self._misses += 1
+        try:
+            result = namespace["_cell"](holder, *values[:len(names)])
+        except Exception as exc:
+            raise self._fail(node.id, exc) from exc
+        return self._pack(node, result)
 
     def _pack(self, node: Node, value: Any) -> dict[str, Any]:
         """결과를 선언된 출력 포트에 얹는다. 튜플 반환은 위치 순으로 펼친다(§4.3)."""

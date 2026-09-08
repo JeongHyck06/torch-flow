@@ -13,6 +13,8 @@ hub와 **분리해서** 돈다. `start_new_session=True`로 기동되므로 hub�
 모델을 만들기 때문에, 화면에서 보던 모델과 학습되는 모델이 같은 파일이다.
 
     python -m torchflow.worker --job runs/<id>/job.json
+    python -m torchflow.worker --job runs/<id>/job.json --test    # ckpt를 test 분할에 돌려 test.json
+
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from .. import datasets
 from ..datasets import load_any
 
 HEARTBEAT_EVERY = 2.0      # 초. hub가 이 파일의 mtime으로 생존을 본다(§5.5.3).
@@ -238,6 +241,23 @@ def deterministic(torch) -> None:
 
 
 def train(job: dict[str, Any], run_dir: Path) -> None:
+    """학습 한 번. 학습 루프에서 죽어도 ``status failed``를 남긴다.
+
+    setup 실패는 ``_train`` 안에서 잡지만 루프 안의 예외(shape 불일치 같은 것)는 밖으로
+    나온다. 그러면 events.jsonl이 ``running``에서 끝나 hub 화면이 영원히 "step 0 / 500"
+    이었다. traceback은 stdout.log에도 그대로 남도록 다시 던진다.
+    """
+    try:
+        _train(job, run_dir)
+    except Exception as exc:
+        events = Events(run_dir / "events.jsonl")
+        events.write("error", stage="train", message=f"{type(exc).__name__}: {exc}",
+                     traceback=traceback.format_exc())
+        events.write("status", state="failed")
+        raise
+
+
+def _train(job: dict[str, Any], run_dir: Path) -> None:
     import torch
     from torch import nn
 
@@ -390,6 +410,8 @@ def train(job: dict[str, Any], run_dir: Path) -> None:
                   + (f" = {base:.3g} x {lr / base if base else 0:.3f}"
                      if scheduler is not None else "")
                   + f"   |g| {float(grad_norm):.3f}")
+        if step == total:
+            events.write("status", state="finalizing", step=step)
         if evaluate is not None and (step % eval_every == 0 or step == total):
             metrics = evaluate(model, loss_fn)
             events.write("scalar", step=step, **metrics)
@@ -427,14 +449,115 @@ def _checkpoint(torch, model, optimizer, scheduler, generator, run_dir: Path,
     staging.replace(run_dir / "ckpt.pt")
 
 
+# 모델 테스트: 학습이 보지 않은 분할에 체크포인트를 돌린다.
+
+SAMPLE_TILES = 24          # 화면에 보여 줄 샘플 수. 틀린 것을 먼저 채운다.
+
+
+def test(job: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    """``ckpt.pt``를 test 분할에 돌려 정확도·혼동 행렬·샘플 예측을 ``test.json``에 적는다."""
+    try:
+        result = _test(job, run_dir)
+    except Exception as exc:
+        result = {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                  "traceback": traceback.format_exc()}
+    (run_dir / "test.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return result
+
+
+def _test(job: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    import torch
+    from torch import nn
+
+    state = torch.load(run_dir / "ckpt.pt", map_location="cpu")
+    model = build_model(job)
+    model.load_state_dict(state["model"])
+    device = pick_device(torch, job.get("device"))
+    model.to(device).eval()
+
+    name = job.get("dataset", "teacher")
+    classes = int(job.get("num_classes") or 10)
+    if name in ("teacher", "noise"):
+        x, y = _synthetic_holdout(torch, job, name)
+        names, split = [str(index) for index in range(classes)], "합성 홀드아웃"
+    else:
+        x, y = load_any(name, Path(job.get("data_dir", "data")), job.get("recipe"))["test"]
+        spec = datasets.resolve(datasets.describe(name, job.get("data_dir", "data")), job.get("recipe"))
+        names = spec.get("class_names") or [str(index) for index in range(classes)]
+        split = "test" if name in datasets.CATALOGUE else "val"
+
+    loss_fn = nn.CrossEntropyLoss(reduction="sum")
+    total_loss, preds, confs = 0.0, [], []
+    with torch.no_grad():
+        for start in range(0, len(x), 500):
+            output = model(x[start:start + 500].to(device))
+            total_loss += float(loss_fn(output, y[start:start + 500].to(device)))
+            conf, pred = output.softmax(dim=1).max(dim=1)
+            preds.append(pred.cpu())
+            confs.append(conf.cpu())
+    pred, conf = torch.cat(preds), torch.cat(confs)
+    correct = pred == y
+    confusion = torch.zeros(len(names), len(names), dtype=torch.int64)
+    confusion.index_put_((y, pred), torch.ones_like(y), accumulate=True)
+    print(f"test · {split} {len(y)}개 · acc {float(correct.float().mean()):.4f} · loss {total_loss / len(y):.4f}")
+    return {"ok": True, "run_id": run_dir.name, "dataset": name, "split": split, "count": len(y),
+            "loss": total_loss / len(y), "acc": float(correct.float().mean()),
+            "step": int(state["step"]), "device": str(device), "classes": names,
+            "per_class": [{"name": label, "count": int((y == index).sum()), "correct": int(confusion[index, index])}
+                          for index, label in enumerate(names)],
+            "confusion": confusion.tolist(),
+            "samples": _sample_tiles(torch, x, y, pred, conf, correct) if x.dim() == 4 else [],
+            "wall": time.time()}
+
+
+def _synthetic_holdout(torch, job: dict[str, Any], name: str, count: int = 1000):
+    """같은 teacher, 학습이 보지 않은 입력. teacher는 시드에서 뽑고 입력 스트림만 다른 시드다."""
+    seed = int(job.get("seed", 0))
+    holdout = torch.Generator().manual_seed(seed + 1)
+    stream = _synthetic(torch, job["input_shape"], int(job.get("num_classes") or 10), count,
+                        torch.device("cpu"), torch.Generator().manual_seed(seed),
+                        learnable=name != "noise", rng_state=holdout.get_state())
+    return next(stream)
+
+
+def _sample_tiles(torch, x, y, pred, conf, correct) -> list[dict[str, Any]]:
+    """[N, C, H, W] 입력 몇 개를 작은 PNG로. 틀린 것부터 채운다 - 그게 보고 싶은 것이다."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return []
+    import base64
+    import io
+
+    wrong = (~correct).nonzero().flatten()[:SAMPLE_TILES // 2]
+    right = correct.nonzero().flatten()[:SAMPLE_TILES - len(wrong)]
+    tiles = []
+    for index in torch.cat([wrong, right]).sort().values.tolist():
+        image = x[index].float()
+        low, high = float(image.min()), float(image.max())
+        pixels = ((image - low) / (high - low) * 255 if high > low else image * 0).to(torch.uint8)
+        mode = "L" if pixels.shape[0] == 1 else "RGB"
+        sheet = Image.frombytes(mode, (pixels.shape[2], pixels.shape[1]),
+                                pixels[:3].permute(1, 2, 0).contiguous().numpy().tobytes())
+        buffer = io.BytesIO()
+        sheet.save(buffer, format="PNG")
+        tiles.append({"png": base64.b64encode(buffer.getvalue()).decode(), "pred": int(pred[index]),
+                      "label": int(y[index]), "prob": float(conf[index])})
+    return tiles
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m torchflow.worker")
     parser.add_argument("--job", required=True)
+    parser.add_argument("--test", action="store_true", help="학습 대신 ckpt를 test 분할에 돌린다")
     args = parser.parse_args()
 
     job_path = Path(args.job)
     job = json.loads(job_path.read_text(encoding="utf-8"))
-    train(job, job_path.parent)
+    if args.test:
+        test(job, job_path.parent)
+    else:
+        train(job, job_path.parent)
 
 
 if __name__ == "__main__":

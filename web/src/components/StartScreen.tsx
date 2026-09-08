@@ -8,7 +8,7 @@
 // 일이 없는 버튼은 없는 버튼보다 나쁘다.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchStart, importSource, inspectSource, newGraph, openGraph } from "../api";
+import { fetchStart, importSource, inspectSource, newGraph, openGraph, openProject } from "../api";
 import type { Candidate, RecentGraph, StartInfo, Template } from "../api";
 
 interface Dropped {
@@ -25,6 +25,18 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
   const [factory, setFactory] = useState("");
   const [example, setExample] = useState("x=B,3,32,32:f32");
   const [hover, setHover] = useState(false);
+  const [projectPath, setProjectPath] = useState("");
+
+  // 프로젝트 폴더는 그래프·좌표·생성 코드·run·데이터를 한 곳에 둔다(Figma 00 New project).
+  const openFolder = async (dir: string) => {
+    if (!dir.trim()) return;
+    setBusy(dir);
+    setError(null);
+    const result = await openProject(dir.trim());
+    setBusy(null);
+    if (result.error) setError(result.error);
+    else onOpened();
+  };
   const picker = useRef<HTMLInputElement>(null);
 
   useEffect(() => { fetchStart().then(setInfo).catch(() => undefined); }, []);
@@ -69,12 +81,14 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
     setFactory(last.suggestion);
   }, []);
 
-  const runImport = async () => {
+  const runImport = async (mode: "ast" | "trace") => {
     if (!dropped) return;
     setBusy("import");
     setError(null);
     const result = await importSource({
-      filename: dropped.filename, source: dropped.source, factory, example,
+      filename: dropped.filename, source: dropped.source, factory, example, mode,
+      // 구조로 읽을 때는 인스턴스 식이 아니라 클래스 이름만 쓴다.
+      class: mode === "ast" ? factory.split("(")[0].trim() : undefined,
     });
     setBusy(null);
     if (result.error) setError(`${result.stage ?? "import"}: ${result.error}`);
@@ -119,7 +133,7 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
         >
           <button className="dropband__half" onClick={() => picker.current?.click()}>
             <span className="dropband__title">모델 .py 드롭</span>
-            <span className="dropband__sub">인스턴스로 만들어 실측 트레이스합니다</span>
+            <span className="dropband__sub">코드를 읽어 블록으로 폅니다</span>
             <span className="dropband__hint mono">
               {dropped ? dropped.filename : "끌어다 놓거나 눌러서 고르세요"}
             </span>
@@ -129,7 +143,7 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
             <span className="dropband__title">체크포인트 드롭</span>
             <span className="dropband__sub">.pt / .ckpt / safetensors</span>
             <span className="dropband__hint mono">state_dict에서 구조를 역추정합니다</span>
-            <span className="soon">v1</span>
+            <span className="soon">준비 중</span>
           </div>
           <input
             ref={picker} type="file" accept=".py" hidden
@@ -164,8 +178,15 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                 후보 {dropped.candidates.map((item) => item.name).join(", ")}
               </span>
               <button className="ghost" onClick={() => setDropped(null)}>취소</button>
-              <button className="solid" onClick={runImport} disabled={busy === "import"}>
-                {busy === "import" ? "여는 중" : "그래프로 열기"}
+              <button className="ghost" onClick={() => void runImport("trace")}
+                      disabled={busy === "import"}
+                      title="모델을 실제로 만들어 한 번 돌립니다. 크기는 실측이지만 편집은 안 됩니다">
+                실행해서 열기
+              </button>
+              <button className="solid" onClick={() => void runImport("ast")}
+                      disabled={busy === "import"}
+                      title="코드를 읽기만 해서 블록으로 폅니다. 그대로 편집할 수 있습니다">
+                {busy === "import" ? "여는 중" : "블록으로 열기"}
               </button>
             </div>
           </div>
@@ -174,6 +195,42 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
         {error && <p className="mono start__error">{error}</p>}
 
         <div className="start__cols">
+          <section>
+            <h3>프로젝트</h3>
+            {info === null ? (
+              <p className="mono muted">불러오는 중</p>
+            ) : info.projects?.length ? (
+              <ul className="templates">
+                {info.projects.map((entry) => (
+                  <li key={entry.dir}>
+                    <button className="templates__row" disabled={busy !== null}
+                            onClick={() => void openFolder(entry.dir)} title={entry.dir}>
+                      <span className="templates__left">
+                        <span className="templates__name">{entry.dir.split("/").filter(Boolean).pop()}</span>
+                        <span className="templates__recipe mono">그래프 {entry.name} · {entry.dir}</span>
+                      </span>
+                      <span className="templates__metric mono">
+                        {busy === entry.dir ? "여는 중"
+                          : entry.opened ? new Date(entry.opened * 1000).toLocaleDateString("ko-KR",
+                              { month: "numeric", day: "numeric" }) : ""}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mono muted">아직 없습니다. 편집 화면의 저장을 누르면 projects/ 아래에 폴더가 생기고 그래프·좌표·코드·run·데이터가 그 안에 모입니다</p>
+            )}
+            <div className="datafolder">
+              <input className="mono" value={projectPath} placeholder="또는 프로젝트 폴더 경로"
+                     spellCheck={false} aria-label="프로젝트 폴더 경로"
+                     onChange={(event) => setProjectPath(event.target.value)}
+                     onKeyDown={(event) => { if (event.key === "Enter") void openFolder(projectPath); }} />
+              <button className="ghost" disabled={!projectPath.trim() || busy !== null}
+                      onClick={() => void openFolder(projectPath)}>열기</button>
+            </div>
+          </section>
+
           <section>
             <h3>검증된 템플릿</h3>
             <ul className="templates">
@@ -196,32 +253,6 @@ export function StartScreen({ onOpened }: { onOpened: () => void }) {
                 </li>
               ))}
             </ul>
-          </section>
-
-          <section>
-            <h3>내 그래프</h3>
-            {info?.recent?.length ? (
-              <ul className="templates">
-                {info.recent.map((entry) => (
-                  <li key={entry.path}>
-                    <button className="templates__row" disabled={busy !== null}
-                            onClick={() => open(entry)} title={entry.path}>
-                      <span className="templates__left">
-                        <span className="templates__name">{entry.name}</span>
-                        <span className="templates__recipe mono">{entry.file}</span>
-                      </span>
-                      <span className="templates__metric mono">
-                        {busy === entry.path ? "여는 중"
-                          : new Date(entry.modified * 1000).toLocaleDateString("ko-KR",
-                              { month: "numeric", day: "numeric" })}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mono muted">아직 저장한 그래프가 없습니다. 저장하면 graph/ 에 쌓입니다</p>
-            )}
           </section>
 
           <section>

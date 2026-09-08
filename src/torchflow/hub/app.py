@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import shutil
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -17,7 +21,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, codegen, datasets, paper, protocol as proto
+from .. import __version__, astimport, codegen, datasets, graphdiff, package, paper, protocol as proto
 from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
@@ -45,11 +49,18 @@ class Hub:
         self.node_states: dict[str, dict[str, Any]] = {}
         self.tracker = Tracker(state_dir / "runs.db")
         self.probes: list[dict[str, Any]] = []
+        # 프로젝트 폴더. 열려 있으면 run·데이터·좌표·그래프가 전부 그 안에 산다(Figma 00 New project).
+        self.project_dir: Path | None = None
+        self.last_train_log = 0.0
         # L2 학습 run들. hub는 워커를 띄우고 파일을 읽을 뿐 학습을 돌리지 않는다(§5.5.3).
-        self.runs_dir = Path.cwd() / "runs"
+        self._runs_dir = Path.cwd() / "runs"
         self.l2: dict[str, l2.RunHandle] = {}
+        self.testing: set[str] = set()        # 지금 테스트 프로세스가 도는 run - 겹쳐 띄우지 않는다
+        # 우리가 쓴 파일의 sha(§7.6.2 자기 쓰기 억제). 같은 sha면 밖에서 바뀐 것이 아니다.
+        self.written: dict[str, str] = {}
         # 내려받은 데이터셋 자리. hub는 파일 유무와 다운로드만 알고 적재는 워커가 한다.
-        self.data_dir = Path.cwd() / "data"
+        self._data_dir = Path.cwd() / "data"
+        self.downloading: set[str] = set()    # 겹쳐 받으면 두 스레드가 같은 .part를 덮어쓴다
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
         self.attached = False
@@ -71,6 +82,131 @@ class Hub:
         self.graph_path = path
         self.node_states.clear()
         self.total_params = 0
+        # 마지막으로 저장한 seq. 새로고침해도 "저장 안 됨"이 살아 있어야 편집을 잃지 않는다.
+        self.saved_seq = 0
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.project_dir / "runs" if self.project_dir else self._runs_dir
+
+    @runs_dir.setter
+    def runs_dir(self, path: Path) -> None:
+        self._runs_dir = Path(path)
+
+    @property
+    def data_dir(self) -> Path:
+        """데이터 창의 내려받기는 여기로 온다 - 프로젝트가 열려 있으면 그 폴더의 data/."""
+        return self.project_dir / "data" if self.project_dir else self._data_dir
+
+    @data_dir.setter
+    def data_dir(self, path: Path) -> None:
+        self._data_dir = Path(path)
+
+    # 프로젝트 폴더 (Figma 00 New project: "그래프·레이아웃·런 기록은 프로젝트 폴더 하나에 모입니다")
+
+    def save_project(self, target: Path) -> dict[str, Any]:
+        """폴더 하나에 그래프·좌표·생성 코드·이 그래프의 run·붙은 데이터를 모은다."""
+        assert self.store is not None
+        target.mkdir(parents=True, exist_ok=True)
+        self.store.save(target / "graph.tfg.json")
+        self.graph_path = target / "graph.tfg.json"
+        self.saved_seq = self.seq
+        (target / "layout.json").write_text(
+            json.dumps({"positions": self.positions()}, indent=2), encoding="utf-8")
+        if not self.traced:
+            try:
+                code = target / "model.py"
+                code.write_text(
+                    codegen.generate(self.store.ir, version=__version__, source="graph.tfg.json",
+                                     specs=self.node_states), encoding="utf-8")
+                # 무엇을 어떤 바이트로 썼는지 남긴다(§7.6.2). 이 sha와 다른 파일은
+                # 사람이 편집기에서 고친 것이고, 같은 sha는 우리가 쓴 것이다(자기 쓰기 억제).
+                package.write_sourcemap(target, graph=target / "graph.tfg.json",
+                                        ir=self.store.ir, unit="model-only", files=[code],
+                                        version=__version__, source="graph.tfg.json",
+                                        annotated=bool(self.node_states))
+                self.written[str(code)] = package.digest(code)
+            except codegen.CodegenError:
+                pass    # 오류 블록이 있는 그래프도 저장은 된다. 코드는 고친 뒤에 나온다.
+        copied = 0
+        old_runs, old_data = self.runs_dir, self.data_dir
+        self.project_dir = target
+        if old_runs != self.runs_dir and old_runs.is_dir():
+            for job in old_runs.glob("*/job.json"):
+                try:
+                    owner = json.loads(job.read_text(encoding="utf-8")).get("graph_id")
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if owner == self.graph_id and not (self.runs_dir / job.parent.name).exists():
+                    shutil.copytree(job.parent, self.runs_dir / job.parent.name)
+                    copied += 1
+        # 붙은 데이터가 밖에 있으면 프로젝트 안으로 가져온다 - 폴더째 옮겨도 학습이 돼야 한다.
+        name = ((self.store.ir.experiment or {}).get("data") or {}).get("name")
+        if name and (old_data / name).is_dir() and not (self.data_dir / name).exists():
+            shutil.copytree(old_data / name, self.data_dir / name)
+        self._remember_project(target)
+        return {"dir": str(target), "runs": copied}
+
+    def source_change(self) -> dict[str, Any] | None:
+        """프로젝트의 model.py가 밖에서 바뀌었나(§7.6.2).
+
+        우리가 쓴 바이트와 sha가 다르면 사람이 편집기에서 고친 것이다. 자동으로
+        반영하지는 않는다 - 무엇이 달라지는지 보여 주고 사람이 정한다(§7.6.2의 5).
+        """
+        if self.project_dir is None or self.store is None:
+            return None
+        code = self.project_dir / "model.py"
+        try:
+            digest = package.digest(code)
+        except OSError:
+            return None
+        if digest == self.written.get(str(code)):
+            return None
+        return {"path": str(code), "sha256": digest}
+
+    def open_project(self, target: Path) -> None:
+        ir = load(target / "graph.tfg.json")
+        self.project_dir = target
+        _fit_input_to_data(ir, self.data_dir)
+        self.open(ir, target / "graph.tfg.json")
+        code = target / "model.py"
+        if code.is_file():
+            # 방금 연 파일은 기준선이다. 이 뒤의 변경만 "밖에서 고쳤다"로 본다.
+            self.written[str(code)] = package.digest(code)
+        try:
+            layout = json.loads((target / "layout.json").read_text(encoding="utf-8"))
+            self.update_layout(layout.get("positions") or {})
+        except (OSError, json.JSONDecodeError):
+            pass
+        self.recover()
+        self._remember_project(target)
+
+    def _remember_project(self, target: Path) -> None:
+        path = self.state_dir / "projects.json"
+        try:
+            known = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            known = []
+        known = [entry for entry in known if entry.get("dir") != str(target)]
+        known.insert(0, {"dir": str(target), "name": self.store.ir.graph.name if self.store else target.name,
+                         "opened": time.time()})
+        path.write_text(json.dumps(known[:20], ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def recent_projects(self) -> list[dict[str, Any]]:
+        """열 수 있는 프로젝트. 기억해 둔 것과 projects/ 아래 폴더를 합친다."""
+        path = self.state_dir / "projects.json"
+        try:
+            known = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            known = []
+        seen = {entry["dir"]: entry for entry in known if Path(entry.get("dir", "")).joinpath("graph.tfg.json").is_file()}
+        root = Path.cwd() / "projects"
+        if root.is_dir():
+            for graph in sorted(root.glob("*/graph.tfg.json")):
+                folder = str(graph.parent)
+                if folder not in seen:
+                    seen[folder] = {"dir": folder, "name": _graph_name(graph), "opened": graph.stat().st_mtime}
+        return sorted(seen.values(), key=lambda entry: entry.get("opened", 0), reverse=True)
 
     def _load_layout(self) -> dict[str, Any]:
         if self.layout_path.exists():
@@ -80,8 +216,14 @@ class Hub:
                 pass   # 좌표가 깨져도 그래프는 열려야 한다 - 자동 배치로 돌아간다.
         return {"positions": {}}
 
+    def positions(self) -> dict[str, Any]:
+        """지금 열린 그래프의 노드 좌표. 그래프마다 따로 둔다 - IN, OUT 같은 id는 그래프마다
+        있어서 한 통에 넣으면 다른 그래프의 좌표가 새 그래프에 묻어 나온다(실제로 그랬다).
+        예전의 평평한 ``positions``는 읽지 않는다 - 자동 배치로 돌아간다."""
+        return self.layout.setdefault("graphs", {}).setdefault(self.graph_id or "_", {})
+
     def update_layout(self, positions: dict[str, Any]) -> None:
-        self.layout.setdefault("positions", {}).update(positions)
+        self.positions().update(positions)
         self.layout_path.write_text(
             json.dumps(self.layout, sort_keys=True, indent=2), encoding="utf-8")
 
@@ -90,26 +232,31 @@ class Hub:
         return self.store.seq if self.store is not None else 0
 
     def devices(self) -> list[dict[str, Any]]:
-        """디바이스 스트립(§2.2). torch는 커널만 안다 - hub는 Ready 메시지를 읽을 뿐."""
+        """디바이스 스트립(§2.2). torch는 커널만 안다 - hub는 Ready 메시지를 읽을 뿐.
+
+        학습 장치를 고르는 목록이기도 하다. 원격 GPU 서버에서 hub를 띄우면 여기에
+        그 서버의 카드가 나오고, 고른 값이 워커의 ``device``로 간다.
+        """
         ready = self.kernel.ready
         if ready is None:
             return []
-        return [{"name": ready.device, "label": ready.device}]
+        found = list(getattr(ready, "devices", None) or [ready.device])
+        return [{"name": name, "label": _device_label(name)} for name in found]
 
     def templates(self) -> list[dict[str, Any]]:
         """검증된 템플릿 목록(§13.3). 파일이 실제로 있는 것만 열 수 있다."""
         catalogue = [
             {"id": "resnet18", "name": "ResNet-18 / CIFAR-10",
-             "recipe": "200 ep · SGD 0.1 + cosine", "metric": "≈95.0 % top-1",
+             "recipe": "200 ep · SGD 0.1 + cosine", "metric": "문헌값 ≈95.0 % · 앱에서 미검증",
              "file": "resnet18.tfg.json", "rt": {"num_classes": 10}},
             {"id": "minivit", "name": "MiniViT / CIFAR-10",
              "recipe": "설계 예제 · 검증 전", "metric": "—",
              "file": "minivit.tfg.json", "rt": {"num_classes": 10}},
             {"id": "mnist_cnn", "name": "MNIST CNN",
-             "recipe": "2,000 step · AdamW 1e-3 · batch 64", "metric": "≈98.8 % val",
+             "recipe": "2,000 step · AdamW 1e-3 · batch 64", "metric": "test 98.8 % · 재현됨",
              "file": "mnist_cnn.tfg.json"},
             {"id": "nanogpt", "name": "nanoGPT char / Shakespeare",
-             "recipe": "5,000 iter · 6층 384 dim", "metric": "val loss ≈1.47",
+             "recipe": "5,000 iter · 6층 384 dim", "metric": "문헌값 val loss ≈1.47",
              "file": "nanogpt.tfg.json"},
         ]
         roots = [Path.cwd() / "examples", Path(__file__).resolve().parents[3] / "examples"]
@@ -147,6 +294,29 @@ class Hub:
         if not path.exists():
             return {"blocks": []}
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def composites(self) -> list[dict[str, Any]]:
+        """팔레트가 꺼내 쓸 묶음 블록. 템플릿(ResNet BasicBlock, MiniViT Block …)과 지금 그래프의
+        컴포지트를 이름으로 모은다 - 이름이 겹치면 지금 그래프의 것이 이긴다."""
+        found: dict[str, dict[str, Any]] = {}
+        for entry in self.templates():
+            if not entry["available"]:
+                continue
+            try:
+                doc = json.loads(Path(entry["path"]).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            for name, body in (doc.get("composites") or {}).items():
+                found[name] = {"name": name, "source": entry["name"], "doc": body.get("doc"),
+                               "params": body.get("params") or {}, "ports": body.get("ports") or {},
+                               "composite": body}
+        if self.store is not None:
+            for name, body in self.store.ir.composites.items():
+                dumped = body.model_dump(mode="json", exclude_none=True)
+                found[name] = {"name": name, "source": self.store.ir.graph.name, "doc": body.doc,
+                               "params": dumped.get("params") or {}, "ports": dumped.get("ports") or {},
+                               "composite": dumped}
+        return sorted(found.values(), key=lambda item: item["name"])
 
     def snapshot_for_kernel(self) -> dict[str, Any]:
         if self.store is None:
@@ -263,6 +433,7 @@ class Hub:
                 pass
             self.tracker.ensure_run(run_id, graph_id=handle.extra.get("graph_id"))
             self.tracker.clear_scalars(run_id)
+            l2.remember_test(handle, l2.last_test(handle))
             self.l2[run_id] = handle
             l2.merge(handle, self.tracker)
             found.append(run_id)
@@ -337,6 +508,23 @@ def _apply_hparam(hub: "Hub", handle, options: dict[str, Any]) -> JSONResponse:
     return JSONResponse({"ok": True, **handle.as_dict()})
 
 
+def _fit_input_to_data(ir: ModuleGraph, data_dir: Path) -> None:
+    """붙어 있는 데이터가 Input 규격을 정한다(§5.1.6).
+
+    템플릿은 데이터를 달고 오는데(MNIST, CIFAR-10) Input에 적힌 모양이 다르면 첫 실행이
+    "Input을 맞추세요"로 끝난다. 여는 순간 맞춰 두면 사람이 할 일이 없다.
+    """
+    name = ((ir.experiment or {}).get("data") or {}).get("name")
+    spec = datasets.describe(name, data_dir) if name else None
+    if not spec:
+        return
+    for node in ir.graph.nodes:
+        if node.type == "torchflow.Input" and node.ports_out:
+            port = node.ports_out[0]
+            if list(port.shape or [])[1:] != list(spec["shape"]):
+                port.shape = ["B", *spec["shape"]]
+
+
 def _graph_id_for(path: Path | None) -> str:
     """``meta.id``가 없는 그래프의 identity.
 
@@ -350,6 +538,39 @@ def _graph_id_for(path: Path | None) -> str:
         return f"session-{uuid4().hex[:8].upper()}"
     digest = hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()
     return f"path-{digest[:12]}"
+
+
+# cuda 또는 cuda:0 처럼 인덱스가 붙은 것까지. 여러 장 달린 서버에서 카드를 고른다.
+_CUDA_DEVICE = re.compile(r"cuda(:\d+)?")
+
+
+def _device_label(name: str) -> str:
+    """사람이 읽는 장치 이름. cuda:0은 GPU 0, mps는 Apple GPU다."""
+    if name.startswith("cuda"):
+        _, _, index = name.partition(":")
+        return f"GPU {index or '0'} (cuda)"
+    if name == "mps":
+        return "Apple GPU (mps)"
+    return name
+
+
+def _apply_example(ir: ModuleGraph, example: dict[str, Any]) -> None:
+    """AST import는 shape를 모른다. 첫 화면의 "예시 입력"이 Input 규격이 된다(§7.4.1).
+
+    이름이 맞으면 이름으로, 아니면 순서대로 붙인다 - forward 인자 이름과 사용자가
+    적은 이름이 다를 수 있다.
+    """
+    entry = next((node for node in ir.graph.nodes
+                  if (node.type or "").split("@")[0] == "torchflow.Input"), None)
+    if entry is None or not entry.ports_out or not example:
+        return
+    specs = list(example.values())
+    for index, port in enumerate(entry.ports_out):
+        spec = example.get(port.name) or (specs[index] if index < len(specs) else None)
+        if not spec:
+            continue
+        port.shape = list(spec.get("shape") or [])
+        port.dtype = spec.get("dtype") or "float32"
 
 
 def _class_name(name: str) -> str:
@@ -384,8 +605,20 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         yield
-        hub.kernel.stop()
-        hub.l1.stop()
+        # 커널 종료는 동기 호출이고 실패할 수도 있다. 여기서 막히거나 예외가 나면 uvicorn 종료가
+        # 영영 끝나지 않으므로 시간을 재고 예외는 삼킨다 - 남은 프로세스는 OS가 거둔다.
+        import asyncio
+
+        def stop_kernels() -> None:
+            for manager in (hub.kernel, hub.l1):
+                try:
+                    manager.stop(timeout=2.0)
+                except Exception:
+                    pass
+        try:
+            await asyncio.wait_for(asyncio.to_thread(stop_kernels), timeout=6.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
     app = FastAPI(
         title="TorchFlow hub", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
@@ -407,15 +640,21 @@ def create_app(
             "attached": hub.attached,
             "kernel": {"alive": hub.kernel.alive(), "level": hub.kernel.level},
             "l1": {"alive": hub.l1.alive()},
+            # 학습 장치 드롭다운이 이 목록으로 채워진다. 원격 서버면 그 서버의 카드가 온다.
+            "devices": hub.devices(),
         }
 
     @app.get("/api/graph")
     def graph() -> JSONResponse:
-        return no_graph() if hub.store is None else JSONResponse(hub.store.snapshot())
+        if hub.store is None:
+            return no_graph()
+        return JSONResponse({**hub.store.snapshot(), "dirty": hub.seq != hub.saved_seq,
+                             "project": str(hub.project_dir) if hub.project_dir else None})
 
     @app.get("/api/registry")
     def registry() -> JSONResponse:
-        return JSONResponse(hub.registry())
+        # 잎 블록(torch.nn 리플렉션)에 묶음 블록(템플릿과 이 그래프의 컴포지트)을 얹는다.
+        return JSONResponse({**hub.registry(), "composites": hub.composites()})
 
     @app.post("/api/ops")
     async def ops(op: dict[str, Any]) -> JSONResponse:
@@ -463,7 +702,39 @@ def create_app(
             "devices": hub.devices(),
             "templates": hub.templates(),
             "recent": hub.recent(),
+            "projects": hub.recent_projects(),
         })
+
+    @app.post("/api/project/save")
+    def save_project(request: dict[str, Any] | None = None) -> JSONResponse:
+        """프로젝트 폴더에 전부 저장한다. 처음이면 projects/<이름>/ 을 만든다."""
+        if hub.store is None:
+            return no_graph()
+        request = request or {}
+        if request.get("dir"):
+            target = Path(request["dir"]).expanduser()
+        elif hub.project_dir is not None and not request.get("name"):
+            target = hub.project_dir
+        else:
+            name = str(request.get("name") or hub.store.ir.graph.name or "untitled").strip()
+            if not name or "/" in name or name.startswith("."):
+                return JSONResponse({"error": f"프로젝트 이름으로 쓸 수 없습니다: {name!r}"}, status_code=400)
+            target = Path.cwd() / "projects" / name
+        if (target / "graph.tfg.json").is_file() and target != hub.project_dir:
+            return JSONResponse({"error": f"{target.name}/ 에 이미 다른 프로젝트가 있습니다. 다른 이름을 쓰세요"},
+                                status_code=409)
+        return JSONResponse({"ok": True, **hub.save_project(target)})
+
+    @app.post("/api/project/open")
+    def open_project(request: dict[str, Any]) -> JSONResponse:
+        target = Path(request.get("dir") or "").expanduser()
+        if not (target / "graph.tfg.json").is_file():
+            return JSONResponse({"error": f"프로젝트 폴더가 아닙니다 (graph.tfg.json 없음): {target}"}, status_code=404)
+        try:
+            hub.open_project(target)
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
+        return JSONResponse({"ok": True, "name": hub.store.ir.graph.name, "dir": str(target)})
 
     @app.post("/api/inspect")
     def inspect_source(request: dict[str, Any]) -> JSONResponse:
@@ -479,7 +750,12 @@ def create_app(
 
     @app.post("/api/import")
     def import_source(request: dict[str, Any]) -> JSONResponse:
-        """사용자 .py를 인스턴스로 만들어 그래프로 편다(§7.4 경로 3)."""
+        """사용자 .py를 그래프로 연다.
+
+        길이 둘이다(§7.4). ``mode="ast"``는 코드를 **읽기만** 해서 편집 가능한 IR을
+        만들고(경로 1), ``mode="trace"``는 커널이 실제로 인스턴스를 만들어 실측
+        트레이스를 뜬다(경로 3, 읽기 전용). 서로를 대체하지 않는다.
+        """
         name = Path(request.get("filename") or "model.py").name
         target = hub.state_dir / "imports" / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -490,6 +766,21 @@ def create_app(
             example = parse_example_spec(request.get("example") or "")
         except ValueError as exc:
             return JSONResponse({"error": f"입력 명세: {exc}"}, status_code=400)
+
+        if request.get("mode") == "ast":
+            source = request.get("source")
+            if source is None:
+                source = target.read_text(encoding="utf-8")
+            try:
+                ir, report = astimport.import_source(
+                    source, filename=name, name=request.get("class") or None,
+                    previous=hub.store.ir if request.get("merge") and hub.store else None)
+            except astimport.AstImportError as exc:
+                return JSONResponse({"error": str(exc), "stage": "ast"}, status_code=400)
+            _apply_example(ir, example)
+            hub.project_dir = None
+            hub.open(ir, target)
+            return JSONResponse({"ok": True, "name": hub.store.ir.graph.name, "report": report})
 
         hub.l1.ensure()
         replies = hub.l1.request(proto.ImportTrace(
@@ -509,6 +800,36 @@ def create_app(
         return JSONResponse({"ok": True, "name": hub.store.ir.graph.name,
                              "report": imported.report})
 
+    @app.post("/api/reimport")
+    def reimport(request: dict[str, Any]) -> JSONResponse:
+        """열려 있는 그래프를 코드에서 다시 읽는다(§7.5).
+
+        노드 id는 속성 경로에서 파생되므로 안 바뀐 블록은 같은 id를 유지하고, 좌표와
+        프로브와 라벨이 살아남는다. 무엇이 달라지는지 먼저 돌려주고(``preview``),
+        확정은 다시 부를 때 ``apply``로 한다(§7.6.2의 diff 미리보기).
+        """
+        if hub.store is None:
+            return no_graph()
+        source = request.get("source")
+        path = Path(request["path"]).expanduser() if request.get("path") else None
+        if source is None and path is not None:
+            source = path.read_text(encoding="utf-8")
+        if source is None:
+            return JSONResponse({"error": "코드를 주세요"}, status_code=400)
+        try:
+            fresh, report = astimport.import_source(
+                source, filename=str(path or "model.py"), name=request.get("class") or None,
+                previous=hub.store.ir)
+        except astimport.AstImportError as exc:
+            return JSONResponse({"error": str(exc), "stage": "ast"}, status_code=400)
+
+        changes = graphdiff.summarize(hub.store.ir, fresh)
+        if not request.get("apply"):
+            return JSONResponse({"ok": True, "preview": changes, "report": report})
+        hub.open(fresh, path or hub.graph_path)
+        return JSONResponse({"ok": True, "applied": changes, "report": report,
+                             "name": hub.store.ir.graph.name})
+
     @app.post("/api/open")
     def open_graph(request: dict[str, Any]) -> JSONResponse:
         """템플릿 또는 경로를 연다. 첫 화면의 진입점 하나."""
@@ -520,7 +841,11 @@ def create_app(
         # --rt를 칠 곳이 없어서, 안 채우면 fc에서 "unresolved rt.num_classes"로 끝난다.
         hub.rt.update((templates.get(str(path)) or {}).get("rt") or {})
         try:
-            hub.open(load(path), path)
+            ir = load(path)
+            # 템플릿은 프로젝트 밖의 파일이다. 새로 열면 프로젝트 소속도 풀린다.
+            hub.project_dir = None
+            _fit_input_to_data(ir, hub.data_dir)
+            hub.open(ir, path)
         except Exception as exc:
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"}, status_code=400)
         return JSONResponse({"ok": True, "name": hub.store.ir.graph.name})
@@ -532,15 +857,14 @@ def create_app(
             return no_graph()
         if hub.traced:
             return JSONResponse({"error": TRACED_IS_READ_ONLY}, status_code=400)
+        source = str(hub.graph_path) if hub.graph_path else "graph/model.tfg.json"
         try:
-            code = codegen.generate(
-                hub.store.ir, version=__version__,
-                source=str(hub.graph_path) if hub.graph_path else "graph/model.tfg.json",
-                specs=hub.node_states)
+            code = codegen.generate(hub.store.ir, version=__version__, source=source,
+                                    specs=hub.node_states)
         except codegen.CodegenError as exc:
             return JSONResponse({"error": str(exc), "node": exc.node_id}, status_code=400)
         return JSONResponse({"code": code, "ir_sha256": codegen.ir_hash(hub.store.ir),
-                             "lines": len(code.splitlines())})
+                             "lines": len(code.splitlines()), "source": source})
 
     @app.get("/api/export")
     def export_figure(format: str = "svg", preset: str = paper.DEFAULT_PRESET,
@@ -589,9 +913,19 @@ def create_app(
         # id를 여기서 박아 둔다. 없으면 새 프로젝트마다 run이 섞인다.
         meta = {"app_version": __version__, "id": uuid4().hex[:8].upper()}
         experiment = {"data": {"name": spec["name"], "recipe": spec["recipe"]}} if spec else None
+        hub.project_dir = None      # 새 그래프는 아직 어느 폴더에도 속하지 않는다
         hub.open(ModuleGraph(meta=meta, experiment=experiment,
                              graph=Graph.model_validate({"name": name, "nodes": nodes})))
         return JSONResponse({"ok": True, "name": name, "dataset": spec and spec["name"]})
+
+    @app.post("/api/delete")
+    def delete_graph(request: dict[str, Any]) -> JSONResponse:
+        """첫 화면 "내 그래프"에 뜬 파일만 지운다. 임의 경로는 받지 않는다."""
+        path = str(Path(request["path"]).expanduser().resolve())
+        if path not in {entry["path"] for entry in hub.recent()}:
+            return JSONResponse({"error": f"not found: {path}"}, status_code=404)
+        Path(path).unlink()
+        return JSONResponse({"ok": True})
 
     @app.post("/api/close")
     def close_graph() -> JSONResponse:
@@ -629,11 +963,12 @@ def create_app(
         path.parent.mkdir(parents=True, exist_ok=True)
         hub.store.save(path)
         hub.graph_path = path
+        hub.saved_seq = hub.seq
         return JSONResponse({"ok": True, "path": str(path), "problems": problems})
 
     @app.get("/api/layout")
     def read_layout() -> JSONResponse:
-        return JSONResponse(hub.layout)
+        return JSONResponse({"positions": hub.positions()})
 
     @app.post("/api/layout")
     def write_layout(patch: dict[str, Any]) -> JSONResponse:
@@ -643,7 +978,7 @@ def create_app(
         옮겨도 그래프 의미가 바뀌지 않고, git에서 ``merge=ours``로 충돌하지 않는다.
         """
         hub.update_layout(patch.get("positions") or {})
-        return JSONResponse({"ok": True, "positions": len(hub.layout["positions"])})
+        return JSONResponse({"ok": True, "positions": len(hub.positions())})
 
     @app.post("/api/probe")
     async def run_probe(cfg: dict[str, Any] | None = None) -> JSONResponse:
@@ -769,8 +1104,6 @@ def create_app(
         spec = datasets.describe(name, hub.data_dir)
         if spec is None:
             return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {name}"}, status_code=404)
-        if spec["kind"] == "builtin":
-            return JSONResponse({"base": spec, "spec": datasets.resolve(spec, None), "preview": {}})
         return JSONResponse(datasets.preview(spec, hub.data_dir, (request or {}).get("recipe")))
 
     @app.post("/api/data")
@@ -783,6 +1116,14 @@ def create_app(
         if hub.store is None:
             return no_graph()
         name = request.get("name") or ""
+        # 합성 과제로 되돌리기: experiment.data를 떼고 Input 규격은 건드리지 않는다
+        # (합성은 Input의 shape를 그대로 쓴다). 데이터 창의 "합성 과제" 항목이 이리로 온다.
+        if name in ("teacher", "noise"):
+            experiment = dict(hub.store.ir.experiment or {})
+            experiment.pop("data", None)
+            hub.store.ir.experiment = experiment
+            return JSONResponse({"ok": True, "spec": {"name": name, "recipe": {}},
+                                 "seq": hub.seq, "node_states": []})
         spec = datasets.describe(name, hub.data_dir)
         if spec is None:
             return JSONResponse({"error": f"데이터셋을 찾지 못했습니다: {name}"}, status_code=404)
@@ -844,18 +1185,60 @@ def create_app(
     def download_dataset(name: str) -> JSONResponse:
         if name not in datasets.CATALOGUE:
             return JSONResponse({"error": f"unknown dataset {name}"}, status_code=404)
+        if name in hub.downloading:
+            return JSONResponse({"error": "이미 내려받는 중입니다"}, status_code=409)
+        hub.downloading.add(name)
         try:
             written = datasets.download(name, hub.data_dir)
         except OSError as exc:
             return JSONResponse({"error": f"내려받지 못했습니다: {exc}"}, status_code=502)
+        finally:
+            hub.downloading.discard(name)
         return JSONResponse({"ok": True, "files": [str(path) for path in written]})
+
+    @app.get("/api/datasets/{name}/progress")
+    def dataset_progress(name: str) -> JSONResponse:
+        """받은 바이트 / 예상 총량. ``active``가 거짓인데 바이트가 남아 있으면 끊긴 다운로드다."""
+        if name not in datasets.CATALOGUE:
+            return JSONResponse({"error": f"unknown dataset {name}"}, status_code=404)
+        return JSONResponse({**datasets.progress(name, hub.data_dir),
+                             "active": name in hub.downloading})
+
+    training_lock = threading.Lock()
 
     @app.post("/api/train")
     def start_training(http: Request, request: dict[str, Any] | None = None) -> JSONResponse:
-        """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
-        # 누가 눌렀는지 터미널에 한 줄 남긴다. 요청이 반복되면 여기서 바로 보인다.
-        print(f"[train] 시작 요청 {http.client.host if http.client else '?'} "
-              f"{(http.headers.get('user-agent') or '')[:60]}", flush=True)
+        with training_lock:
+            return _start_training(http, request)
+
+    def _start_training(http: Request, request: dict[str, Any] | None) -> JSONResponse:
+        hub.sync_runs()
+        retry_id = (request or {}).get("retry_run")
+        if retry_id:
+            original = hub.l2.get(retry_id)
+            if original is None or original.extra.get("graph_id") != hub.graph_id:
+                return JSONResponse({"error": "현재 모델의 실행 기록을 찾을 수 없습니다"}, status_code=404)
+            if original.state != "failed" or not l2.cpu_retryable(original.error):
+                return JSONResponse({"error": "CPU 재실행 대상 오류가 아닙니다"}, status_code=400)
+            if any(h.alive and h.extra.get("graph_id") == hub.graph_id for h in hub.l2.values()):
+                return JSONResponse({"error": "현재 학습이 끝난 뒤 다시 실행하세요"}, status_code=409)
+            child = l2.retry_cpu(original, hub.runs_dir)
+            hub.l2[child.run_id] = child
+            hub.tracker.ensure_run(child.run_id, kind=child.extra.get("kind", "exploratory"),
+                                   name=hub.store.ir.graph.name, graph_id=hub.graph_id,
+                                   manifest={"job": json.loads((child.directory / "job.json").read_text()),
+                                             "retry_of": original.run_id})
+            return JSONResponse({"ok": True, **child.as_dict()})
+        device = str((request or {}).get("device", "auto"))
+        if device not in ("auto", "cpu", "mps") and not _CUDA_DEVICE.fullmatch(device):
+            return JSONResponse({"error": f"지원하지 않는 학습 장치입니다: {device}"}, status_code=400)
+        # 누가 눌렀는지 터미널에 남기되, 거부되는 반복 요청은 초당 한 줄로 접는다 - 키 자동 반복으로
+        # 초당 30번 들어온 요청이 터미널을 도배해 사람이 놀랐다.
+        now = time.time()
+        if now - hub.last_train_log >= 1.0:
+            print(f"[train] 시작 요청 {http.client.host if http.client else '?'} "
+                  f"{(http.headers.get('user-agent') or '')[:40]}", flush=True)
+            hub.last_train_log = now
         if hub.store is None:
             return no_graph()
         if hub.traced:
@@ -863,6 +1246,14 @@ def create_app(
         options = request or {}
 
         graph = hub.store.ir.graph
+        # 모양 계산이 실패한 블록이 있으면 워커도 첫 forward에서 같은 자리에서 죽는다. 그러면
+        # 사람은 stdout을 뒤져야 한다 - 여기서 블록 이름을 대고 멈춘다.
+        broken = [node.label or node.id for node in graph.nodes
+                  if (hub.node_states.get(node.id) or {}).get("state") == "error"]
+        if broken:
+            return JSONResponse({"error": f"모델 오류를 먼저 고치세요: {', '.join(broken)} "
+                                          "(블록을 누르면 오른쪽에 진단이 보입니다)",
+                                 "broken": broken}, status_code=400)
         # 한 그래프에 학습은 한 번에 하나다. 화면이 잘못 반복해 눌러도 워커가 쌓이면 안 된다 -
         # 실제로 run 200개가 한꺼번에 떠서 기계가 멈출 뻔했다.
         busy = next((handle for handle in list(hub.l2.values())
@@ -977,7 +1368,9 @@ def create_app(
         handle.extra.update({"kind": kind, "smoke": smoke, "graph_id": hub.graph_id})
         hub.l2[run_id] = handle
         hub.tracker.ensure_run(run_id, kind=kind, name=graph.name, graph_id=hub.graph_id,
-                               manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir)})
+                               manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir),
+                                         # 어느 ablation이었는지. 표의 축이 여기서 나온다(§6.4).
+                                         "variant": (hub.store.ir.meta or {}).get("variant")})
         return JSONResponse({"ok": True, **handle.as_dict()})
 
     @app.post("/api/train/{run_id}")
@@ -1031,6 +1424,32 @@ def create_app(
         return JSONResponse({"text": chunk.decode("utf-8", "replace"),
                              "offset": start + len(chunk)})
 
+    @app.post("/api/test/{run_id}")
+    def test_run(run_id: str) -> JSONResponse:
+        """run의 체크포인트를 학습이 보지 않은 분할에 돌린다. 끝날 때까지 기다린다(스레드풀)."""
+        handle = hub.l2.get(run_id)
+        if handle is None:
+            return JSONResponse({"error": f"unknown run {run_id}"}, status_code=404)
+        if run_id in hub.testing:
+            return JSONResponse({"error": "이미 테스트가 돌고 있습니다"}, status_code=409)
+        hub.testing.add(run_id)
+        try:
+            result = l2.test(handle)
+        finally:
+            hub.testing.discard(run_id)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+    @app.get("/api/test/{run_id}")
+    def last_test_result(run_id: str) -> JSONResponse:
+        """마지막 테스트 결과. 탭을 다시 열어도 다시 돌리지 않는다."""
+        handle = hub.l2.get(run_id)
+        if handle is None:
+            return JSONResponse({"error": f"unknown run {run_id}"}, status_code=404)
+        result = l2.last_test(handle)
+        if result is None:
+            return JSONResponse({"error": "아직 테스트하지 않았습니다"}, status_code=404)
+        return JSONResponse(result)
+
     @app.get("/api/train")
     def training_status() -> JSONResponse:
         """돌고 있는 run들의 상태. 곡선은 /api/runs/curve가 준다.
@@ -1038,9 +1457,11 @@ def create_app(
         다른 그래프의 run은 빼고 준다 - 워커는 계속 돌지만 이 화면의 것이 아니다.
         """
         hub.sync_runs()
+        # 코드가 밖에서 바뀌었는지도 같이 알려 준다 - 2초 폴링이 곧 감시기다(§7.6.2).
         return JSONResponse({"runs": [
             handle.as_dict() for handle in hub.l2.values()
-            if hub.graph_id is None or handle.extra.get("graph_id") == hub.graph_id]})
+            if hub.graph_id is None or handle.extra.get("graph_id") == hub.graph_id],
+            "source": hub.source_change()})
 
     @app.get("/api/runs")
     def list_runs() -> JSONResponse:

@@ -38,15 +38,20 @@ export function App() {
   const load = useCallback(async () => {
     const health = await fetchHealth();
     setKernel(health.kernel.alive);
+    // 학습 장치 목록은 커널이 알려 준 것이다. 원격 GPU 서버면 그 서버의 카드가 온다.
+    useStore.getState().setDevices(health.devices ?? []);
     useStore.getState().setAttached(Boolean(health.attached));
     setChecked(true);
     if (health.graph_open === false) return;
 
     // 좌표를 그래프보다 먼저 넣는다. 순서가 반대면 노드가 자동 배치 자리에 한 번
     // 그려졌다가 layout.json 자리로 튀고, 그 사이에 맞춘 뷰가 어긋난 채 남는다.
-    const [{ graph: ir, seq }, positions] = await Promise.all([fetchGraph(), fetchLayout()]);
+    const [{ graph: ir, seq, dirty, project }, positions] = await Promise.all([fetchGraph(), fetchLayout()]);
     useStore.getState().setPositions(positions);
     openGraph(ir, seq);
+    // 저장 여부는 hub가 안다. 새로고침한 뒤에도 "저장 안 됨"이 남아야 편집을 잃지 않는다.
+    useStore.getState().setDirty(Boolean(dirty));
+    useStore.getState().setProject(project ?? null);
     const shapes = await runShapes();
     for (const state of shapes.node_states) applyNodeState(state);
     // 파라미터 총계는 L0 패스가 센 값이 정본이다(§2.2 상단 바).
