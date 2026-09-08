@@ -36,6 +36,10 @@
       [
         "N08.output",
         "N09.input"
+      ],
+      [
+        "N09.output",
+        "N10.input"
       ]
     ],
     "instances": {
@@ -165,6 +169,20 @@
         "label": "logits",
         "id": "N09",
         "type": "torchflow.Output"
+      },
+      {
+        "id": "N10",
+        "label": "train",
+        "type": "torchflow.Train",
+        "args": {
+          "optimizer": "adamw",
+          "lr": 0.001,
+          "weight_decay": 0.0,
+          "steps": 2000,
+          "batch": 64,
+          "scheduler": "none",
+          "warmup_steps": 0
+        }
       }
     ]
   },
@@ -172,5 +190,11 @@
     "app_version": "0.0.1",
     "template": "mnist_cnn",
     "reference": "2 conv + fc. 2,000 step AdamW 1e-3 batch 64 -> val 98.8 %"
+  },
+  "experiment": {
+    "data": {
+      "name": "mnist",
+      "recipe": {}
+    }
   }
 }

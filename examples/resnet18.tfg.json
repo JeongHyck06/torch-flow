@@ -771,5 +771,11 @@
       "policy": "kaiming_normal"
     },
     "probe_objective": "auto"
+  },
+  "experiment": {
+    "data": {
+      "name": "cifar10",
+      "recipe": {}
+    }
   }
 }

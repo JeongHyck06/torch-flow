@@ -85,7 +85,7 @@ def test_npy_pair_is_recognised_without_numpy_in_the_hub(tmp_path):
     assert spec["kind"] == "arrays" and spec["shape"] == [4] and spec["classes"] == 3 and spec["count"] == 8
 
     listed = [entry["name"] for entry in datasets.scan(tmp_path)]
-    assert listed == ["mnist", "arrays"]
+    assert listed == ["mnist", "cifar10", "arrays"]
     assert datasets.load_any("arrays", tmp_path)["train"][0].shape[1] == 4
 
 
@@ -133,3 +133,53 @@ def test_recipe_filters_classes_limits_samples_and_resizes_images(tmp_path):
     shown = datasets.preview(spec, tmp_path, None)
     assert shown["preview"]["thumbnails"]["labels"] == ["blue", "red"]
     assert shown["spec"]["split"] == {"train": 5, "val": 1}
+
+
+def test_builtin_preview_shows_samples_without_torch(tmp_path):
+    """내장 데이터도 미리보기가 있다 - 클래스별 개수·분할·격자. hub 쪽이므로 torch 없이."""
+    write_fake_mnist(tmp_path)
+    shown = datasets.preview(datasets.describe("mnist", tmp_path), tmp_path, None)
+    assert shown["spec"]["class_counts"]["0"] == 1 and shown["spec"]["class_counts"]["9"] == 0
+    assert shown["spec"]["split"] == {"train": 8, "val": 8}
+    assert shown["preview"]["thumbnails"]["labels"] == [str(label) for label in range(10)]
+    assert shown["preview"]["thumbnails"]["per_class"] == 1
+
+
+def write_fake_cifar(base: Path, count: int = 8) -> Path:
+    """진짜와 같은 tar.gz + pickle 배치. 픽셀은 이미지마다 라벨값으로 채운다."""
+    import io
+    import pickle
+    import tarfile
+
+    target = base / "cifar10"
+    target.mkdir(parents=True)
+    archive = target / datasets.CATALOGUE["cifar10"]["files"]["archive"]
+    with tarfile.open(archive, "w:gz") as tar:
+        for member in datasets.CIFAR_TRAIN + datasets.CIFAR_TEST:
+            labels = [index % 10 for index in range(count)]
+            data = b"".join(bytes([label]) * 3072 for label in labels)
+            blob = pickle.dumps({b"data": data, b"labels": labels})
+            info = tarfile.TarInfo(member)
+            info.size = len(blob)
+            tar.addfile(info, io.BytesIO(blob))
+    return target
+
+
+def test_cifar10_loads_from_the_python_tarball(tmp_path):
+    assert not datasets.available("cifar10", tmp_path)
+    write_fake_cifar(tmp_path)
+    assert datasets.available("cifar10", tmp_path)
+
+    splits = datasets.load("cifar10", tmp_path)
+    x, y = splits["train"]
+    # 배치 5개가 각각 라벨 0..7을 담으므로 이어 붙이면 0..7이 다섯 번 반복된다.
+    assert x.shape == (40, 3, 32, 32) and y.tolist() == [index % 8 for index in range(40)]
+    assert splits["test"][0].shape == (8, 3, 32, 32)
+    mean, std = datasets.CATALOGUE["cifar10"]["mean"], datasets.CATALOGUE["cifar10"]["std"]
+    assert abs(float(x[1, 0, 0, 0]) - ((1 / 255 - mean[0]) / std[0])) < 1e-4
+
+    spec = datasets.describe("cifar10", tmp_path)
+    preview = datasets.preview(spec, tmp_path, None)
+    assert preview["spec"]["class_names"][0] == "airplane"
+    assert preview["spec"]["class_counts"]["airplane"] == 5
+    assert preview["preview"]["thumbnails"]["labels"][:2] == ["airplane", "automobile"]

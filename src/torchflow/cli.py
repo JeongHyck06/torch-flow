@@ -270,7 +270,9 @@ def view(graph: str | None, port: int, host: str, state_dir: str, rt: tuple[str,
         # 않아 잠금이 남는다. SIGTERM은 우리가 받아 정상 종료로 바꾼다.
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
-        uvicorn.run(app, host=host, port=port, log_level="warning")
+        # Ctrl+C 뒤에 브라우저 탭이 붙들고 있는 연결(2초 폴링, WebSocket)을 기다리느라 hub가 안 내려간
+        # 적이 있다 - 3초 뒤에는 남은 연결을 끊고 내려간다.
+        uvicorn.run(app, host=host, port=port, log_level="warning", timeout_graceful_shutdown=3)
     finally:
         if owns_lock:
             lock.unlink(missing_ok=True)
