@@ -272,3 +272,67 @@ def test_grouping_batch_moves_nodes_into_a_composite(minivit):
     assert "self.group(x)" in code
 
 
+def test_promote_and_demote_a_hyperparameter(minivit):
+    """값 하나를 상단으로 올리고 다시 내린다(§4.3). 둘은 서로의 역이다."""
+    store = GraphStore(minivit)
+    before = store.ir.graph.instances["01J9I103"].args["in_features"]
+    store.apply(op("promote_hp", instance="01J9I103", path="in_features", name="width"))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] == {"$hp": "width"}
+    assert store.ir.hparams["width"].default == before
+
+    store.apply(op("demote_hp", instance="01J9I103", path="in_features", name="width",
+                   value=before))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] == before
+    assert "width" not in store.ir.hparams, "아무도 안 쓰는 하이퍼파라미터는 남지 않는다"
+
+
+def test_promote_refuses_to_hijack_an_existing_name(minivit):
+    store = GraphStore(minivit)
+    with pytest.raises(OpError, match="이미"):
+        store.apply(op("promote_hp", instance="01J9I103", path="in_features", name="dim"))
+
+
+def test_making_a_block_switchable(minivit):
+    """평범한 블록 -> Switch. 변형을 고르는 편집은 전부 set_instance 하나로 표현된다(§4.4.2)."""
+    store = GraphStore(minivit)
+    original = store.ir.graph.instances["01J9I103"].model_dump(exclude_none=True)
+    store.apply(op("set_instance", instance="01J9I103", body={
+        "label": "head", "type": "torchflow.Switch", "active": "baseline",
+        "variants": {"baseline": {"type": original["type"], "args": original["args"]},
+                     "없음": {"type": "torch.nn.Identity", "args": {}}}}))
+    switch = store.ir.graph.instances["01J9I103"]
+    assert switch.type == "torchflow.Switch" and set(switch.variants) == {"baseline", "없음"}
+
+    store.apply(op("set_switch_active", instance="01J9I103", active="없음"))
+    assert store.ir.graph.instances["01J9I103"].active == "없음"
+
+    with pytest.raises(OpError, match="변형이 하나 이상"):
+        store.apply(op("set_instance", instance="01J9I103",
+                       body={"label": "head", "type": "torchflow.Switch", "variants": {}}))
+
+
+def test_variant_sets_save_and_restore_values(minivit):
+    """이름 붙인 ablation(§4.4.3). 값만 담고 구조는 담지 않는다."""
+    store = GraphStore(minivit)
+    store.apply(op("save_variant", name="baseline"))
+    assert "baseline" in store.ir.variant_sets
+
+    store.apply(op("set_param", instance="01J9I103", path="in_features", value=999))
+    store.apply(op("save_variant", name="wide"))
+    store.apply(op("apply_variant", name="baseline"))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] != 999
+    store.apply(op("apply_variant", name="wide"))
+    assert store.ir.graph.instances["01J9I103"].args["in_features"] == 999
+
+    with pytest.raises(OpError, match="그런 변형이 없습니다"):
+        store.apply(op("apply_variant", name="ghost"))
+
+
+def test_a_variant_survives_being_saved_and_loaded(minivit, tmp_path):
+    store = GraphStore(minivit)
+    store.apply(op("save_variant", name="baseline"))
+    store.save(tmp_path / "graph.tfg.json")
+
+    from torchflow.ir import load
+
+    assert "baseline" in load(tmp_path / "graph.tfg.json").variant_sets

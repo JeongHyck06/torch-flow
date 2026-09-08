@@ -98,6 +98,7 @@ export interface ModuleGraph {
   composites?: Record<string, Composite>;
   graph: Graph;
   code_cells?: Record<string, CodeCell>;
+  variant_sets?: Record<string, Record<string, unknown>>;
   experiment?: Record<string, unknown>;
   [key: string]: unknown;
 }

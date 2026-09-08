@@ -299,6 +299,33 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
         ...scoped, instance: payload.instance, active: instance.active,
       });
     }
+    // 인스턴스를 통째로 바꾸는 편집(Switch 만들기, 변형 더하기·빼기)의 역은
+    // **이전 인스턴스를 실은 같은 op**다.
+    case "set_instance": {
+      const instance = scope.instances?.[payload.instance as string];
+      if (!instance) return null;
+      return op("set_instance", { ...scoped, instance: payload.instance, body: strip(instance) });
+    }
+    case "promote_hp": {
+      const target = payload.instance
+        ? scope.instances?.[payload.instance as string]
+        : (scope.nodes ?? []).find((node) => node.id === payload.node);
+      if (!target) return null;
+      return op("demote_hp", {
+        ...scoped, instance: payload.instance, node: payload.node, path: payload.path,
+        name: payload.name, value: (target.args ?? {})[payload.path as string],
+      });
+    }
+    case "demote_hp":
+      return op("promote_hp", {
+        ...scoped, instance: payload.instance, node: payload.node,
+        path: payload.path, name: payload.name, value: payload.value,
+      });
+    case "save_variant":
+      return op("remove_variant", { name: payload.name });
+    case "remove_variant":
+      return payload.values === undefined
+        ? null : op("save_variant", { name: payload.name, values: payload.values });
     // 정의는 팔레트가 그래프에 없을 때만 보내므로 역은 지우기다. 부르는 노드가 남아 있으면
     // 서버가 거부한다 - 실행 취소는 노드부터 되돌아가므로 순서가 맞는다.
     // 몸체를 같이 실어야 이 역 op의 역(다시 실행)이 정의를 되살릴 수 있다.

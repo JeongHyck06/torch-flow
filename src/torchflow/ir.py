@@ -177,6 +177,8 @@ class ModuleGraph(_Base):
     composites: dict[str, Composite] = Field(default_factory=dict)
     graph: Graph
     code_cells: dict[str, CodeCell] = Field(default_factory=dict)
+    # 이름 붙인 ablation(§4.4.3). 값은 인자·Switch 활성·hparam 기본값의 스냅샷이다.
+    variant_sets: dict[str, dict[str, Any]] = Field(default_factory=dict)
     experiment: dict[str, Any] | None = None
 
 

@@ -42,6 +42,7 @@ export function Inspector() {
   if (!scope || !selected) {
     return (
       <aside className="inspector" aria-label="Inspector">
+        {graph && <VariantSets sets={(graph.variant_sets ?? {}) as Record<string, unknown>} />}
         <h3>단축키</h3>
         <dl className="rows">
           <div><dt>노드 이동</dt><dd>← →</dd></div>
@@ -108,7 +109,7 @@ export function Inspector() {
             {state?.spec?.dtype ? <div><dt>dtype</dt><dd>{String(state.spec.dtype)}</dd></div> : null}
             {badges.measured ? (
               <div>
-                <dt>실측 (L1)</dt>
+                <dt title="예시 배치를 한 번 흘려 실제로 나온 크기입니다">실제로 잰 크기</dt>
                 <dd>{formatShape((badges.measured as { shape?: (string | number)[] }).shape)}</dd>
               </div>
             ) : null}
@@ -181,7 +182,7 @@ export function Inspector() {
             {Object.entries(fields).map(([key, value]) => (
               <div key={key}>
                 <dt>{key}</dt>
-                <dd>
+                <dd className="rowvalue">
                   <ParamField
                     name={key}
                     value={value}
@@ -192,11 +193,24 @@ export function Inspector() {
                       path: key, value: next,
                     }))}
                   />
+                  <HParamToggle
+                    name={key} value={value}
+                    target={{ ...(composite ? { composite } : {}),
+                              ...(owner.instance ? { instance: owner.instance }
+                                                 : { node: owner.node }) }}
+                  />
                 </dd>
               </div>
             ))}
           </dl>
         </>
+      )}
+
+      {instance && (
+        <SwitchEditor
+          instance={instance} instanceId={node?.call as string}
+          composite={composite} blocks={blocks}
+        />
       )}
 
       {kind === "torchflow.Train" && (
@@ -513,5 +527,196 @@ function Histogram({ bins }: { bins: number[] }) {
         />
       ))}
     </svg>
+  );
+}
+
+/**
+ * 이름 붙인 ablation 목록 (기획서 §4.4.3 Variant Set).
+ *
+ * "지금 상태"를 통째로 저장해 두고 한 번에 되돌아온다. 담기는 것은 값이다 -
+ * 인자, Switch 활성 변형, enabled, hparam 기본값. 블록을 더하고 지우는 구조 변경은
+ * 담기지 않는다(그것까지는 v1).
+ */
+function VariantSets({ sets }: { sets: Record<string, unknown> }) {
+  const names = Object.keys(sets);
+  const save = () => {
+    const name = window.prompt("변형 이름 (예: no-aux-loss, post-norm)", `variant${names.length + 1}`);
+    if (!name?.trim()) return;
+    void applyEdit(op("save_variant", { name: name.trim() }))
+      .then((error) => error && useStore.getState().setNotice(error));
+  };
+  return (
+    <>
+      <h3>변형 세트</h3>
+      {names.length === 0 ? (
+        <p className="mono muted">지금 값들을 이름 붙여 저장해 두면 한 번에 돌아옵니다</p>
+      ) : (
+        <dl className="rows">
+          {names.map((name) => (
+            <div key={name}>
+              <dt>{name}</dt>
+              <dd className="rowvalue">
+                <button className="rowaction" title="이 변형의 값으로 되돌립니다"
+                        onClick={() => void applyEdit(op("apply_variant", { name }))}>
+                  적용
+                </button>
+                <button className="rowaction" title="이 변형을 지웁니다"
+                        onClick={() => void applyEdit(op("remove_variant",
+                                                        { name, values: sets[name] }))}>
+                  지우기
+                </button>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <button className="ghost inspector__action" onClick={save}>지금 상태를 변형으로 저장</button>
+    </>
+  );
+}
+
+/**
+ * 값 하나를 하이퍼파라미터로 올리고 내린다 (기획서 §4.3, §8.2.3).
+ *
+ * 올리면 그 값을 쓰는 자리가 전부 한 곳을 가리키게 되고, 상단에서 한 번 고치면
+ * 같이 움직인다. 내리면 지금 값이 그 자리에 박히고 아무도 안 쓰는 hparam은 사라진다.
+ */
+function HParamToggle({ name, value, target }: {
+  name: string;
+  value: unknown;
+  target: Record<string, unknown>;
+}) {
+  const reference = refOf(value);
+  if (reference === null && (value === undefined || value === null || typeof value === "object")) {
+    return null;
+  }
+  const promoted = Boolean(reference?.startsWith("$hp"));
+  const hparam = promoted && reference ? reference.split(": ")[1] : name;
+  return (
+    <button
+      className="rowaction"
+      title={promoted ? `${hparam} 참조를 지금 값으로 내립니다`
+                      : `이 값을 하이퍼파라미터 ${name}로 올립니다`}
+      onClick={() => {
+        void applyEdit(op(promoted ? "demote_hp" : "promote_hp",
+                          { ...target, path: name, name: hparam }))
+          .then((error) => error && useStore.getState().setNotice(error));
+      }}
+    >
+      {promoted ? "값으로" : "hp"}
+    </button>
+  );
+}
+
+/**
+ * Ablation Switch (§4.4.2). 변형을 고르면 그래프가 그 변형으로 다시 돈다.
+ *
+ * forward는 변형과 무관한 단일 문장이므로(생성 코드의 불변식) 여기서 무엇을 고르든
+ * 코드의 모양은 같고 `__init__`의 분기만 달라진다.
+ */
+function SwitchEditor({ instance, instanceId, composite, blocks }: {
+  instance: { type?: string; args?: Record<string, unknown>; label?: string;
+              active?: unknown; variants?: Record<string, Record<string, unknown>> };
+  instanceId: string;
+  composite: string | null;
+  blocks: Block[];
+}) {
+  const [adding, setAdding] = useState("");
+  const scoped = composite ? { composite } : {};
+  const isSwitch = instance.type === "torchflow.Switch";
+
+  if (!isSwitch) {
+    return (
+      <>
+        <h3>비교</h3>
+        <button
+          className="ghost inspector__action"
+          title="이 블록을 A/B로 바꿔 가며 재 볼 수 있게 만듭니다. 변형은 여기서 더합니다"
+          onClick={() => void applyEdit(op("set_instance", {
+            ...scoped, instance: instanceId,
+            body: {
+              label: instance.label, type: "torchflow.Switch", active: "baseline",
+              variants: {
+                baseline: { type: instance.type, args: instance.args ?? {} },
+                // 블록을 통째로 빼 보는 것이 가장 흔한 ablation이다.
+                없음: { type: "torch.nn.Identity", args: {} },
+              },
+            },
+          }))}
+        >
+          변형으로 만들기 (A/B)
+        </button>
+      </>
+    );
+  }
+
+  const variants = (instance.variants ?? {}) as Record<string, { type: string;
+                                                                 args?: Record<string, unknown> }>;
+  const active = typeof instance.active === "string" ? instance.active : null;
+  const write = (next: Record<string, { type: string; args?: Record<string, unknown> }>,
+                 nextActive: string) =>
+    void applyEdit(op("set_instance", {
+      ...scoped, instance: instanceId,
+      body: { label: instance.label, type: "torchflow.Switch", active: nextActive,
+              variants: next },
+    })).then((error) => error && useStore.getState().setNotice(error));
+
+  return (
+    <>
+      <h3>변형 (Ablation)</h3>
+      <dl className="rows">
+        {Object.entries(variants).map(([name, variant]) => (
+          <div key={name}>
+            <dt>
+              <label className="variant">
+                <input
+                  type="radio" name={`variant-${instanceId}`} checked={active === name}
+                  onChange={() => void applyEdit(op("set_switch_active",
+                                                    { ...scoped, instance: instanceId, active: name }))}
+                />
+                {name}
+              </label>
+            </dt>
+            <dd className="rowvalue">
+              <span className="mono muted">{variant.type.split(".").pop()}</span>
+              {Object.keys(variants).length > 1 && (
+                <button
+                  className="rowaction" title={`${name} 변형을 지웁니다`}
+                  onClick={() => {
+                    const rest = Object.fromEntries(
+                      Object.entries(variants).filter(([key]) => key !== name));
+                    write(rest, active === name ? Object.keys(rest)[0] : (active ?? ""));
+                  }}
+                >
+                  지우기
+                </button>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <div className="inspector__addvariant">
+        <select className="mono field field--wide" value={adding} aria-label="변형으로 더할 블록"
+                onChange={(event) => setAdding(event.target.value)}>
+          <option value="">변형 추가…</option>
+          {blocks.filter((block) => block.source !== "composite").map((block) => (
+            <option key={block.type} value={block.type}>{block.label}</option>
+          ))}
+        </select>
+        <button
+          className="ghost" disabled={!adding}
+          onClick={() => {
+            const block = blocks.find((one) => one.type === adding);
+            if (!block) return;
+            let name = block.label;
+            for (let index = 2; name in variants; index += 1) name = `${block.label}${index}`;
+            write({ ...variants, [name]: { type: block.type, args: {} } }, active ?? name);
+            setAdding("");
+          }}
+        >
+          추가
+        </button>
+      </div>
+    </>
   );
 }

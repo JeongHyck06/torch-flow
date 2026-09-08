@@ -23,13 +23,89 @@ from typing import Any
 from ..ir import ModuleGraph, canonical_json, save, split_endpoint
 
 APPLIED_KINDS = {"add_node", "remove_node", "set_param", "set_ports", "rename",
-                 "define_composite", "remove_composite",
+                 "define_composite", "remove_composite", "set_instance",
+                 "promote_hp", "demote_hp", "save_variant", "remove_variant", "apply_variant",
                  "set_switch_active", "connect", "disconnect"}
 
 
 def _kind(node_type: str | None) -> str:
     """``torch.nn.Conv2d@2.11.0`` -> ``torch.nn.Conv2d``. 버전 꼬리를 뗀 블록 종류."""
     return (node_type or "").split("@")[0]
+
+
+def _hparam_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    return "str"
+
+
+def _scopes(ir: ModuleGraph):
+    yield "$graph", ir.graph
+    for name, composite in ir.composites.items():
+        yield name, composite
+
+
+def _references_hp(ir: ModuleGraph, name: str) -> bool:
+    from ..ir import iter_refs
+
+    for _, scope in _scopes(ir):
+        for source in [*scope.nodes, *scope.instances.values()]:
+            for kind, inner in iter_refs(getattr(source, "args", {}) or {}):
+                if kind == "$hp" and inner == name:
+                    return True
+    return False
+
+
+def variant_snapshot(ir: ModuleGraph) -> dict[str, Any]:
+    """지금 그래프의 "값" 전부 (§4.4.3 Variant Set).
+
+    구조(노드 추가·삭제·재연결)가 아니라 **값**만 담는다: 인자, Switch 활성 변형,
+    enabled 플래그, hparam 기본값. 논문 표의 행 대부분(depth 12->6, pre->post norm,
+    aux loss 끄기)이 여기에 들어온다. 구조까지 담는 patch는 v1이다.
+    """
+    values: dict[str, Any] = {"hparams": {}, "instances": {}, "nodes": {}}
+    for name, spec in ir.hparams.items():
+        values["hparams"][name] = spec.default
+    for scope_name, scope in _scopes(ir):
+        for instance_id, instance in scope.instances.items():
+            entry: dict[str, Any] = {"args": dict(instance.args)}
+            if instance.active is not None:
+                entry["active"] = instance.active
+            if instance.count is not None:
+                entry["count"] = instance.count
+            values["instances"][f"{scope_name}/{instance_id}"] = entry
+        for node in scope.nodes:
+            if node.args or node.enabled is not None:
+                values["nodes"][f"{scope_name}/{node.id}"] = {
+                    "args": dict(node.args), "enabled": node.enabled}
+    return values
+
+
+def apply_snapshot(ir: ModuleGraph, values: dict[str, Any]) -> None:
+    """스냅샷을 되돌려 놓는다. 그 사이에 사라진 블록은 조용히 건너뛴다."""
+    for name, default in (values.get("hparams") or {}).items():
+        if name in ir.hparams:
+            ir.hparams[name].default = default
+    for scope_name, scope in _scopes(ir):
+        for instance_id, instance in scope.instances.items():
+            entry = (values.get("instances") or {}).get(f"{scope_name}/{instance_id}")
+            if entry is None:
+                continue
+            instance.args = dict(entry.get("args") or {})
+            if "active" in entry:
+                instance.active = entry["active"]
+            if "count" in entry:
+                instance.count = entry["count"]
+        for node in scope.nodes:
+            entry = (values.get("nodes") or {}).get(f"{scope_name}/{node.id}")
+            if entry is None:
+                continue
+            node.args = dict(entry.get("args") or {})
+            node.enabled = entry.get("enabled")
 
 
 class OpError(ValueError):
@@ -90,6 +166,29 @@ class GraphStore:
             if payload["active"] not in (instance.variants or {}):
                 raise OpError(f"unknown variant {payload['active']!r}")
             instance.active = payload["active"]
+        elif kind == "set_instance":
+            self._set_instance(scope, payload)
+        elif kind == "promote_hp":
+            self._promote_hp(scope, payload)
+        elif kind == "demote_hp":
+            self._demote_hp(scope, payload)
+        elif kind == "save_variant":
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                raise OpError("변형 이름이 필요합니다")
+            # 값을 실어 보내면 그것을 그대로 쓴다 - 지운 변형을 되살리는 역 op가 이 경로다.
+            self.ir.variant_sets[name] = payload.get("values") or variant_snapshot(self.ir)
+        elif kind == "remove_variant":
+            if payload.get("name") not in self.ir.variant_sets:
+                raise OpError(f"그런 변형이 없습니다: {payload.get('name')}")
+            del self.ir.variant_sets[payload["name"]]
+        elif kind == "apply_variant":
+            values = self.ir.variant_sets.get(payload.get("name"))
+            if values is None:
+                raise OpError(f"그런 변형이 없습니다: {payload.get('name')}")
+            apply_snapshot(self.ir, values)
+            # 어떤 변형으로 돌렸는지가 run manifest에 실려야 표의 축이 된다(§6.4).
+            self.ir.meta["variant"] = payload["name"]
         elif kind == "define_composite":
             self._define_composite(payload)
         elif kind == "remove_composite":
@@ -102,6 +201,61 @@ class GraphStore:
             edge = (payload["src"], payload["dst"])
             if edge in scope.edges:
                 scope.edges.remove(edge)
+
+    def _set_instance(self, scope, payload: dict[str, Any]) -> None:
+        """인스턴스 하나를 통째로 갈아 끼운다.
+
+        Switch를 만들거나(평범한 블록 -> 변형 둘), 변형을 더하거나 빼는 편집이 전부
+        이 하나로 표현된다. 역 op는 **이전 인스턴스를 그대로 실은 같은 op**다.
+        """
+        from ..ir import Instance
+
+        instance_id = payload.get("instance")
+        if instance_id not in scope.instances:
+            raise OpError(f"unknown instance {instance_id}")
+        try:
+            fresh = Instance.model_validate(payload.get("body") or {})
+        except Exception as exc:
+            raise OpError(f"invalid instance: {exc}") from exc
+        if fresh.type == "torchflow.Switch":
+            if not fresh.variants:
+                raise OpError("Switch에는 변형이 하나 이상 있어야 합니다")
+            active = fresh.active
+            if isinstance(active, str) and active not in fresh.variants:
+                raise OpError(f"활성 변형 {active!r}이 변형 목록에 없습니다")
+        scope.instances[instance_id] = fresh
+
+    def _promote_hp(self, scope, payload: dict[str, Any]) -> None:
+        """지금 값을 하이퍼파라미터로 올리고 인자를 참조로 바꾼다(§4.3, §8.2.3).
+
+        올린 뒤에는 상단에서 한 번 고치면 그 값을 쓰는 모든 블록이 같이 움직인다.
+        """
+        from ..ir import HParam
+
+        target = self._param_target(scope, payload)
+        path = payload["path"]
+        name = str(payload.get("name") or path).strip()
+        if not name.isidentifier():
+            raise OpError(f"하이퍼파라미터 이름으로 쓸 수 없습니다: {name!r}")
+        value = payload.get("value", target.args.get(path))
+        existing = self.ir.hparams.get(name)
+        if existing is None:
+            self.ir.hparams[name] = HParam(type=_hparam_type(value), default=value)
+        elif existing.default != value and payload.get("value") is None:
+            # 이미 있는 이름에 다른 값을 얹으면 다른 블록의 값이 조용히 바뀐다.
+            raise OpError(f"{name}은 이미 {existing.default}입니다 - 다른 이름을 쓰거나 값을 맞추세요")
+        target.args[path] = {"$hp": name}
+
+    def _demote_hp(self, scope, payload: dict[str, Any]) -> None:
+        """참조를 다시 값으로 내린다. promote_hp의 역."""
+        target = self._param_target(scope, payload)
+        path = payload["path"]
+        name = str(payload.get("name") or "")
+        spec = self.ir.hparams.get(name)
+        target.args[path] = payload.get("value", spec.default if spec else None)
+        # 아무도 안 가리키면 하이퍼파라미터도 같이 사라진다 - 안 그러면 목록에 유령이 쌓인다.
+        if name and not _references_hp(self.ir, name):
+            self.ir.hparams.pop(name, None)
 
     def _define_composite(self, payload: dict[str, Any]) -> None:
         """묶음 블록 정의를 그래프에 넣는다 - 팔레트가 템플릿의 BasicBlock을 꺼내 쓸 때.
