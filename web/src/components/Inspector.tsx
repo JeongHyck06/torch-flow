@@ -278,8 +278,23 @@ export function Inspector() {
  * 값 하나를 고치는 칸. 타입은 레지스트리 스키마에서 오고, 없으면 값에서 짐작한다.
  *
  * 커밋 시점은 blur와 Enter다 - 글자 하나마다 op를 보내면 journal이 타자 기록이 된다.
- * 슬라이더와 pointer-up 코얼레싱(§5.5.1)은 아직 없다.
+ * 슬라이더는 드래그 내내 화면만 움직이고 **놓을 때 op 하나**를 보낸다(§5.5.1 코얼레싱).
+ * 키보드로 슬라이더를 움직일 때는 놓는 순간이 없으므로 80 ms 뒤에 한 번 보낸다(§5.4의 L0 디바운스).
  */
+/** 슬라이더를 붙일 만한 인자인지. 범위를 지어낼 수 없으면 숫자 칸만 둔다. */
+function sliderRange(name: string, kind: string, value: unknown):
+    { min: number; max: number; step: number } | null {
+  if (kind === "float") {
+    // 0~1이 확실한 것들만. lr처럼 로그 축이 필요한 값에 선형 슬라이더를 붙이면 쓸모가 없다.
+    return /^(p|dropout|drop_prob|momentum)$/.test(name) ? { min: 0, max: 1, step: 0.01 } : null;
+  }
+  if (kind !== "int" || typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return null;
+  }
+  // 지금 값 언저리를 훑는다. 더 멀리 갈 일은 숫자 칸에 직접 적는다.
+  return { min: 1, max: Math.max(8, value * 4), step: 1 };
+}
+
 /** 앞 블록 출력에서 바로 정해지는 인자. 사람이 곱셈으로 셀 필요가 없는 것들이다. */
 const CHANNEL_ARG: Record<string, string> = {
   "torch.nn.Conv1d": "in_channels", "torch.nn.Conv2d": "in_channels", "torch.nn.Conv3d": "in_channels",
@@ -332,6 +347,9 @@ function ParamField({ name, value, schema, onCommit }: {
   const kind = schema?.type ?? typeOf(value);
   const [draft, setDraft] = useState(() => text(value));
   const committed = useRef(text(value));
+  const dragging = useRef(false);
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
 
   useEffect(() => { setDraft(text(value)); committed.current = text(value); }, [value]);
 
@@ -368,11 +386,52 @@ function ParamField({ name, value, schema, onCommit }: {
     );
   }
 
-  const commit = () => {
-    if (draft === committed.current) return;
-    committed.current = draft;
-    onCommit(parse(draft, kind));
+  const commit = (next = draft) => {
+    if (next === committed.current) return;
+    committed.current = next;
+    onCommit(parse(next, kind));
   };
+
+  const range = sliderRange(name, kind, value);
+  if (range) {
+    const numeric = Number(draft);
+    return (
+      <span className="field__slider">
+        <input
+          type="range"
+          aria-label={`${name} 슬라이더`}
+          min={Math.min(range.min, Number.isNaN(numeric) ? range.min : numeric)}
+          max={Math.max(range.max, Number.isNaN(numeric) ? range.max : numeric)}
+          step={range.step}
+          value={Number.isNaN(numeric) ? range.min : numeric}
+          onPointerDown={() => { dragging.current = true; }}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            // 드래그 중에는 아무것도 보내지 않는다 - 놓을 때 한 번이 journal에 남을 편집이다.
+            if (dragging.current) return;
+            window.clearTimeout(timer.current);
+            timer.current = window.setTimeout(() => commit(event.target.value), 80);
+          }}
+          onPointerUp={(event) => {
+            dragging.current = false;
+            commit((event.target as HTMLInputElement).value);
+          }}
+        />
+        <input
+          className="mono field field--num"
+          value={draft}
+          spellCheck={false}
+          aria-label={name}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => commit()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") { commit(); (event.target as HTMLInputElement).blur(); }
+            if (event.key === "Escape") setDraft(committed.current);
+          }}
+        />
+      </span>
+    );
+  }
 
   return (
     <input
@@ -382,7 +441,7 @@ function ParamField({ name, value, schema, onCommit }: {
       spellCheck={false}
       aria-label={name}
       onChange={(event) => setDraft(event.target.value)}
-      onBlur={commit}
+      onBlur={() => commit()}
       onKeyDown={(event) => {
         if (event.key === "Enter") { commit(); (event.target as HTMLInputElement).blur(); }
         if (event.key === "Escape") setDraft(committed.current);

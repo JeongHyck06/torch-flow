@@ -145,6 +145,10 @@ body {
   padding: 1px 4px; background: none; color: var(--text-primary);
 }
 .field--wide { width: 150px; }
+/* 슬라이더 + 숫자 칸. 값 열 폭(96px)은 그대로 두고 안에서 나눠 쓴다. */
+.field__slider { display: flex; align-items: center; gap: 6px; }
+.field__slider input[type="range"] { width: 72px; accent-color: var(--text-primary); }
+.field--num { width: 52px; }
 .field:hover { border-color: var(--border-subtle); }
 .field:focus { outline: none; border-color: var(--text-primary); background: var(--surface-panel); }
 
