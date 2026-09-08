@@ -510,6 +510,14 @@ body {
   display: flex; justify-content: flex-end; gap: 8px;
   padding: 10px 16px; border-top: 1px solid var(--border-subtle);
 }
+/* 트랙은 시트 재질 위에 놓이므로 --surface-canvas면 묻힌다. 눌린 홈처럼 한 단 어둡게. */
+.datadialog__progress {
+  appearance: none; -webkit-appearance: none; width: 220px; height: 6px;
+  border: 0; border-radius: 3px; background: var(--surface-active);
+}
+.datadialog__progress::-webkit-progress-bar { background: var(--surface-active); border-radius: 3px; }
+.datadialog__progress::-webkit-progress-value { background: var(--state-running); border-radius: 3px; }
+.datadialog__progress::-moz-progress-bar { background: var(--state-running); border-radius: 3px; }
 .inspector__action { margin-top: 10px; }
 .inspector__fix { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .inspector__fix p { margin: 0; }

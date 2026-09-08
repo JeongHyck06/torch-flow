@@ -7,15 +7,23 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
-  addDatasetFolder, downloadDataset, fetchDatasets, setGraphData, uploadDatasetFile,
+  addDatasetFolder, datasetProgress, downloadDataset, fetchDatasets, setGraphData,
+  uploadDatasetFile,
 } from "../api";
-import type { DatasetInfo, Recipe } from "../api";
+import type { DatasetInfo, DownloadProgress, Recipe } from "../api";
 import { SYNTHETIC, useStore } from "../store";
 import { DataCard } from "./DataCard";
 
 const KIND_LABEL: Record<string, string> = {
   builtin: "내장", image_folder: "이미지 폴더", csv: "CSV 표", arrays: "npy 배열",
 };
+
+const megabytes = (bytes: number) => Math.round(bytes / (1024 * 1024));
+
+/** size_mb는 어림수라 받은 양이 총량을 넘길 수 있다 - 남은 양은 0에서 멈춘다. */
+const remaining = (got: DownloadProgress) =>
+  `${megabytes(got.bytes)} / ${megabytes(got.total)} MB`
+  + ` · ${megabytes(Math.max(got.total - got.bytes, 0))} MB 남음`;
 
 /** 드롭된 항목을 파일 목록으로 편다. 폴더는 재귀로 들어간다(webkitGetAsEntry). */
 async function walk(items: DataTransferItem[]): Promise<{ path: string; file: File }[]> {
@@ -56,6 +64,7 @@ export function DataDialog() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
+  const [got, setGot] = useState<DownloadProgress | null>(null);
   const picker = useRef<HTMLInputElement>(null);
 
   const reload = async () => {
@@ -65,11 +74,6 @@ export function DataDialog() {
   };
   useEffect(() => { void reload().catch(() => undefined); }, []);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [close]);
 
   const pick = (name: string) => { setChosen(name); setDraft(null); setError(null); };
 
@@ -131,10 +135,24 @@ export function DataDialog() {
   const synthetic = chosen !== null && SYNTHETIC.has(chosen);
   const needsDownload = entry?.source === "builtin" && !entry.available;
 
+  // 진행률은 hub가 디스크의 .part를 잰 값이다. 창을 닫았다 열어도, 다른 창이 시작한
+  // 다운로드도 보인다 - 받는 POST가 열려 있는 동안 이 GET은 따로 답한다.
+  useEffect(() => {
+    if (!chosen || !needsDownload) { setGot(null); return; }
+    let alive = true;
+    const tick = () => void datasetProgress(chosen)
+      .then((found) => { if (alive) setGot(found); })
+      .catch(() => undefined);
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [chosen, needsDownload]);
+
   return (
     <>
       <div className="datadialog__scrim" onClick={close} />
       <div
+        ref={box}
         className="datadialog" role="dialog" aria-modal="true" aria-label="Input 데이터"
         onDragOver={(event) => { event.preventDefault(); setHover(true); }}
         onDragLeave={() => setHover(false)}
@@ -231,11 +249,23 @@ export function DataDialog() {
               <>
                 {needsDownload && (
                   <div className="trainer">
-                    <button className="trainer__run" onClick={() => void download()}
-                            disabled={busy !== null}>
-                      내려받기{entry?.size_mb ? ` ${entry.size_mb} MB` : ""}
-                    </button>
-                    <span className="mono muted">네트워크는 이 버튼을 눌러야만 탑니다</span>
+                    {got?.active ? (
+                      <>
+                        <progress className="datadialog__progress"
+                                  max={got.total} value={Math.min(got.bytes, got.total)} />
+                        <span className="mono muted">{remaining(got)}</span>
+                      </>
+                    ) : (
+                      <>
+                        <button className="trainer__run" onClick={() => void download()}
+                                disabled={busy !== null}>
+                          {got && got.bytes > 0
+                            ? `다시 받기 · ${megabytes(got.bytes)} MB에서 끊겼습니다`
+                            : `내려받기${entry?.size_mb ? ` ${entry.size_mb} MB` : ""}`}
+                        </button>
+                        <span className="mono muted">네트워크는 이 버튼을 눌러야만 탑니다</span>
+                      </>
+                    )}
                   </div>
                 )}
                 <DataCard name={chosen} recipe={draft} onRecipe={setDraft} />

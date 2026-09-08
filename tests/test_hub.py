@@ -721,6 +721,22 @@ def test_training_on_a_dataset_checks_the_input_spec(app, client, tmp_path):
     assert client.post("/api/datasets/nope/download", headers=auth).status_code == 404
 
 
+def test_download_progress_reads_the_partial_file_and_refuses_a_second_download(app, client, tmp_path):
+    """진행률은 디스크만 본다. 겹쳐 받으면 두 스레드가 같은 .part를 덮어쓰므로 409로 막는다."""
+    auth = {"Authorization": f"token {TOKEN}"}
+    app.state.hub.data_dir = tmp_path / "data"
+    (tmp_path / "data" / "cifar10").mkdir(parents=True)
+    (tmp_path / "data" / "cifar10" / "cifar-10-python.tar.gz.part").write_bytes(b"x" * 4096)
+
+    body = client.get("/api/datasets/cifar10/progress", headers=auth).json()
+    assert body == {"bytes": 4096, "total": 163 * 1024 * 1024, "active": False}
+    assert client.get("/api/datasets/nope/progress", headers=auth).status_code == 404
+
+    app.state.hub.downloading.add("cifar10")
+    assert client.get("/api/datasets/cifar10/progress", headers=auth).json()["active"] is True
+    assert client.post("/api/datasets/cifar10/download", headers=auth).status_code == 409
+
+
 def test_a_new_graph_can_start_from_a_dataset(tmp_path):
     """데이터부터 시작하면 Input이 그 규격으로 깔리고, 규격이 어긋난 학습 요청은 고칠 op를 준다."""
     from test_datasets import write_image_folder

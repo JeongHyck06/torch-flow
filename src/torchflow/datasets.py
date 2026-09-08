@@ -84,6 +84,20 @@ def available(name: str, base: str | Path) -> bool:
                for filename in CATALOGUE[name]["files"].values())
 
 
+def progress(name: str, base: str | Path) -> dict[str, int]:
+    """받은 바이트와 예상 총량. 받는 중인 파일은 ``.part``라 디스크만 보면 진행률이 나온다 -
+    다운로드 스레드가 따로 보고하지 않아도 되고, 다른 창이 시작한 다운로드도 보인다."""
+    entry = CATALOGUE[name]
+    target = folder(name, base)
+    got = 0
+    for filename in entry["files"].values():
+        for path in (target / filename, target / f"{filename}.part"):
+            if path.is_file():
+                got += path.stat().st_size
+                break
+    return {"bytes": got, "total": int(entry["size_mb"] * 1024 * 1024)}
+
+
 def download(name: str, base: str | Path) -> list[Path]:
     """없는 파일만 받는다. 임시 이름에 받고 갈아 끼우므로 끊긴 다운로드가 완성본 행세를 못 한다."""
     entry = CATALOGUE[name]

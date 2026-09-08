@@ -183,3 +183,17 @@ def test_cifar10_loads_from_the_python_tarball(tmp_path):
     assert preview["spec"]["class_names"][0] == "airplane"
     assert preview["spec"]["class_counts"]["airplane"] == 5
     assert preview["preview"]["thumbnails"]["labels"][:2] == ["airplane", "automobile"]
+
+
+def test_progress_counts_finished_files_and_the_partial_one(tmp_path):
+    target = tmp_path / "mnist"
+    target.mkdir()
+    files = datasets.CATALOGUE["mnist"]["files"]
+    (target / files["train_images"]).write_bytes(b"x" * 100)
+    (target / f'{files["train_labels"]}.part').write_bytes(b"x" * 30)
+
+    got = datasets.progress("mnist", tmp_path)
+    # 다 받은 파일과 받는 중인 .part를 함께 센다. 아직 시작 안 한 두 파일은 0이다.
+    assert got["bytes"] == 130
+    assert got["total"] == 11 * 1024 * 1024
+    assert datasets.progress("mnist", tmp_path / "nowhere")["bytes"] == 0

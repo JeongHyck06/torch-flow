@@ -349,6 +349,16 @@ export async function downloadDataset(name: string): Promise<{ ok?: boolean; err
   return response.json();
 }
 
+export interface DownloadProgress { bytes: number; total: number; active: boolean }
+
+/** 진행률은 디스크의 .part 크기다 - 내려받는 POST가 열려 있어도 이 GET은 따로 답한다. */
+export async function datasetProgress(name: string): Promise<DownloadProgress | null> {
+  const response = await fetch(`/api/datasets/${encodeURIComponent(name)}/progress`,
+                               { headers: authHeaders() });
+  if (!response.ok) return null;
+  return response.json();
+}
+
 export interface TrainOptions {
   dataset?: string; recipe?: Recipe;
   steps?: number; batch?: number; lr?: number; optimizer?: string; smoke?: boolean;

@@ -56,6 +56,7 @@ class Hub:
         self.testing: set[str] = set()        # 지금 테스트 프로세스가 도는 run - 겹쳐 띄우지 않는다
         # 내려받은 데이터셋 자리. hub는 파일 유무와 다운로드만 알고 적재는 워커가 한다.
         self._data_dir = Path.cwd() / "data"
+        self.downloading: set[str] = set()    # 겹쳐 받으면 두 스레드가 같은 .part를 덮어쓴다
         # Attach 모드에서는 사용자 프로세스가 L1 커널이다(§8.1). hub는 커널을 띄우는
         # 대신 그쪽이 밀어 넣는 결과를 받아 브로드캐스트한다.
         self.attached = False
@@ -1061,15 +1062,29 @@ def create_app(
     def download_dataset(name: str) -> JSONResponse:
         if name not in datasets.CATALOGUE:
             return JSONResponse({"error": f"unknown dataset {name}"}, status_code=404)
+        if name in hub.downloading:
+            return JSONResponse({"error": "이미 내려받는 중입니다"}, status_code=409)
+        hub.downloading.add(name)
         try:
             written = datasets.download(name, hub.data_dir)
         except OSError as exc:
             return JSONResponse({"error": f"내려받지 못했습니다: {exc}"}, status_code=502)
+        finally:
+            hub.downloading.discard(name)
         return JSONResponse({"ok": True, "files": [str(path) for path in written]})
+
+    @app.get("/api/datasets/{name}/progress")
+    def dataset_progress(name: str) -> JSONResponse:
+        """받은 바이트 / 예상 총량. ``active``가 거짓인데 바이트가 남아 있으면 끊긴 다운로드다."""
+        if name not in datasets.CATALOGUE:
+            return JSONResponse({"error": f"unknown dataset {name}"}, status_code=404)
+        return JSONResponse({**datasets.progress(name, hub.data_dir),
+                             "active": name in hub.downloading})
+
+    training_lock = threading.Lock()
 
     @app.post("/api/train")
     def start_training(http: Request, request: dict[str, Any] | None = None) -> JSONResponse:
-        """학습을 시작한다(§13.1 M7). 학습 대상은 이 그래프에서 뽑은 생성 코드다."""
         # 누가 눌렀는지 터미널에 남기되, 거부되는 반복 요청은 초당 한 줄로 접는다 - 키 자동 반복으로
         # 초당 30번 들어온 요청이 터미널을 도배해 사람이 놀랐다.
         now = time.time()
