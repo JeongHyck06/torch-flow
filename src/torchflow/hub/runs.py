@@ -189,6 +189,45 @@ def _await_checkpoint(handle: RunHandle, stamp: float, timeout: float) -> bool:
     return path.exists()
 
 
+def test(handle: RunHandle, *, python: str | None = None, timeout: float = 600.0) -> dict[str, Any]:
+    """체크포인트를 test 분할에 돌린다 - 워커의 ``--test`` 모드. 결과는 ``test.json``.
+
+    학습과 같은 프로세스 경계다: hub는 torch를 모르고, 같은 생성 코드·같은 데이터 적재를 쓴다.
+    끝날 때까지 기다린다 - 로컬에서 몇 초고, 호출자는 스레드풀에 있다.
+    """
+    if not (handle.directory / "ckpt.pt").exists():
+        return {"ok": False, "error": "체크포인트가 아직 없습니다. 학습이 끝나거나 Stop한 뒤에 테스트하세요"}
+    (handle.directory / "test.json").unlink(missing_ok=True)
+    with (handle.directory / "test.log").open("a") as log:
+        try:
+            subprocess.run([python or sys.executable, "-u", "-m", "torchflow.worker",
+                            "--job", str(handle.directory / "job.json"), "--test"],
+                           stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                           cwd=str(handle.directory.parent.parent), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"테스트가 {timeout:.0f}초 안에 끝나지 않았습니다"}
+    result = last_test(handle)
+    if result is None:
+        tail = (handle.directory / "test.log").read_text(encoding="utf-8", errors="replace")[-2000:]
+        return {"ok": False, "error": "테스트 프로세스가 결과를 남기지 못했습니다", "log": tail}
+    remember_test(handle, result)
+    return result
+
+
+def remember_test(handle: RunHandle, result: dict[str, Any] | None) -> None:
+    """정확도 하나는 run 상태에 싣는다 - 단계 표시줄이 패널을 열지 않고도 본다."""
+    if result and result.get("ok"):
+        handle.extra["test_acc"] = result["acc"]
+
+
+def last_test(handle: RunHandle) -> dict[str, Any] | None:
+    """마지막 테스트 결과. 없으면 None."""
+    try:
+        return json.loads((handle.directory / "test.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def write_overrides(run_id: str, entries: list[dict[str, Any]], root: Path) -> Path:
     """``conf/overrides/<run_id>.yaml`` 물질화(§5.7.2).
 
@@ -240,7 +279,31 @@ def merge(handle: RunHandle, tracker) -> int:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
             written += _absorb(handle, event, tracker)
+        _notice_death(handle, tracker)
     return written
+
+
+def _notice_death(handle: RunHandle, tracker) -> None:
+    """워커가 끝 상태를 못 남기고 죽었으면 hub가 대신 ``failed``로 닫는다.
+
+    events.jsonl은 워커가 쓴다. 워커가 traceback으로 죽으면 마지막 줄이 ``running``이라
+    화면은 Pause·Stop을 계속 보여 주고 사람은 기다린다. 프로세스가 끝났는데(또는 heartbeat가
+    끊겼는데) 끝 상태가 없으면 그것이 곧 실패다.
+    """
+    if handle.state not in ("starting", "running", "paused") or handle.alive:
+        return
+    code = handle.process.poll() if handle.process is not None else None
+    if handle.process is None and not (handle.directory / "heartbeat").exists():
+        # 이 hub가 띄우지 않은 run은 heartbeat가 있어야 죽었다고 말할 수 있다. 아직 첫 스텝
+        # 전인 run을 실패로 몰면 안 된다.
+        return
+    handle.state = "failed"
+    handle.error = handle.error or {
+        "stage": "worker",
+        "message": "워커가 끝 상태를 남기지 못하고 종료됐습니다"
+                   + (f" (exit {code})" if code is not None else " (heartbeat 끊김)")
+                   + " - 학습 출력 탭의 traceback을 보세요"}
+    tracker.finish_run(handle.run_id, "failed")
 
 
 def _absorb(handle: RunHandle, event: dict[str, Any], tracker) -> int:

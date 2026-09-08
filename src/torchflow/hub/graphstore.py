@@ -23,7 +23,13 @@ from typing import Any
 from ..ir import ModuleGraph, canonical_json, save, split_endpoint
 
 APPLIED_KINDS = {"add_node", "remove_node", "set_param", "set_ports", "rename",
+                 "define_composite", "remove_composite",
                  "set_switch_active", "connect", "disconnect"}
+
+
+def _kind(node_type: str | None) -> str:
+    """``torch.nn.Conv2d@2.11.0`` -> ``torch.nn.Conv2d``. 버전 꼬리를 뗀 블록 종류."""
+    return (node_type or "").split("@")[0]
 
 
 class OpError(ValueError):
@@ -84,6 +90,10 @@ class GraphStore:
             if payload["active"] not in (instance.variants or {}):
                 raise OpError(f"unknown variant {payload['active']!r}")
             instance.active = payload["active"]
+        elif kind == "define_composite":
+            self._define_composite(payload)
+        elif kind == "remove_composite":
+            self._remove_composite(payload)
         elif kind == "connect":
             edge = (payload["src"], payload["dst"])
             if edge not in scope.edges:
@@ -92,6 +102,37 @@ class GraphStore:
             edge = (payload["src"], payload["dst"])
             if edge in scope.edges:
                 scope.edges.remove(edge)
+
+    def _define_composite(self, payload: dict[str, Any]) -> None:
+        """묶음 블록 정의를 그래프에 넣는다 - 팔레트가 템플릿의 BasicBlock을 꺼내 쓸 때.
+
+        같은 이름이 이미 있으면 몸체가 같을 때만 통과한다. 다른 몸체를 덮어쓰면 그 이름을
+        부르는 기존 노드들이 소리 없이 바뀐다.
+        """
+        from ..ir import Composite
+
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise OpError("define_composite needs a name")
+        try:
+            composite = Composite.model_validate(payload.get("body") or {})
+        except Exception as exc:
+            raise OpError(f"invalid composite: {exc}") from exc
+        existing = self.ir.composites.get(name)
+        if existing is not None and existing != composite:
+            raise OpError(f"컴포지트 {name}이 이미 있고 몸체가 다릅니다 - 다른 이름을 쓰세요")
+        self.ir.composites[name] = composite
+
+    def _remove_composite(self, payload: dict[str, Any]) -> None:
+        name = str(payload.get("name") or "")
+        if name not in self.ir.composites:
+            raise OpError(f"unknown composite {name}")
+        scopes = [self.ir.graph, *self.ir.composites.values()]
+        used = any(instance.type == f"composite:{name}" or instance.body == f"composite:{name}"
+                   for scope in scopes for instance in scope.instances.values())
+        if used:
+            raise OpError(f"컴포지트 {name}을 부르는 블록이 있어 지울 수 없습니다")
+        del self.ir.composites[name]
 
     def _set_ports(self, scope, payload: dict[str, Any]) -> None:
         """노드의 출력 포트 규격을 바꾼다.
@@ -151,6 +192,11 @@ class GraphStore:
             raise OpError("node needs exactly one of 'call' or 'type'")
         if node.call is not None and node.call not in scope.instances:
             raise OpError(f"unknown instance {node.call}")
+        # 학습 블록은 그래프에 하나다. 단계 표시줄을 연타하거나 클라이언트가 폭주해도 여기서
+        # 막힌다 - 실제로 Train 노드 1,600개가 한 번에 생긴 적이 있다.
+        if _kind(node.type) == "torchflow.Train" and any(
+                _kind(existing.type) == "torchflow.Train" for existing in scope.nodes):
+            raise OpError("학습 블록은 하나면 됩니다 - 이미 있는 Train 블록의 값을 고치세요")
         scope.nodes.append(node)
 
     def _remove_node(self, scope, payload: dict[str, Any]) -> None:

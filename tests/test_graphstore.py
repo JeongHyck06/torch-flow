@@ -185,3 +185,34 @@ def test_rename_changes_the_graph_name_and_is_undoable(minivit):
 
     with pytest.raises(OpError):
         store.apply({"kind": "rename", "payload": {"name": "  "}})
+
+
+def test_a_graph_keeps_one_train_block(minivit):
+    """단계 표시줄을 연타해도, 클라이언트가 폭주해도 학습 블록은 하나다."""
+    store = GraphStore(minivit)
+    train = {"id": "T1", "label": "train", "type": "torchflow.Train", "args": {"steps": 10}}
+    store.apply(op("add_node", node=train))
+    with pytest.raises(OpError, match="하나면"):
+        store.apply(op("add_node", node={**train, "id": "T2", "type": "torchflow.Train@0.0.1"}))
+    assert sum(1 for node in store.ir.graph.nodes if (node.type or "").startswith("torchflow.Train")) == 1
+
+
+def test_define_and_remove_composite(minivit):
+    """팔레트가 묶음 블록을 꺼내 쓸 때: 정의 넣기 -> 부르기 -> (부르는 노드가 있으면) 지우기 거부."""
+    store = GraphStore(minivit)
+    body = {"doc": "x2", "params": {"k": {"type": "int"}},
+            "ports": {"in": [{"name": "x"}], "out": [{"name": "y"}]},
+            "instances": {}, "nodes": [], "edges": []}
+    store.apply(op("define_composite", name="Twice", body=body))
+    assert "Twice" in store.ir.composites
+    store.apply(op("define_composite", name="Twice", body=body))     # 같은 몸체는 통과
+    with pytest.raises(OpError, match="몸체가 다릅니다"):
+        store.apply(op("define_composite", name="Twice", body={**body, "doc": "other"}))
+
+    store.apply(op("add_node", instance={"id": "I1", "label": "twice", "type": "composite:Twice", "args": {"k": 2}},
+                   node={"id": "N1", "label": "twice", "method": "forward"}))
+    with pytest.raises(OpError, match="부르는 블록"):
+        store.apply(op("remove_composite", name="Twice"))
+    store.apply(op("remove_node", node="N1"))
+    store.apply(op("remove_composite", name="Twice"))
+    assert "Twice" not in store.ir.composites

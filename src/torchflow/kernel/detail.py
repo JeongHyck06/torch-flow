@@ -83,7 +83,7 @@ def _explain_train(args: dict[str, Any]) -> str:
     return (f"{optimizer} 옵티마이저로 lr {args.get('lr', 0.001)}, batch {args.get('batch', 32)}씩 "
             f"{args.get('steps', 500)} step 학습한다. 손실은 cross entropy, 검증은 eval 주기마다 val 분할로 잰다"
             + (f". 스케줄 {scheduler}" if scheduler != "none" else "")
-            + ". Run 패널의 Run이 이 값으로 워커를 띄운다")
+            + ". 단계 표시줄의 4 실행이 이 값으로 워커를 띄운다")
 
 
 def _explain(short: str, module, x, y) -> str:

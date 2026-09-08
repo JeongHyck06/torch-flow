@@ -36,12 +36,12 @@ BUILTIN_BLOCKS: list[dict[str, Any]] = [
     # 학습 블록. 모델 코드에는 들어가지 않고 Run이 이 값으로 워커 job을 만든다. 로짓을 받는 입력
     # 포트는 데이터 -> 모델 -> 학습이 캔버스에서 한 줄로 읽히게 하려는 것이다.
     {"type": "torchflow.Train", "category": "학습 제어",
-     "params": {"optimizer": {"type": "str", "default": "adamw"},
+     "params": {"optimizer": {"type": "str", "default": "adamw", "choices": ["adamw", "sgd"]},
                 "lr": {"type": "float", "default": 0.001},
                 "weight_decay": {"type": "float", "default": 0.0},
                 "steps": {"type": "int", "default": 500},
                 "batch": {"type": "int", "default": 32},
-                "scheduler": {"type": "str", "default": "none"},
+                "scheduler": {"type": "str", "default": "none", "choices": ["none", "cosine"]},
                 "warmup_steps": {"type": "int", "default": 0}},
      "ports": {"in": ["input"], "out": []}},
     # Repeat와 Switch는 노드가 아니라 인스턴스 종류다(§4.4) - 본문 컴포지트 없이는 놓을 수 없어
