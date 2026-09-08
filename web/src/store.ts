@@ -47,6 +47,8 @@ interface State {
   dirty: boolean;                // 마지막 저장 이후 편집이 있었나
   /** 팔레트를 띄운 캔버스 좌표. null이면 닫혀 있다(§4.2). */
   paletteAt: { x: number; y: number } | null;
+  /** 엣지 끝을 빈 곳에 떨어뜨려 열었으면 그 출발 엔드포인트. 고른 블록이 여기에 바로 이어진다. */
+  paletteFrom: string | null;
   /** 이 그래프가 배우는 데이터와 정제 설정. 그래프의 experiment.data가 정본이다. */
   dataset: string;
   recipe: Recipe | null;
@@ -133,6 +135,7 @@ export const useStore = create<State>((set, get) => ({
   redoStack: [],
   dirty: false,
   paletteAt: null,
+  paletteFrom: null,
   dataset: "teacher",
   recipe: null,
   dataOpen: false,
@@ -230,6 +233,7 @@ export const useStore = create<State>((set, get) => ({
     return stack[stack.length - 1];
   },
   setDirty: (dirty) => set({ dirty }),
+  openPalette: (paletteAt, paletteFrom = null) => set({ paletteAt, paletteFrom }),
   setData: (dataset, recipe) => set({ dataset, recipe }),
   openData: () => set({ dataOpen: true, paletteAt: null }),
   closeData: () => set({ dataOpen: false }),

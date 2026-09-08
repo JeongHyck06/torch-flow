@@ -9,7 +9,8 @@ import {
   useNodesInitialized, useReactFlow, useStore as useFlowStore,
 } from "@xyflow/react";
 import type {
-  Connection, Edge, EdgeChange, EdgeMouseHandler, NodeChange, NodeMouseHandler, Node as FlowNode,
+  Connection, Edge, EdgeChange, EdgeMouseHandler, FinalConnectionState, NodeChange,
+  NodeMouseHandler, Node as FlowNode,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -321,6 +322,17 @@ export function Canvas() {
     }));
   }, [composite, scope]);
 
+  // 엣지를 빈 곳에 떨어뜨리면 팔레트가 열린다 - 이을 수 있는 블록만 보이고, 고르면 그 선이
+  // 그대로 이어진다(§4.2 컨텍스트 필터). 포트를 두 번 찍는 수고가 한 번으로 준다.
+  const onConnectEnd = useCallback((event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+    if (state.isValid || !state.fromNode || state.fromHandle?.type !== "source") return;
+    const point = "changedTouches" in event ? event.changedTouches[0] : event;
+    const source = (scope?.nodes ?? []).find((node) => node.id === state.fromNode!.id);
+    const port = state.fromHandle?.id ?? source?.ports_out?.[0]?.name ?? "output";
+    openPalette(screenToFlowPosition({ x: point.clientX, y: point.clientY }),
+                `${state.fromNode.id}.${port}`);
+  }, [scope, openPalette, screenToFlowPosition]);
+
   return (
     <ReactFlow
       nodes={nodes}
@@ -335,6 +347,7 @@ export function Canvas() {
       onNodeDoubleClick={onNodeDoubleClick}
       onDoubleClick={onPaneDoubleClick}
       onConnect={onConnect}
+      onConnectEnd={onConnectEnd}
       onMove={(_event, viewport) => setZoom(viewport.zoom)}
       fitView
       minZoom={0.1}

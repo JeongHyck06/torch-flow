@@ -2,7 +2,10 @@
 //
 // 커서 위치 팝업이 기본이다: `Tab` 또는 빈 캔버스 더블클릭. 퍼지 + 별칭 검색
 // (`bn`, `ln`, `mha`), 포트 시그니처 미리보기, `Enter`로 삽입.
-// 컨텍스트 필터와 Replace는 M7이라 여기서는 검색만 한다.
+//
+// 컨텍스트 두 가지가 더 있다(§4.2):
+// - 엣지 끝을 빈 곳에 떨어뜨려 열면 **입력이 있는 블록만** 보이고, 고르면 그 선이 바로 이어진다.
+// - 블록을 고른 상태로 열면 `Cmd+Enter`가 **바꾸기**다. 앞뒤 배선을 그대로 두고 블록만 갈아 낀다.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -10,7 +13,7 @@ import { fetchLibrary, saveLayout } from '../api';
 import type { CompositeEntry } from '../api';
 import { applyEdit } from '../edit';
 import { layeredLayout } from '../graph/layout';
-import { addBlockOp, op } from '../graph/ops';
+import { addBlockOp, op, replaceOp } from '../graph/ops';
 import type { Block } from '../graph/ops';
 import { currentScope, useStore } from '../store';
 
@@ -44,10 +47,12 @@ const commonRank = (block: Block) => {
 
 export function Palette() {
     const at = useStore((state) => state.paletteAt);
+    const from = useStore((state) => state.paletteFrom);
     const close = useStore((state) => state.closePalette);
     const graph = useStore((state) => state.graph);
     const scopes = useStore((state) => state.scopes);
     const select = useStore((state) => state.select);
+    const selected = useStore((state) => state.selected);
 
     const [blocks, setBlocks] = useState<Block[]>([]);
     const [query, setQuery] = useState('');
@@ -80,13 +85,14 @@ export function Palette() {
         list.current?.querySelector('.palette__row--on')?.scrollIntoView({ block: 'nearest' });
     }, [cursor]);
 
-    const found = useMemo(() => search(blocks, query), [blocks, query]);
     const scope = currentScope({ graph, scopes });
     const current = scopes[scopes.length - 1];
 
     if (!at || !scope) return null;
 
-    const insert = async (block: Block) => {
+    const replaceable = Boolean(selected && !from);
+
+    const insert = async (block: Block, replace = false) => {
         // 묶음 블록은 정의가 그래프에 있어야 부를 수 있다. 없을 때만 정의를 먼저 넣는다.
         const name = block.type.replace(/^composite:/, '');
         if (block.source === 'composite' && !graph?.composites?.[name]) {
@@ -96,12 +102,39 @@ export function Palette() {
                 return;
             }
         }
-        const { op: add, nodeId } = addBlockOp(
-            currentScope(useStore.getState()) ?? scope,
-            block,
-            current.name === '$graph' ? null : current.name,
-        );
-        const failed = await applyEdit(add);
+        const scopeNow = currentScope(useStore.getState()) ?? scope;
+        const composite = current.name === '$graph' ? null : current.name;
+        let nodeId: string;
+        if (replace && selected) {
+            const swap = replaceOp(scopeNow, selected, block, composite);
+            if ('error' in swap) {
+                setError(swap.error);
+                return;
+            }
+            const refused = await applyEdit(swap.op);
+            if (refused) {
+                setError(refused);
+                return;
+            }
+            // 자리도 물려받는다 - 바꾼 블록이 딴 데로 뛰면 무엇이 바뀌었는지 알 수 없다.
+            const keyOf = (id: string) => (current.callPath ? `${current.callPath}/${id}` : id);
+            const spot = useStore.getState().positions[keyOf(selected)];
+            if (spot) {
+                useStore.getState().setPosition(keyOf(swap.nodeId), spot);
+                void saveLayout(keyOf(swap.nodeId), spot);
+            }
+            select(swap.nodeId);
+            close();
+            return;
+        }
+        const { op: add, nodeId: fresh } = addBlockOp(scopeNow, block, composite);
+        nodeId = fresh;
+        // 엣지에서 열었으면 놓는 것과 잇는 것이 한 번의 편집이다 - 실행 취소도 한 번이다.
+        const first = block.ports.in[0] ?? 'input';
+        const failed = await applyEdit(
+            from ? op('batch', {}, [add, op('connect', {
+                ...(composite ? { composite } : {}), src: from, dst: `${nodeId}.${first}`,
+            })]) : add);
         if (failed) {
             setError(failed);
             return;
@@ -134,7 +167,7 @@ export function Palette() {
         } else if (event.key === 'ArrowUp') {
             setCursor((c) => Math.max(c - 1, 0));
         } else if (event.key === 'Enter') {
-            if (found[cursor]) void insert(found[cursor]);
+            if (found[cursor]) void insert(found[cursor], replaceable && (event.metaKey || event.ctrlKey));
         } else return;
         event.preventDefault();
     };
@@ -142,7 +175,6 @@ export function Palette() {
     return (
         <>
             <div className="palette__scrim" onClick={close} />
-            <div className="palette" role="dialog" aria-label="블록 검색">
                 <div className="palette__search">
                     <input
                         ref={input}
@@ -172,7 +204,8 @@ export function Palette() {
                                     mouse.current = { x: event.clientX, y: event.clientY };
                                     setCursor(index);
                                 }}
-                                onClick={() => void insert(block)}>
+                                onClick={(event) =>
+                                    void insert(block, replaceable && (event.metaKey || event.ctrlKey))}>
                                 <span className="palette__head">
                                     <span className="palette__name">{block.label}</span>
                                     <span className="palette__category">{block.category}</span>
@@ -185,7 +218,12 @@ export function Palette() {
                 </ul>
 
                 <div className="palette__footer mono muted">
-                    별칭도 됩니다 · bn ln mha {error && <span className="warn">{error}</span>}
+                    {from
+                        ? '이을 수 있는 블록만 · 고르면 바로 이어집니다'
+                        : replaceable
+                          ? '별칭도 됩니다 · Cmd+Enter 는 고른 블록을 바꿉니다'
+                          : '별칭도 됩니다 · bn ln mha'}
+                    {error && <span className="warn"> {error}</span>}
                 </div>
             </div>
         </>
