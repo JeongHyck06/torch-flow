@@ -81,6 +81,9 @@ export function Canvas() {
         // 스토어의 단일 선택으로 덮으면 폴링이 한 번 돌 때마다 선택이 하나로 줄어든다.
         const selected = node.selected || previous?.selected === true;
         return previous?.measured?.width
+          ? { ...node, selected, measured: previous.measured,
+              width: previous.width, height: previous.height }
+          : { ...node, selected };
       });
     });
   }, [computed.nodes]);
@@ -181,7 +184,14 @@ export function Canvas() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if (target.closest("input, textarea, select, [contenteditable='true']")) return;
+      // 글자를 치는 칸에서는 키가 그 칸의 것이다. 다만 체크박스·라디오·슬라이더·드롭다운에는
+      // 되돌릴 타자가 없으므로 거기서 누른 Cmd+Z만 그래프 편집을 되돌린다.
+      const typing = Boolean(target.closest("textarea, [contenteditable='true']"))
+        || (target instanceof HTMLInputElement
+            && !["checkbox", "radio", "button", "range"].includes(target.type));
+      const undoKey = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z";
+      if (target.closest("input, textarea, select, [contenteditable='true']")
+          && !(undoKey && !typing)) return;
       // Space·Enter를 꾹 누르면 키 자동 반복이 초당 30번 버튼을 누른다 - 학습 시작 요청이 그 수만큼
       // 나가 터미널이 도배됐다. 반복 키는 아무 버튼도 누르지 못하게 한다.
       if (event.repeat && (event.key === " " || event.key === "Enter")) {

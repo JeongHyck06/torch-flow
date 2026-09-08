@@ -16,6 +16,7 @@ import { layeredLayout } from '../graph/layout';
 import { addBlockOp, op, replaceOp } from '../graph/ops';
 import type { Block } from '../graph/ops';
 import { currentScope, useStore } from '../store';
+import { useDialog } from '../useDialog';
 
 // 관례적으로 쓰는 줄임말. 검색어가 이것들이면 원래 이름으로도 친 것으로 친다.
 const ALIASES: Record<string, string> = {
@@ -85,6 +86,13 @@ export function Palette() {
         list.current?.querySelector('.palette__row--on')?.scrollIntoView({ block: 'nearest' });
     }, [cursor]);
 
+    // 엣지에서 열었으면 이을 수 있는 것만 보여 준다. 포트 타입은 아직 없으므로(§4.3)
+    // "입력이 하나라도 있는가"가 지금 쓸 수 있는 유일한 조건이다.
+    const candidates = useMemo(
+        () => (from ? blocks.filter((block) => block.ports.in.length > 0) : blocks), [blocks, from]);
+    const found = useMemo(() => search(candidates, query), [candidates, query]);
+    // 팔레트도 창이다: Tab이 캔버스로 새지 않고 닫으면 부르던 자리로 돌아간다.
+    const box = useDialog<HTMLDivElement>(Boolean(at), close);
     const scope = currentScope({ graph, scopes });
     const current = scopes[scopes.length - 1];
 
@@ -175,6 +183,7 @@ export function Palette() {
     return (
         <>
             <div className="palette__scrim" onClick={close} />
+            <div ref={box} className="palette" role="dialog" aria-modal="true" aria-label="블록 검색">
                 <div className="palette__search">
                     <input
                         ref={input}

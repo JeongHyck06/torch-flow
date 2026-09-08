@@ -12,6 +12,7 @@ import {
 } from "../api";
 import type { DatasetInfo, DownloadProgress, Recipe } from "../api";
 import { SYNTHETIC, useStore } from "../store";
+import { useDialog } from "../useDialog";
 import { DataCard } from "./DataCard";
 
 const KIND_LABEL: Record<string, string> = {
@@ -74,6 +75,8 @@ export function DataDialog() {
   };
   useEffect(() => { void reload().catch(() => undefined); }, []);
 
+  // Esc로 닫히고, Tab이 창 밖으로 새지 않고, 닫으면 열기 전 자리로 돌아온다.
+  const box = useDialog<HTMLDivElement>(true, close);
 
   const pick = (name: string) => { setChosen(name); setDraft(null); setError(null); };
 

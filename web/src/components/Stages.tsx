@@ -33,7 +33,10 @@ function actionOf(stage: Stage): string | null {
     case "train": return stage.state === "done" ? null : "학습 블록 넣기";
     case "run":
       if (stage.detail.includes("가져온")) return null;
-      return stage.state === "pending" ? "학습 시작" : stage.state === "active" ? "곡선 보기" : "다시 시작";
+      if (stage.state === "pending") return "학습 시작";
+      if (stage.state === "active") return "곡선 보기";
+      // 실패는 같은 설정으로 다시 눌러 봐야 또 실패한다 - 원인과 복구 버튼이 있는 패널로 보낸다.
+      return stage.detail.startsWith("실패") ? "실패 원인 보기" : "다시 시작";
     case "test": return stage.state === "active" ? "정확도 재기" : stage.state === "done" ? "결과 보기" : null;
   }
 }
@@ -135,7 +138,9 @@ export function Stages() {
           break;
         }
         const run = runs[runs.length - 1];
-        if (run && (RUNNING.has(run.state) || run.state === "paused")) {
+        // 도는 run과 **실패한 run** 둘 다 패널로 보낸다. 실패를 여기서 다시 시작하면
+        // 같은 장치·같은 설정이라 같은 자리에서 또 죽는다 - 복구 버튼은 패널에 있다.
+        if (run && (RUNNING.has(run.state) || run.state === "paused" || run.state === "failed")) {
           openRunPanel("curves");
           break;
         }
@@ -185,7 +190,7 @@ export function Stages() {
             {current.state === "error" ? "고칠 것" : "지금 할 일"} · {stages.indexOf(current) + 1} {current.name}
           </p>
           <p className="guide__text">{current.guide}</p>
-          {line && <p className="guide__notice mono">{line}</p>}
+          {line && <p className="guide__notice mono" role="status" aria-live="polite">{line}</p>}
           <div className="guide__actions">
             {action && <button className="solid" onClick={() => go(current)}>{action}</button>}
             <button className="ghost" onClick={() => setGuideHidden(true)}>안내 숨기기</button>
