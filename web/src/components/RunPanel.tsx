@@ -18,10 +18,15 @@ import type { RunTab } from "../store";
 
 const TAB_LABELS: Record<RunTab, string> = {
   curves: "곡선", test: "테스트", stdout: "학습 출력", data: "데이터", block: "블록 상세",
-  manifest: "run manifest", logs: "커널 로그", console: "콘솔",
+  manifest: "실행 설정 기록", logs: "커널 로그", console: "콘솔",
 };
 // 앞 다섯은 학습 결과, 뒤 셋은 연구용. 구분선 뒤로 흐리게 두어 처음 보는 사람이 안 헤매게 한다.
 const ADVANCED_TABS = new Set<RunTab>(["manifest", "logs", "console"]);
+// 곡선 이름. 원어를 괄호에 남긴다 - 검색하거나 논문을 볼 때 필요한 이름이다.
+const CURVE_LABELS: Record<string, string> = {
+  loss: "손실 (loss)", acc: "정확도 (acc)", val_loss: "검증 손실 (val_loss)",
+  val_acc: "검증 정확도 (val_acc)", lr: "학습률 (lr)", grad_norm: "기울기 크기 (grad_norm)",
+};
 
 const COLORS = ["var(--dtype-f32)", "#4a86c9", "#7c8898", "#2a558d", "#5e93d1"];
 // 색은 한 계열(214°)뿐이라 run이 넷이면 구분이 안 된다 - 선 모양으로 한 번 더 가른다.
@@ -142,7 +147,8 @@ export function RunPanel() {
         {tab === "curves" && keys.length > 1 && (
           <select className="runpanel__select mono" value={key}
                   onChange={(event) => setKey(event.target.value)}>
-            {keys.map((name) => <option key={name} value={name}>{name}</option>)}
+            {keys.map((name) =>
+              <option key={name} value={name}>{CURVE_LABELS[name] ?? name}</option>)}
           </select>
         )}
         <button className="runpanel__close" onClick={toggle} aria-label="닫기">닫기</button>
@@ -157,7 +163,7 @@ export function RunPanel() {
               아직 기록이 없습니다 · 단계 표시줄의 4 실행으로 학습을 시작하거나, 스크립트에서 tf.log(step, loss=...)를 부르면 여기에 쌓입니다
             </p>
           ) : (
-            <Curves series={series} label={key} />
+            <Curves series={series} label={CURVE_LABELS[key] ?? key} />
           )
         )}
 
@@ -190,7 +196,7 @@ export function RunPanel() {
             <pre className="mono runpanel__json">
               {JSON.stringify(active.manifest, null, 2)}
             </pre>
-          ) : <p className="mono muted">manifest가 아직 없습니다</p>
+          ) : <p className="mono muted">실행 설정 기록이 아직 없습니다</p>
         )}
 
         {tab === "logs" && (

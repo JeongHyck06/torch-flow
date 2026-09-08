@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 
 import { fetchTest, runTest } from "../api";
 import type { TestResult } from "../api";
-import { FINISHED, RUNNING } from "../stages";
+import { FINISHED, RUNNING, runStateLabel } from "../stages";
 import { useStore } from "../store";
 
 export function TestPanel() {
@@ -57,12 +57,12 @@ export function TestPanel() {
         <button className="trainer__run" onClick={() => void start()} disabled={busy || !runId}>
           {busy ? "테스트 중" : "테스트 실행"}
         </button>
-        <label className="trainer__field">run
+        <label className="trainer__field">학습 기록
           <select className="trainer__select mono" value={runId}
                   onChange={(event) => setPicked(event.target.value)}>
             {runs.map((run) => (
               <option key={run.run_id} value={run.run_id}>
-                {run.run_id} · {run.state} · step {run.step.toLocaleString()}
+                {run.run_id} · {runStateLabel(run.state)} · step {run.step.toLocaleString()}
               </option>
             ))}
           </select>
