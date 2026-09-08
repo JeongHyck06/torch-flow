@@ -1,0 +1,12 @@
+# 그래프는 JSON이지만 사람이 읽는 것은 요약이다 (기획서 10.2).
+#   git config diff.torchflow.textconv "torchflow show"
+*.tfg.json diff=torchflow
+
+# 좌표는 그래프 의미가 아니다. 브랜치가 서로 다른 자리에 놓았어도 충돌이 아니다.
+graph/layout.json merge=ours
+**/layout.json merge=ours
+
+# 그래프 자체는 축소 3-way 병합 드라이버가 합친다.
+#   git config merge.torchflow.name "TorchFlow graph merge"
+#   git config merge.torchflow.driver "torchflow merge %O %A %B"
+*.tfg.json merge=torchflow
