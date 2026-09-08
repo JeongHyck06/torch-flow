@@ -19,7 +19,7 @@ import { Stages } from "./Stages";
 import { SYNTHETIC, currentScope, useStore } from "../store";
 import { saveLayout } from "../api";
 import { applyEdit, redo, undo } from "../edit";
-import { op, removeNodeOp } from "../graph/ops";
+import { groupOp, op, removeNodeOp } from "../graph/ops";
 import { enterableComposite, lodOf, toFlow } from "../graph/toFlow";
 import { runLabel } from "../stages";
 import { topologicalIds } from "../graph/layout";
@@ -76,9 +76,10 @@ export function Canvas() {
       const known = new Map(current.map((node) => [node.id, node]));
       return computed.nodes.map((node) => {
         const previous = known.get(node.id);
+        // 여러 개를 고른 상태(Cmd+클릭, Shift+드래그)는 React Flow의 로컬 상태에만 있다.
+        // 스토어의 단일 선택으로 덮으면 폴링이 한 번 돌 때마다 선택이 하나로 줄어든다.
+        const selected = node.selected || previous?.selected === true;
         return previous?.measured?.width
-          ? { ...node, measured: previous.measured, width: previous.width, height: previous.height }
-          : node;
       });
     });
   }, [computed.nodes]);
@@ -116,6 +117,30 @@ export function Canvas() {
     const { src, dst } = edge.data as { src: string; dst: string };
     void applyEdit(op("disconnect", { ...(composite ? { composite } : {}), src, dst }));
   }, [composite]);
+
+  // Cmd+G: 고른 블록들을 묶음 블록 하나로. 되돌리기는 batch 역 op 하나로 통째로 돌아온다.
+  const group = useCallback(async () => {
+    const live = currentScope(useStore.getState());
+    if (!live) return;
+    const ids = nodes.filter((node) => node.selected).map((node) => node.id);
+    const result = groupOp(live, ids, composite,
+                           Object.keys(useStore.getState().graph?.composites ?? {}));
+    if ("error" in result) return useStore.getState().setNotice(result.error);
+    const failed = await applyEdit(result.op);
+    if (failed) return useStore.getState().setNotice(failed);
+    // 새 블록은 묶인 것들의 한가운데에 놓는다 - 자동 배치가 화면 밖에 두면 찾을 수 없다.
+    const picked = nodes.filter((node) => ids.includes(node.id));
+    const spot = {
+      x: picked.reduce((sum, node) => sum + node.position.x, 0) / picked.length,
+      y: picked.reduce((sum, node) => sum + node.position.y, 0) / picked.length,
+    };
+    const key = callPath ? `${callPath}/${result.nodeId}` : result.nodeId;
+    setPosition(key, spot);
+    void saveLayout(key, spot);
+    select(result.nodeId);
+    focus(result.nodeId);
+    useStore.getState().setNotice(`${picked.length}개를 묶음 블록 ${result.name}으로 만들었습니다`);
+  }, [nodes, composite, callPath, setPosition, select, focus]);
 
   const order = useMemo(
     () => (scope ? topologicalIds(scope.nodes ?? [], (scope.edges ?? []) as [string, string][]) : []),
@@ -171,6 +196,19 @@ export function Canvas() {
       if (!order.length && event.key !== "Tab") return;
       const index = focused ? order.indexOf(focused) : -1;
 
+      // Space는 포커스한 블록을 선택에 넣고 뺀다. 마우스 없이도 Cmd+G까지 갈 수 있어야 한다(§2.2).
+      if (event.key === " " && focused
+          && (target === document.body || target.closest(".react-flow__node, .react-flow__pane"))) {
+        setNodes((current) => current.map((one) =>
+          one.id === focused ? { ...one, selected: !one.selected } : one));
+        event.preventDefault();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
+        event.preventDefault();
+        void group();
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         void (event.shiftKey ? redo() : undo());
         event.preventDefault();
@@ -215,7 +253,7 @@ export function Canvas() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [order, focused, selected, scopes, focus, select, enter, popToScope, fitReadable,
-      openPalette, screenToFlowPosition, remove, edges, disconnect]);
+      openPalette, screenToFlowPosition, remove, edges, disconnect, group]);
 
   useEffect(() => {
     if (!focused || !followFocus.current) return;
@@ -239,7 +277,17 @@ export function Canvas() {
     fitReadable(0);
   }, [measured, fitReadable]);
 
-  const onNodeClick: NodeMouseHandler = (_event, node) => { select(node.id); focus(node.id); };
+  const onNodeClick: NodeMouseHandler = (event, node) => {
+    // Cmd(또는 Shift)+클릭은 선택에 더하고 뺀다. React Flow의 키 추적에 기대지 않고
+    // 여기서 직접 켜고 끄는 이유는, 그래야 무엇이 골라졌는지가 한 곳(로컬 nodes)에만 있기 때문이다.
+    if (event.metaKey || event.ctrlKey || event.shiftKey) {
+      setNodes((current) => current.map((one) =>
+        one.id === node.id ? { ...one, selected: !one.selected } : one));
+      return;
+    }
+    select(node.id);
+    focus(node.id);
+  };
   // 선을 고르면 노드 선택은 비운다 - Delete가 노드를 지우면 안 된다.
   const onEdgeClick: EdgeMouseHandler = () => { select(null); focus(null); };
   const onNodeDoubleClick: NodeMouseHandler = (_event, node) => {

@@ -108,6 +108,135 @@ export function removeNodeOp(nodeId: string, composite: string | null): Op {
 }
 
 /**
+ * 고른 블록을 다른 블록으로 갈아 끼운다(팔레트 Replace, §4.2). 배선은 그대로 남는다.
+ *
+ * 포트 이름은 되도록 쓰던 것을 그대로 쓰고, 새 블록에 그런 이름이 없으면 첫 입력으로 보낸다 -
+ * Conv2d(`input`)를 묶음 블록(`x`)으로 바꿔도 앞뒤가 끊기지 않는다.
+ */
+export function replaceOp(
+  scope: Graph | Composite, nodeId: string, block: Block, composite: string | null,
+): { op: Op; nodeId: string } | { error: string } {
+  const old = (scope.nodes ?? []).find((node) => node.id === nodeId);
+  if (!old) return { error: "바꿀 블록이 없습니다" };
+  if (NOT_GROUPABLE.has((old.type ?? "").split("@")[0])) {
+    return { error: `${old.label} 블록은 바꿀 수 없습니다` };
+  }
+  const edges = (scope.edges ?? []) as [string, string][];
+  const incoming = edges.filter(([, dst]) => endpointNode(dst) === nodeId);
+  const outgoing = edges.filter(([src]) => endpointNode(src) === nodeId);
+  if (incoming.length && !block.ports.in.length) {
+    return { error: `${block.label}에는 입력이 없어 앞 블록과 이을 수 없습니다` };
+  }
+  if (outgoing.length && !block.ports.out.length) {
+    return { error: `${block.label}에는 출력이 없어 뒤 블록과 이을 수 없습니다` };
+  }
+
+  const { op: add, nodeId: fresh } = addBlockOp(scope, block, composite);
+  const scoped = composite ? { composite } : {};
+  const outPort = block.ports.out[0] ?? "output";
+  const inner: Op[] = [
+    add,
+    ...incoming.map(([src, dst]) => {
+      const port = dst.split(".")[1];
+      const target = block.ports.in.includes(port) ? port : block.ports.in[0];
+      return op("connect", { ...scoped, src, dst: `${fresh}.${target}` });
+    }),
+    ...outgoing.map(([, dst]) => op("connect", { ...scoped, src: `${fresh}.${outPort}`, dst })),
+    op("remove_node", { ...scoped, node: nodeId }),
+  ];
+  return { op: op("batch", {}, inner), nodeId: fresh };
+}
+
+/** 그래프 경계와 학습 설정. 안으로 넣으면 그래프가 입력도 출력도 잃는다. */
+const NOT_GROUPABLE = new Set(["torchflow.Input", "torchflow.Output", "torchflow.Train"]);
+
+/**
+ * 고른 블록들을 묶음 블록 하나로 승격한다(`Cmd+G`, 기획서 §4.4.3).
+ *
+ * 안쪽으로 들어가는 선은 `$in.x`가 되고 밖으로 나가는 선은 `$out.output`이 된다 -
+ * 컴포지트의 입출력 포트는 그렇게 **원래 있던 선에서** 정해진다. 사람이 포트를
+ * 설계하지 않아도 되고, 묶기 전후로 바깥에서 본 배선이 같다.
+ *
+ * 한 덩어리 batch로 보낸다. 실행 취소가 통째로 한 번에 되돌려야 하기 때문이다.
+ */
+export function groupOp(
+  scope: Graph | Composite, ids: string[], composite: string | null, definedNames: string[],
+): { op: Op; nodeId: string; name: string } | { error: string } {
+  const inside = new Set(ids);
+  const chosen = (scope.nodes ?? []).filter((node) => inside.has(node.id));
+  if (chosen.length < 2) {
+    return { error: "블록 두 개 이상을 고르세요 - Cmd 를 누른 채 클릭하거나 Shift 로 끕니다" };
+  }
+  const blocked = chosen.find((node) => NOT_GROUPABLE.has((node.type ?? "").split("@")[0]));
+  if (blocked) return { error: `${blocked.label} 블록은 묶음 안에 넣을 수 없습니다` };
+
+  const internal: [string, string][] = [];
+  const inbound: [string, string][] = [];
+  const outbound: [string, string][] = [];
+  for (const edge of (scope.edges ?? []) as [string, string][]) {
+    const from = inside.has(endpointNode(edge[0]));
+    const to = inside.has(endpointNode(edge[1]));
+    if (from && to) internal.push(edge);
+    else if (to) inbound.push(edge);
+    else if (from) outbound.push(edge);
+  }
+
+  // 같은 곳에서 오는 선은 포트 하나를 나눠 쓴다 - 스킵 연결이 입력을 둘로 늘리지 않는다.
+  const inPort = new Map<string, string>();
+  for (const [src] of inbound) if (!inPort.has(src)) inPort.set(src, portName("x", inPort.size));
+  const outPort = new Map<string, string>();
+  for (const [src] of outbound) {
+    if (!outPort.has(src)) outPort.set(src, portName("output", outPort.size));
+  }
+
+  const body = {
+    ports: {
+      in: [...inPort.values()].map((name) => ({ name, type: "Tensor" })),
+      out: [...outPort.values()].map((name) => ({ name, type: "Tensor" })),
+    },
+    instances: Object.fromEntries(
+      chosen.filter((node) => node.call)
+        .map((node) => [node.call as string, strip(scope.instances![node.call as string])])),
+    nodes: chosen.map(strip),
+    edges: [
+      ...internal,
+      ...inbound.map(([src, dst]) => [`$in.${inPort.get(src)}`, dst]),
+      ...outbound.map(([src]) => [src, `$out.${outPort.get(src)}`]),
+    ],
+  };
+
+  const name = uniqueName(definedNames);
+  const nodeId = newId();
+  const label = uniqueLabel(scope, name);
+  const scoped = composite ? { composite } : {};
+  const inner: Op[] = [
+    op("define_composite", { name, body }),
+    ...chosen.map((node) => op("remove_node", { ...scoped, node: node.id })),
+    op("add_node", {
+      ...scoped,
+      instance: { id: newId(), label, type: `composite:${name}`, args: {} },
+      node: { id: nodeId, label, method: "forward",
+              ports_out: [...outPort.values()].map((port) => ({ name: port, type: "Tensor" })) },
+    }),
+    // 바깥 배선을 새 노드에 다시 잇는다. 안쪽으로 가던 선은 remove_node가 이미 지웠다.
+    ...inbound.map(([src]) => op("connect", { ...scoped, src, dst: `${nodeId}.${inPort.get(src)}` })),
+    ...outbound.map(([src, dst]) =>
+      op("connect", { ...scoped, src: `${nodeId}.${outPort.get(src)}`, dst })),
+  ];
+  return { op: op("batch", {}, inner), nodeId, name };
+}
+
+function portName(base: string, index: number): string {
+  return index === 0 ? base : `${base}${index + 1}`;
+}
+
+function uniqueName(taken: string[]): string {
+  const names = new Set(taken);
+  if (!names.has("Group")) return "Group";
+  for (let index = 2; ; index += 1) if (!names.has(`Group${index}`)) return `Group${index}`;
+}
+
+/**
  * op의 역. 편집 **직전** 그래프를 받아 계산한다.
  *
  * 되돌릴 수 없는 op(아직 그래프에 적용되지 않는 kind)는 `null`이고, 그런 op는
@@ -172,11 +301,20 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
     }
     // 정의는 팔레트가 그래프에 없을 때만 보내므로 역은 지우기다. 부르는 노드가 남아 있으면
     // 서버가 거부한다 - 실행 취소는 노드부터 되돌아가므로 순서가 맞는다.
+    // 몸체를 같이 실어야 이 역 op의 역(다시 실행)이 정의를 되살릴 수 있다.
     case "define_composite":
-      return op("remove_composite", { name: payload.name });
     case "remove_composite":
       return payload.body === undefined
         ? null : op("define_composite", { name: payload.name, body: payload.body });
+    // 묶음 하나를 통째로 되돌린다. 안쪽 역 op는 전부 **묶기 직전** 그래프에서 계산하고
+    // 순서만 뒤집는다 - 마지막에 넣은 것부터 빼야 서버의 참조 검사(컴포지트를 부르는
+    // 노드가 남아 있으면 지울 수 없다)를 통과한다.
+    case "batch": {
+      const inner = (current.ops ?? []).map((one) => inverseOf(scope, one));
+      if (inner.some((one) => one === null)) return null;
+      const flat = (inner as Op[]).reverse().flatMap(flatten);
+      return flat.length === 1 ? flat[0] : op("batch", {}, flat);
+    }
     default:
       return null;
   }
@@ -184,6 +322,11 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
 
 function endpointNode(endpoint: string): string {
   return endpoint.split(".")[0];
+}
+
+/** 중첩 batch를 편다. 서버의 batch는 한 겹만 풀어 적용하므로 겹쳐 보내면 조용히 사라진다. */
+export function flatten(one: Op): Op[] {
+  return one.kind === "batch" ? (one.ops ?? []).flatMap(flatten) : [one];
 }
 
 /** 서버가 준 모델에서 기본값 키를 걷어낸다 - 왕복해도 같은 IR이어야 한다. */

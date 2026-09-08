@@ -47,6 +47,8 @@ export function Inspector() {
           <div><dt>노드 이동</dt><dd>← →</dd></div>
           <div><dt>선택</dt><dd>Enter</dd></div>
           <div><dt>컴포지트 진입</dt><dd>]</dd></div>
+          <div><dt>여러 개 고르기</dt><dd>Space · Cmd+클릭</dd></div>
+          <div><dt>묶음 블록으로 묶기</dt><dd>Cmd+G</dd></div>
           <div><dt>나가기</dt><dd>Esc</dd></div>
           <div><dt>전체 보기</dt><dd>f</dd></div>
           <div><dt>위치 조정</dt><dd>드래그</dd></div>
