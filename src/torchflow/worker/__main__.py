@@ -410,6 +410,8 @@ def _train(job: dict[str, Any], run_dir: Path) -> None:
                   + (f" = {base:.3g} x {lr / base if base else 0:.3f}"
                      if scheduler is not None else "")
                   + f"   |g| {float(grad_norm):.3f}")
+        if step == total:
+            events.write("status", state="finalizing", step=step)
         if evaluate is not None and (step % eval_every == 0 or step == total):
             metrics = evaluate(model, loss_fn)
             events.write("scalar", step=step, **metrics)

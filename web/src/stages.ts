@@ -17,7 +17,7 @@ export interface Stage {
   guide: string;
 }
 
-export const RUNNING = new Set(["running", "starting"]);
+export const RUNNING = new Set(["running", "starting", "finalizing"]);
 /** 체크포인트가 남는 끝 상태. 테스트는 이 뒤에만 된다. */
 export const FINISHED = new Set(["done", "stopped"]);
 const STRUCTURAL = new Set(["torchflow.Input", "torchflow.Output", "torchflow.Train"]);
@@ -26,15 +26,26 @@ export function kindOf(node: Node): string {
   return (node.type ?? "").split("@")[0];
 }
 
+/** run 상태의 한국어 이름. 영어 원시값이 화면에 나가지 않도록 여기 한 곳에서만 고른다. */
+const RUN_STATE_LABELS: Record<string, string> = {
+  starting: "학습 준비 중", running: "학습 중", finalizing: "최종 평가·저장 중",
+  paused: "일시정지", done: "완료", stopped: "중지", failed: "실패",
+};
+export const runStateLabel = (state: string): string => RUN_STATE_LABELS[state] ?? state;
+
 /** 마지막 run을 한 줄로. 없으면 빈 문자열. */
 export function runLabel(runs: TrainRun[]): string {
   const run = runs[runs.length - 1];
   if (!run) return "";
   const step = `step ${run.step.toLocaleString()} / ${run.total.toLocaleString()}`;
-  if (RUNNING.has(run.state)) return step;
-  if (run.state === "paused") return `일시정지 · ${step}`;
-  if (run.state === "done") return `done · step ${run.step.toLocaleString()}`;
-  return `${run.state} · step ${run.step.toLocaleString()}`;
+  // 마지막 스텝을 지나도 평가와 체크포인트 저장이 남는다. 그 사이를 "완료"로 부르면
+  // 사람은 끝난 줄 알고 테스트를 누르는데 체크포인트가 아직 없다.
+  if (run.state === "finalizing" || (run.state === "running" && run.total > 0 && run.step >= run.total)) {
+    return `최종 평가·저장 중 · ${step}`;
+  }
+  if (run.state === "running") return step;
+  if (RUNNING.has(run.state) || run.state === "paused") return `${runStateLabel(run.state)} · ${step}`;
+  return `${runStateLabel(run.state)} · step ${run.step.toLocaleString()}`;
 }
 
 export function computeStages(input: {
@@ -125,7 +136,7 @@ export function computeStages(input: {
   } else if (RUNNING.has(run.state)) {
     runStage = { key: "run", name: "실행", state: "active", detail: runLabel(input.runs),
                  hint: "누르면 아래 패널 · 일시정지와 중지는 패널에서",
-                 guide: "학습 중입니다. 아래 패널에서 곡선을 보고 Pause·Stop으로 조절합니다. loss가 "
+                 guide: "학습 중입니다. 아래 패널에서 곡선을 보고 일시정지·중지로 조절합니다. loss가 "
                    + "ln(클래스 수) 근처에 그대로면 데이터가 없거나 lr이 맞지 않는 것입니다." };
   } else if (run.state === "done") {
     runStage = { key: "run", name: "실행", state: "done", detail: runLabel(input.runs),
@@ -136,6 +147,8 @@ export function computeStages(input: {
                  hint: "누르면 아래 패널 · 이어 가기와 중지는 패널에서",
                  guide: "일시정지 상태입니다. 아래 패널에서 이어 가거나 멈출 수 있습니다." };
   } else {
+    // 여기에 영어 오류 원문을 붙이면 안내문이 통째로 RuntimeError가 된다. 무엇을 하면
+    // 되는지만 한국어로 말하고, 원문과 traceback은 아래 실패 카드가 펼쳐서 보여 준다.
     runStage = { key: "run", name: "실행", state: "error", detail: runLabel(input.runs),
                  hint: "다시 누르면 새 실행 · 이어 하려면 패널의 재개",
                  guide: run.state !== "failed"

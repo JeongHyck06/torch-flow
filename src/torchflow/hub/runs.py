@@ -285,6 +285,7 @@ def merge(handle: RunHandle, tracker) -> int:
     """
     path = handle.directory / "events.jsonl"
     if not path.exists():
+        _notice_death(handle, tracker)
         return 0
 
     written = 0
@@ -313,7 +314,7 @@ def _notice_death(handle: RunHandle, tracker) -> None:
     화면은 Pause·Stop을 계속 보여 주고 사람은 기다린다. 프로세스가 끝났는데(또는 heartbeat가
     끊겼는데) 끝 상태가 없으면 그것이 곧 실패다.
     """
-    if handle.state not in ("starting", "running", "paused") or handle.alive:
+    if handle.state not in ("starting", "running", "paused", "finalizing") or handle.alive:
         return
     code = handle.process.poll() if handle.process is not None else None
     if handle.process is None and not (handle.directory / "heartbeat").exists():
@@ -326,6 +327,14 @@ def _notice_death(handle: RunHandle, tracker) -> None:
         "message": "워커가 끝 상태를 남기지 못하고 종료됐습니다"
                    + (f" (exit {code})" if code is not None else " (heartbeat 끊김)")
                    + " - 학습 출력 탭의 traceback을 보세요"}
+    try:
+        with (handle.directory / "stdout.log").open("rb") as stream:
+            stream.seek(max(0, stream.seek(0, 2) - 16000))
+            tail = stream.read().decode("utf-8", "replace").strip()
+        if tail:
+            handle.error = {**handle.error, "message": tail.splitlines()[-1], "detail": tail}
+    except OSError:
+        pass
     tracker.finish_run(handle.run_id, "failed")
 
 
@@ -354,7 +363,11 @@ def _absorb(handle: RunHandle, event: dict[str, Any], tracker) -> int:
         if reason := event.get("reason"):
             handle.extra["reason"] = reason
     elif kind == "error":
+        # traceback을 버리면 화면의 "오류 원문 보기"가 한 줄짜리가 된다. 워커가 이미 보낸 것을
+        # 그대로 detail로 둔다 - 죽은 워커에서 stdout 꼬리를 담는 자리와 같은 이름이다.
         handle.error = {"stage": event.get("stage"), "message": event.get("message")}
+        if detail := event.get("traceback"):
+            handle.error["detail"] = detail
     elif kind == "numeric" and event.get("nan"):
         # NaN은 학습을 멈추는 사건이다(§5.6 nan_policy) - 배지로 남긴다.
         handle.extra["nan_step"] = event.get("step")
