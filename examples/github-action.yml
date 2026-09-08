@@ -1,0 +1,54 @@
+# TorchFlow 리뷰 계약을 PR에 거는 GitHub Action 템플릿 (기획서 §10.2).
+#
+# 이 파일을 프로젝트의 .github/workflows/torchflow.yml 로 복사하세요. 두 가지를 합니다.
+#   1. torchflow check - 생성 코드가 그래프와 같은지, 손으로 고쳐지지 않았는지
+#   2. torchflow diff --markdown - 무엇이 바뀌었는지 PR에 댓글로
+name: torchflow
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # diff 는 base 커밋을 읽어야 한다
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install torchflow
+
+      - name: 생성 코드가 그래프와 일치하는가
+        run: torchflow check
+
+      - name: 그래프 변경 요약
+        id: summary
+        run: |
+          {
+            echo 'body<<TORCHFLOW_EOF'
+            torchflow diff "origin/${{ github.base_ref }}..HEAD" --markdown
+            echo TORCHFLOW_EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = process.env.BODY;
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number });
+            const mine = comments.find((one) =>
+              one.user.type === "Bot" && one.body.startsWith("### TorchFlow"));
+            if (mine) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: context.issue.number, body });
+            }
+        env:
+          BODY: ${{ steps.summary.outputs.body }}
