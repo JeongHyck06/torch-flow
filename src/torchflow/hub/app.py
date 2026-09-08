@@ -1345,7 +1345,9 @@ def create_app(
         handle.extra.update({"kind": kind, "smoke": smoke, "graph_id": hub.graph_id})
         hub.l2[run_id] = handle
         hub.tracker.ensure_run(run_id, kind=kind, name=graph.name, graph_id=hub.graph_id,
-                               manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir)})
+                               manifest={"job": job, "ir_sha256": codegen.ir_hash(hub.store.ir),
+                                         # 어느 ablation이었는지. 표의 축이 여기서 나온다(§6.4).
+                                         "variant": (hub.store.ir.meta or {}).get("variant")})
         return JSONResponse({"ok": True, **handle.as_dict()})
 
     @app.post("/api/train/{run_id}")
