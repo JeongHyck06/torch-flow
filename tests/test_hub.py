@@ -1008,3 +1008,171 @@ def test_registry_lists_template_composites(client):
     block = composites["BasicBlock"]
     assert block["source"].startswith("ResNet-18") and set(block["params"]) == {"in_ch", "out_ch", "stride", "shortcut"}
     assert block["ports"]["in"][0]["name"] == "x" and block["composite"]["nodes"]
+
+
+# ── 학습 실패 안내와 CPU 재실행 (초보자 복구 경로) ──────────────────────────────
+
+MPS_UNSUPPORTED = ("RuntimeError: Adaptive pool MPS: input sizes must be divisible by output "
+                   "sizes. Non-divisible input sizes are not implemented on MPS device yet.")
+
+
+@pytest.mark.parametrize("message, retryable", [
+    (MPS_UNSUPPORTED, True),
+    ("NotImplementedError: The operator 'aten::_foo' is not currently implemented for the MPS device", True),
+    # 아래는 전부 CPU로 옮긴다고 풀리지 않는다 - 모든 실패를 MPS 탓으로 돌리면 안 된다.
+    ("RuntimeError: mat1 and mat2 shapes cannot be multiplied (64x1568 and 128x10)", False),
+    ("torch.OutOfMemoryError: CUDA out of memory", False),
+    ("RuntimeError: Placeholder storage has not been allocated on MPS device!", False),
+    ("ValueError: num_samples should be a positive integer", False),
+])
+def test_only_mps_unsupported_ops_offer_a_cpu_retry(message, retryable):
+    assert l2.cpu_retryable({"message": message}) is retryable
+    assert l2.cpu_retryable(None) is False
+
+
+def test_the_worker_traceback_reaches_the_failure_card(tmp_path):
+    """워커가 보낸 traceback이 error.detail로 남아야 '오류 원문 보기'가 한 줄이 아니다."""
+    from torchflow.hub.tracker import Tracker
+
+    directory = tmp_path / "run"
+    directory.mkdir()
+    tracker = Tracker(tmp_path / "runs.db")
+    tracker.ensure_run("r")
+    handle = l2.RunHandle(run_id="r", directory=directory)
+    (directory / "events.jsonl").write_text(
+        json.dumps({"kind": "status", "state": "running", "steps": 500, "step": 0}) + "\n"
+        + json.dumps({"kind": "error", "stage": "train", "message": MPS_UNSUPPORTED,
+                      "traceback": "Traceback (most recent call last):\n  File x\n" + MPS_UNSUPPORTED}) + "\n"
+        + json.dumps({"kind": "status", "state": "failed"}) + "\n", encoding="utf-8")
+
+    l2.merge(handle, tracker)
+    tracker.close()
+
+    body = handle.as_dict()
+    assert body["state"] == "failed" and body["cpu_retry"] is True
+    assert body["error"]["message"] == MPS_UNSUPPORTED
+    assert "Traceback (most recent call last)" in body["error"]["detail"]
+
+
+def test_a_cpu_retry_keeps_the_model_and_settings_and_only_swaps_the_device(tmp_path, monkeypatch):
+    """재실행은 편집 중인 그래프가 아니라 실패한 run이 저장해 둔 job·코드를 그대로 쓴다."""
+    monkeypatch.setattr("torchflow.hub.runs._spawn", lambda directory, python=None: None)
+    root = tmp_path / "runs"
+    failed_dir = root / "run-failed"
+    failed_dir.mkdir(parents=True)
+    job = {"class_name": "DigitCNN3Conv", "model_args": {"seed": 0}, "dataset": "mnist",
+           "batch": 64, "steps": 500, "lr": 0.001, "weight_decay": 0.0001, "optimizer": "adamw",
+           "seed": 0, "device": "auto", "resume": "ckpt.pt", "code": str(failed_dir / "model.py")}
+    (failed_dir / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    (failed_dir / "model.py").write_text("# 실패한 그 모델\n", encoding="utf-8")
+    handle = l2.RunHandle(run_id="run-failed", directory=failed_dir)
+    handle.extra.update({"graph_id": "g1", "kind": "exploratory", "smoke": False})
+
+    child = l2.retry_cpu(handle, root)
+    written = json.loads((child.directory / "job.json").read_text(encoding="utf-8"))
+
+    assert written["device"] == "cpu"
+    # 모델·데이터·학습 설정은 글자 하나 바뀌지 않는다.
+    for key in ("class_name", "model_args", "dataset", "batch", "steps", "lr",
+                "weight_decay", "optimizer", "seed"):
+        assert written[key] == job[key]
+    # 체크포인트 재개는 떼어 낸다 - 실패한 run에는 이어 갈 체크포인트가 없다.
+    assert "resume" not in written
+    # 코드는 복사본이되 내용은 같고, 경로는 새 run 것이어야 원본을 지워도 돈다.
+    assert (child.directory / "model.py").read_text(encoding="utf-8") == "# 실패한 그 모델\n"
+    assert written["code"] == str(child.directory / "model.py")
+    assert child.extra["retry_of"] == "run-failed" and child.extra["graph_id"] == "g1"
+
+
+def test_one_runs_failure_does_not_leak_into_another_run(tmp_path):
+    """run마다 상태와 오류가 따로 산다 - 실패 카드가 엉뚱한 run에 붙으면 안 된다."""
+    from torchflow.hub.tracker import Tracker
+
+    tracker = Tracker(tmp_path / "runs.db")
+    handles = {}
+    for name, state in (("run-bad", "failed"), ("run-good", "running")):
+        directory = tmp_path / name
+        directory.mkdir()
+        tracker.ensure_run(name)
+        handles[name] = l2.RunHandle(run_id=name, directory=directory)
+        (directory / "heartbeat").write_text("now", encoding="utf-8")
+    (handles["run-bad"].directory / "events.jsonl").write_text(
+        json.dumps({"kind": "error", "stage": "train", "message": MPS_UNSUPPORTED}) + "\n"
+        + json.dumps({"kind": "status", "state": "failed"}) + "\n", encoding="utf-8")
+    (handles["run-good"].directory / "events.jsonl").write_text(
+        json.dumps({"kind": "status", "state": "running", "steps": 500, "step": 7}) + "\n",
+        encoding="utf-8")
+    for handle in handles.values():
+        l2.merge(handle, tracker)
+    tracker.close()
+
+    bad, good = handles["run-bad"].as_dict(), handles["run-good"].as_dict()
+    assert bad["state"] == "failed" and bad["cpu_retry"] is True
+    assert good["state"] == "running" and good["step"] == 7
+    assert good["error"] is None and good["cpu_retry"] is False
+
+
+def test_a_killed_hub_leaves_the_worker_training(app, tmp_path):
+    """카오스 테스트: hub를 SIGKILL해도 학습은 계속되고, 다시 뜬 hub가 곡선을 잃지 않는다.
+
+    hub와 워커를 잇는 것은 파일 두 개뿐이라는 설계(§5.5.3)가 실제로 성립하는지 본다.
+    여기서 hub 역할은 워커를 띄우고 잠드는 자식 프로세스가 대신한다 - pytest 자신을
+    죽일 수는 없으니.
+    """
+    import os
+    import signal
+    import subprocess
+    import sys
+    import textwrap
+    import time
+
+    pytest.importorskip("torch")
+    from test_worker import make_job
+
+    from torchflow import codegen
+    from torchflow.ir import load
+
+    job, _ = make_job(tmp_path / "seed", steps=40, log_every=1)
+    runs_dir = tmp_path / "runs"
+    (tmp_path / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    (tmp_path / "model.py").write_text(codegen.generate(load(MINIVIT), version="0.0.1"),
+                                       encoding="utf-8")
+
+    script = tmp_path / "fake_hub.py"
+    script.write_text(textwrap.dedent(f"""
+        import json, time
+        from pathlib import Path
+        from torchflow.hub import runs as l2
+        here = Path({str(tmp_path)!r})
+        handle = l2.start(run_id="chaos", root=here / "runs",
+                          job=json.loads((here / "job.json").read_text()),
+                          code=(here / "model.py").read_text())
+        print(handle.process.pid, flush=True)
+        time.sleep(600)
+    """), encoding="utf-8")
+
+    parent = subprocess.Popen([sys.executable, "-u", str(script)],
+                              stdout=subprocess.PIPE, text=True)
+    worker_pid = int(parent.stdout.readline())
+    parent.send_signal(signal.SIGKILL)
+    assert parent.wait(timeout=10) != 0
+
+    os.kill(worker_pid, 0)          # 살아 있지 않으면 ProcessLookupError로 여기서 터진다
+
+    events = runs_dir / "chaos" / "events.jsonl"
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        lines = events.read_text(encoding="utf-8").splitlines() if events.exists() else []
+        if any(json.loads(line).get("state") == "done" for line in lines):
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail("hub가 죽은 뒤 워커가 학습을 끝내지 못했다")
+
+    hub = app.state.hub
+    hub.runs_dir = runs_dir
+    assert hub.recover() == ["chaos"]
+    assert hub.l2["chaos"].state == "done"
+    assert [step for step, _ in hub.tracker.curve("chaos", "loss")] == list(range(1, 41))
+
+
