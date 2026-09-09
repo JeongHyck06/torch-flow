@@ -1246,3 +1246,42 @@ def test_training_refuses_a_device_the_worker_cannot_parse(app, client):
     # 카드가 여럿인 서버에서 두 번째 카드를 고르는 것은 정상이다 - 장치 때문에 막히지 않는다.
     second = client.post("/api/train", headers=auth, json={"device": "cuda:1", "steps": 1}).json()
     assert "학습 장치" not in str(second.get("error", ""))
+
+
+def test_old_checkpoints_go_but_the_curves_stay(tmp_path):
+    """새 run을 띄우면 오래된 ckpt만 지운다. events.jsonl은 남는다."""
+    import os
+
+    root = tmp_path / "runs"
+    for index in range(5):
+        directory = root / f"run-{index}"
+        directory.mkdir(parents=True)
+        (directory / "ckpt.pt").write_bytes(b"x")
+        (directory / "events.jsonl").write_text("{}\n", encoding="utf-8")
+        os.utime(directory / "ckpt.pt", (index, index))   # run-4가 가장 최근
+
+    dropped = l2.prune_checkpoints(root, keep=2)
+
+    assert sorted(dropped) == ["run-0", "run-1", "run-2"]
+    assert not (root / "run-0" / "ckpt.pt").exists()
+    assert (root / "run-4" / "ckpt.pt").exists()
+    # 곡선은 무게가 없다 - 하나도 지우지 않는다.
+    assert all((root / f"run-{i}" / "events.jsonl").exists() for i in range(5))
+
+
+def test_a_paused_run_keeps_its_checkpoint_however_old(tmp_path):
+    """멈춘 run의 ckpt는 재개하려고 세워 둔 것이다 - 나이와 무관하게 지키다."""
+    import os
+
+    root = tmp_path / "runs"
+    for index in range(4):
+        directory = root / f"run-{index}"
+        directory.mkdir(parents=True)
+        (directory / "ckpt.pt").write_bytes(b"x")
+        os.utime(directory / "ckpt.pt", (index, index))
+
+    dropped = l2.prune_checkpoints(root, keep=1, protect={"run-0"})
+
+    # protect를 뺀 셋 중 최신 run-3만 남는다. run-0은 가장 오래됐지만 지켜진다.
+    assert sorted(dropped) == ["run-1", "run-2"]
+    assert (root / "run-0" / "ckpt.pt").exists() and (root / "run-3" / "ckpt.pt").exists()

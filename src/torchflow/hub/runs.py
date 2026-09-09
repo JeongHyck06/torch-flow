@@ -23,6 +23,11 @@ from uuid import uuid4
 # 워커가 이 시간 넘게 heartbeat를 안 쓰면 응답 없음으로 본다(§5.5.2와 같은 10 s).
 STALE_AFTER = 10.0
 
+# 새 run을 띄울 때 ckpt를 남겨 둘 예전 run의 수. ckpt 하나가 100 MB를 넘는 일이 흔해
+# 무게는 사실상 여기에만 있다(곡선·설정·코드는 run 하나당 수십 KB).
+# ponytail: 개수로만 자른다. 용량 기준이 필요해지면 cache.gc처럼 quota로 바꿀 것.
+KEEP_CHECKPOINTS = 3
+
 
 @dataclass
 class RunHandle:
@@ -132,6 +137,30 @@ def start(*, run_id: str, root: Path, job: dict[str, Any], code: str,
 
     return RunHandle(run_id=run_id, directory=directory, process=_spawn(directory, python),
                      total=int(job.get("steps", 0)))
+
+
+def prune_checkpoints(root: Path, *, keep: int = KEEP_CHECKPOINTS,
+                      protect: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """오래된 run의 ``ckpt.pt``만 지운다. 곡선·설정·코드는 남긴다.
+
+    run 폴더를 통째로 지우면 수십 KB 아끼려고 곡선과 ``test.json``을 같이 버린다.
+    지울 값어치가 있는 것은 ckpt뿐이다.
+
+    지운 run은 **재개·fork·테스트를 못 한다**(셋 다 ``ckpt.pt``만 본다). 그래서 아직
+    살아 있거나 멈춰 있는 run은 ``protect``로 빼 둔다 - 재개하려고 세워 둔 것을
+    새 run 하나 띄웠다고 지우면 안 된다.
+    """
+    dropped = []
+    try:
+        found = [path for path in root.glob("*/ckpt.pt") if path.parent.name not in protect]
+        found.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in found[keep:]:
+            path.unlink()
+            dropped.append(path.parent.name)
+    except OSError:
+        # 청소가 실패해도 학습은 떠야 한다.
+        pass
+    return dropped
 
 
 def _spawn(directory: Path, python: str | None = None) -> subprocess.Popen:
