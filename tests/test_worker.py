@@ -252,3 +252,86 @@ def test_a_crash_in_the_loop_leaves_a_failed_status(tmp_path):
     assert [event["state"] for event in events(run_dir, "status")][-1] == "failed"
     error = events(run_dir, "error")[-1]
     assert error["stage"] == "train" and "RuntimeError" in error["message"]
+
+
+def write_linear_csv(base: Path, rows: int = 240) -> Path:
+    """정답이 특징의 선형 결합인 표 데이터. 회귀가 실제로 배우는지 보려면 배울 것이 있어야 한다."""
+    import random
+
+    rng = random.Random(0)
+    target = base / "homes"
+    target.mkdir(parents=True, exist_ok=True)
+    lines = ["area,rooms,price"]
+    for _ in range(rows):
+        area = rng.uniform(20, 200)
+        rooms = rng.randint(1, 6)
+        lines.append(f"{area:.2f},{rooms},{3.2 * area + 12.0 * rooms + rng.gauss(0, 2):.2f}")
+    (target / "samples.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return base
+
+
+def make_regression_job(tmp_path: Path, **overrides) -> tuple[dict, Path]:
+    from torchflow.ir import ModuleGraph
+
+    write_linear_csv(tmp_path / "data")
+    ir = ModuleGraph.model_validate({"graph": {
+        "name": "Reg",
+        "instances": {"i1": {"label": "fc", "type": "torch.nn.Linear",
+                             "args": {"in_features": 2, "out_features": 1}}},
+        "nodes": [
+            {"id": "n0", "label": "x", "type": "torchflow.Input",
+             "ports_out": [{"name": "x", "type": "Tensor", "shape": ["B", 2], "dtype": "float32"}]},
+            {"id": "n1", "label": "fc", "call": "i1", "method": "forward"},
+            {"id": "n2", "label": "out", "type": "torchflow.Output"}],
+        "edges": [["n0.x", "n1.input"], ["n1.output", "n2.input"]],
+    }})
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "model.py").write_text(codegen.generate(ir, version="0.0.1"), encoding="utf-8")
+    job = {"code": str(run_dir / "model.py"), "class_name": "Reg", "model_args": {"seed": 0},
+           "input_shape": ["B", 2], "task": "regression", "loss": "mse",
+           "dataset": "homes", "data_dir": str(tmp_path / "data"), "eval_every": 50,
+           "recipe": {"task": "regression", "label_column": "price",
+                      "features": ["area", "rooms"], "normalize": "standard",
+                      "target_normalize": "standard", "missing": "drop", "onehot": True,
+                      "val_fraction": 0.2, "seed": 0},
+           "batch": 32, "steps": 300, "lr": 1e-2, "log_every": 50, "seed": 0, "device": "cpu",
+           **overrides}
+    (run_dir / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    return job, run_dir
+
+
+def test_a_regression_job_learns_and_reports_in_original_units(tmp_path):
+    """회귀가 끝까지 돈다. 지표는 표준화 이전 단위여야 사람이 읽을 수 있다."""
+    job, run_dir = make_regression_job(tmp_path)
+    train(job, run_dir)
+
+    scalars = events(run_dir, "scalar")
+    validations = [event for event in scalars if "val_rmse" in event]
+    assert validations, "회귀는 val_rmse를 적어야 한다"
+    # 분류 지표는 나오면 안 된다 - 정확도는 회귀에서 뜻이 없다.
+    assert not any("val_acc" in event for event in scalars)
+    assert all("acc" not in event for event in scalars)
+
+    # 정답 범위가 100단위인데 지표가 1 미만이면 표준화한 값을 그대로 보고한 것이다.
+    assert validations[-1]["val_rmse"] > 1.0
+    # 노이즈 표준편차가 2이므로 배웠다면 그 근처로 내려온다. 안 배웠으면 정답의 표준편차(~170)다.
+    assert validations[-1]["val_rmse"] < 20.0, validations[-1]
+
+
+def test_the_regression_test_split_reports_error_not_a_confusion_matrix(tmp_path):
+    """`5 테스트`가 회귀에서는 혼동 행렬 대신 오차와 가장 크게 틀린 행을 준다."""
+    from torchflow.worker.__main__ import test as run_test
+
+    job, run_dir = make_regression_job(tmp_path)
+    train(job, run_dir)
+    result = run_test(job, run_dir)
+
+    assert result["task"] == "regression"
+    assert "confusion" not in result and "per_class" not in result
+    assert result["rmse"] > 1.0 and result["r2"] > 0.9
+    assert len(result["scatter"]) == result["count"]
+    worst = result["worst"][0]
+    assert abs(worst["truth"] - worst["pred"]) == pytest.approx(abs(worst["error"]), abs=1e-4)
+    # 가장 크게 틀린 것부터 내려와야 한다.
+    assert abs(result["worst"][0]["error"]) >= abs(result["worst"][-1]["error"])

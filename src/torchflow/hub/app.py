@@ -21,7 +21,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__, astimport, codegen, datasets, graphdiff, package, paper, protocol as proto
+from .. import (__version__, astimport, codegen, datasets, graphdiff, package, paper,
+                protocol as proto, tasks)
 from ..ir import ModuleGraph, canonical_json, load, validate as ir_problems
 from ..pysource import candidates, parse_example_spec
 from .auth import DEFAULT_HOSTS, AuthMiddleware, COOKIE_NAME, extract_token, new_token, token_matches
@@ -1337,6 +1338,8 @@ def create_app(
                 status_code=400)
         model_args["seed"] = int(options.get("seed", 0))
 
+        task = options.get("task") or ((spec or {}).get("recipe") or {}).get("task") \
+            or "classification"
         job = {
             "class_name": _class_name(graph.name),
             "model_args": model_args,
@@ -1359,6 +1362,10 @@ def create_app(
             "seed": int(options.get("seed", 0)),
             "device": options.get("device", "auto"),
             "smoke": smoke,
+            # 과제는 데이터가 정한 것을 기본으로 하고 Train 블록이 덮는다 - CSV의 정답 열이
+            # 연속형이면 레시피가 이미 regression이고, 사용자가 화면에서 바꿀 수 있다.
+            "task": task,
+            "loss": tasks.resolve_loss(task, options.get("loss")),
             # 복구가 이 파일만 보고 run의 소속을 알 수 있어야 한다.
             "graph_id": hub.graph_id,
         }

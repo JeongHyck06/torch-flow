@@ -27,7 +27,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .. import datasets
+from .. import datasets, tasks
 from ..datasets import load_any
 
 HEARTBEAT_EVERY = 2.0      # 초. hub가 이 파일의 mtime으로 생존을 본다(§5.5.3).
@@ -99,30 +99,43 @@ def build_data(job: dict[str, Any], device, generator, rng_state=None):
             generator.set_state(rng_state)
         # ponytail: 재개하면 epoch의 첫 배치부터 다시 본다. epoch 안 위치는 ckpt에 없다.
         return (_epochs(torch, splits["train"], batch, device, generator),
-                _evaluator(torch, splits["test"], device))
+                _evaluator(torch, splits["test"], device, job.get("task"),
+                           scale=splits.get("target_scale")))
 
     shape = job["input_shape"]
     classes = int(job.get("num_classes") or 10)
     return _synthetic(torch, shape, classes, batch, device, generator,
-                      learnable=name != "noise", rng_state=rng_state), None
+                      learnable=name != "noise", rng_state=rng_state,
+                      task=job.get("task")), None
 
 
-def _synthetic(torch, shape, classes, batch, device, generator, *, learnable, rng_state):
+def _synthetic(torch, shape, classes, batch, device, generator, *, learnable, rng_state,
+               task: str | None = None):
+    """teacher 사영으로 만든 합성 과제. 회귀면 argmax 대신 사영값 자체가 정답이다.
+
+    회귀에서 클래스 인덱스를 정답으로 주면 MSE가 0.._C_ 사이 정수를 맞히는 이상한
+    문제가 되어 "학습 루프가 도는가"를 확인하는 목적에 맞지 않는다.
+    """
     features = 1
     for dim in shape[1:]:
         features *= int(dim)
+    width = classes if tasks.spec(task)["needs_classes"] else 1
     # teacher는 시드에서만 나온다. 재개할 때도 같은 과제여야 하므로 상태 복원은
     # teacher를 뽑은 **다음**이다 - 순서를 바꾸면 재개한 run이 다른 문제를 푼다.
-    teacher = torch.randn(features, classes, generator=generator) if learnable else None
+    teacher = torch.randn(features, width, generator=generator) if learnable else None
     if rng_state is not None:
         generator.set_state(rng_state)
+    classify = tasks.spec(task)["needs_classes"]
 
     while True:
         inputs = torch.randn([batch, *[int(dim) for dim in shape[1:]]], generator=generator)
         if teacher is None:
-            targets = torch.randint(0, classes, (batch,), generator=generator)
-        else:
+            targets = (torch.randint(0, classes, (batch,), generator=generator) if classify
+                       else torch.randn(batch, generator=generator))
+        elif classify:
             targets = (inputs.flatten(1) @ teacher).argmax(dim=1)
+        else:
+            targets = (inputs.flatten(1) @ teacher).squeeze(1)
         yield inputs.to(device), targets.to(device)
 
 
@@ -136,23 +149,27 @@ def _epochs(torch, split, batch, device, generator):
             yield inputs[index].to(device), targets[index].to(device)
 
 
-def _evaluator(torch, split, device, batch: int = 1000):
-    """test 분할 전체의 loss와 정확도. eval 모드로 돌고 원래 모드로 돌려놓는다."""
+def _evaluator(torch, split, device, task: str, batch: int = 1000, scale=None):
+    """검증 분할 전체의 지표. 무엇을 세는지는 과제 계약이 정한다(`tasks.Accumulator`).
+
+    eval 모드로 돌고 원래 모드로 돌려놓는다 - 학습 중에 불리므로 dropout·BN을
+    켜 둔 채 돌아가면 곡선이 아니라 모델이 달라진다.
+    """
     inputs, targets = split
 
     def evaluate(model, loss_fn) -> dict[str, float]:
         was_training = model.training
         model.eval()
-        total_loss = correct = 0.0
+        meter = tasks.Accumulator(task, scale)
         with torch.no_grad():
             for start in range(0, len(inputs), batch):
                 x = inputs[start:start + batch].to(device)
                 y = targets[start:start + batch].to(device)
                 output = model(x)
-                total_loss += float(loss_fn(output, y)) * len(y)
-                correct += float((output.argmax(dim=1) == y).sum())
+                guess, truth = tasks.align(task, output, y)
+                meter.add(output, y, float(loss_fn(guess, truth)))
         model.train(was_training)
-        return {"val_loss": total_loss / len(inputs), "val_acc": correct / len(inputs)}
+        return meter.result()
 
     return evaluate
 
@@ -276,7 +293,9 @@ def _train(job: dict[str, Any], run_dir: Path) -> None:
         model.to(device).train()
         optimizer = make_optimizer(torch, model, job)
         scheduler = make_scheduler(torch, optimizer, job)
-        loss_fn = nn.CrossEntropyLoss()
+        # 목적 함수는 과제가 정한다 - 예전 job.json에는 task가 없고, 그것들은 전부 분류였다.
+        task = job.get("task")
+        loss_fn = tasks.build_loss(tasks.resolve_loss(task, job.get("loss")))
         generator = torch.Generator().manual_seed(seed)
         # 체크포인트에서 재개(§5.7.2). 가중치·옵티마이저·RNG 세 가지가 다 돌아와야
         # 이어 붙인 곡선이 끊긴 자리에서 계속된다.
@@ -372,7 +391,8 @@ def _train(job: dict[str, Any], run_dir: Path) -> None:
         inputs, targets = next(data)
         optimizer.zero_grad(set_to_none=True)
         output = model(inputs)
-        loss = loss_fn(output, targets)
+        # 회귀에서 [B,1]과 [B]를 그대로 넣으면 MSELoss가 조용히 [B,B]로 브로드캐스트한다.
+        loss = loss_fn(*tasks.align(task, output, targets))
 
         if not torch.isfinite(loss):
             print(f"loss가 유한하지 않다 · step {step} · nan_policy={nan_policy}")
@@ -398,11 +418,15 @@ def _train(job: dict[str, Any], run_dir: Path) -> None:
             value = float(loss.detach())
             lr = float(optimizer.param_groups[0]["lr"])
             base = base_lr_of(scheduler, optimizer)
-            # 분류면 배치 정확도도 적는다 - loss 숫자만으로는 입문자가 "되고 있나"를 못 읽는다.
-            acc = (float((output.argmax(dim=1) == targets).float().mean())
-                   if output.dim() == 2 and targets.dim() == 1 else None)
+            # loss 숫자만으로는 입문자가 "되고 있나"를 못 읽는다. 배치 지표를 하나 얹는다 -
+            # 분류면 정확도, 회귀면 RMSE. 무엇을 세는지는 과제 계약이 정한다.
+            meter = tasks.Accumulator(task)
+            meter.add(output.detach(), targets, value)
+            batch_metrics = {key: number for key, number in meter.result(prefix="").items()
+                             if key != "loss"}
+            acc = batch_metrics.get("acc")
             events.write("scalar", step=step, loss=value, lr=lr, grad_norm=float(grad_norm),
-                         **({"acc": acc} if acc is not None else {}),
+                         **batch_metrics,
                          **({"base_lr": base} if scheduler is not None else {}))
             print(f"step {step:>6} / {total}   loss {value:.4f}"
                   + (f"   acc {acc:.3f}" if acc is not None else "")
@@ -416,7 +440,7 @@ def _train(job: dict[str, Any], run_dir: Path) -> None:
             metrics = evaluate(model, loss_fn)
             events.write("scalar", step=step, **metrics)
             print(f"eval {step:>6}          val_loss {metrics['val_loss']:.4f}"
-                  f"   val_acc {metrics['val_acc']:.4f}")
+                  f"   {tasks.headline(task, metrics)}")
         now = time.monotonic()
         if now - last_beat > HEARTBEAT_EVERY:
             last_beat = now
@@ -477,37 +501,63 @@ def _test(job: dict[str, Any], run_dir: Path) -> dict[str, Any]:
 
     name = job.get("dataset", "teacher")
     classes = int(job.get("num_classes") or 10)
+    task = job.get("task")
     if name in ("teacher", "noise"):
         x, y = _synthetic_holdout(torch, job, name)
-        names, split = [str(index) for index in range(classes)], "합성 홀드아웃"
+        names, split, scale = [str(index) for index in range(classes)], "합성 홀드아웃", None
     else:
-        x, y = load_any(name, Path(job.get("data_dir", "data")), job.get("recipe"))["test"]
+        splits = load_any(name, Path(job.get("data_dir", "data")), job.get("recipe"))
+        x, y = splits["test"]
+        scale = splits.get("target_scale")
         spec = datasets.resolve(datasets.describe(name, job.get("data_dir", "data")), job.get("recipe"))
         names = spec.get("class_names") or [str(index) for index in range(classes)]
         split = "test" if name in datasets.CATALOGUE else "val"
 
-    loss_fn = nn.CrossEntropyLoss(reduction="sum")
-    total_loss, preds, confs = 0.0, [], []
+    loss_fn = tasks.build_loss(tasks.resolve_loss(task, job.get("loss")))
+    meter = tasks.Accumulator(task, scale)
+    outputs = []
     with torch.no_grad():
         for start in range(0, len(x), 500):
-            output = model(x[start:start + 500].to(device))
-            total_loss += float(loss_fn(output, y[start:start + 500].to(device)))
-            conf, pred = output.softmax(dim=1).max(dim=1)
-            preds.append(pred.cpu())
-            confs.append(conf.cpu())
-    pred, conf = torch.cat(preds), torch.cat(confs)
+            output = model(x[start:start + 500].to(device)).cpu()
+            chunk = y[start:start + 500]
+            guess, truth = tasks.align(task, output, chunk)
+            meter.add(output, chunk, float(loss_fn(guess, truth)))
+            outputs.append(output)
+    output = torch.cat(outputs)
+    metrics = meter.result(prefix="")
+    common = {"ok": True, "run_id": run_dir.name, "dataset": name, "split": split, "count": len(y),
+              "task": "classification" if tasks.spec(task)["needs_classes"] else "regression",
+              "step": int(state["step"]), "device": str(device), "wall": time.time(), **metrics}
+
+    if not tasks.spec(task)["needs_classes"]:
+        pred = tasks.predict(task, output)
+        truth = y.squeeze(1) if y.dim() == 2 and y.shape[1] == 1 else y
+        truth = truth.to(pred.dtype)
+        if scale is not None:   # 화면에 나가는 숫자는 원래 단위여야 한다
+            pred = pred * scale["std"] + scale["mean"]
+            truth = truth * scale["std"] + scale["mean"]
+        error = pred - truth
+        print(f"test · {split} {len(y)}개 · {tasks.headline(task, metrics, prefix='')}"
+              f" · loss {metrics['loss']:.4f}")
+        return {**common,
+                # 예측 대 정답 산점도용. 전부 보내면 큰 데이터에서 test.json이 수십 MB가 된다.
+                "scatter": [[round(float(t), 6), round(float(p), 6)]
+                            for t, p in zip(truth[:2000], pred[:2000])],
+                # 가장 크게 틀린 행. 회귀에서 "무엇을 못 맞혔나"는 이것으로 본다.
+                "worst": [{"index": int(i), "truth": round(float(truth[i]), 6),
+                           "pred": round(float(pred[i]), 6), "error": round(float(error[i]), 6)}
+                          for i in error.abs().argsort(descending=True)[:20]]}
+
+    conf, pred = output.softmax(dim=1).max(dim=1)
     correct = pred == y
     confusion = torch.zeros(len(names), len(names), dtype=torch.int64)
     confusion.index_put_((y, pred), torch.ones_like(y), accumulate=True)
-    print(f"test · {split} {len(y)}개 · acc {float(correct.float().mean()):.4f} · loss {total_loss / len(y):.4f}")
-    return {"ok": True, "run_id": run_dir.name, "dataset": name, "split": split, "count": len(y),
-            "loss": total_loss / len(y), "acc": float(correct.float().mean()),
-            "step": int(state["step"]), "device": str(device), "classes": names,
+    print(f"test · {split} {len(y)}개 · acc {metrics['acc']:.4f} · loss {metrics['loss']:.4f}")
+    return {**common, "classes": names,
             "per_class": [{"name": label, "count": int((y == index).sum()), "correct": int(confusion[index, index])}
                           for index, label in enumerate(names)],
             "confusion": confusion.tolist(),
-            "samples": _sample_tiles(torch, x, y, pred, conf, correct) if x.dim() == 4 else [],
-            "wall": time.time()}
+            "samples": _sample_tiles(torch, x, y, pred, conf, correct) if x.dim() == 4 else []}
 
 
 def _synthetic_holdout(torch, job: dict[str, Any], name: str, count: int = 1000):

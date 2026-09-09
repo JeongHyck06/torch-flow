@@ -260,9 +260,15 @@ def _column_profile(header: list[str], rows: list[list[str]]) -> list[dict[str, 
         present = [value for value in values if not _is_missing(value)]
         numeric = all(_as_float(value) is not None for value in present)
         uniques = sorted(set(present), key=lambda v: (float(v) if numeric else 0, v))
-        profile.append({"name": name, "kind": "numeric" if numeric else "text",
-                        "missing": len(values) - len(present),
-                        "uniques": uniques if len(uniques) <= MAX_UNIQUES else None})
+        entry = {"name": name, "kind": "numeric" if numeric else "text",
+                 "missing": len(values) - len(present),
+                 "uniques": uniques if len(uniques) <= MAX_UNIQUES else None}
+        if numeric and present:
+            # 고유값이 많아 uniques가 None인 열도 범위는 알아야 한다 - 회귀 정답이 바로 그런 열이다.
+            numbers = [_as_float(value) for value in present]
+            entry.update(min=min(numbers), max=max(numbers),
+                         mean=sum(numbers) / len(numbers), distinct=len(uniques))
+        profile.append(entry)
     return profile
 
 
@@ -276,6 +282,10 @@ def _as_float(value: str) -> float | None:
 
 def _default_label(header: list[str]) -> str:
     return next((name for name in header if name.lower() in LABEL_COLUMNS), header[-1])
+
+
+# 수치 정답 열의 고유값이 이보다 많으면 회귀로 짐작한다. 등급(1~5)까지는 분류다.
+CLASS_LIMIT = 20
 
 
 def _inspect_csv(folder: Path) -> dict[str, Any] | None:
@@ -293,7 +303,22 @@ def _inspect_csv(folder: Path) -> dict[str, Any] | None:
             counts[row[label_index]] += 1
     return {"kind": "csv", "shape": [len(header) - 1], "classes": len(uniques), "class_names": uniques,
             "class_counts": counts, "count": len(rows), "file": path.name,
-            "label_column": label, "columns": columns}
+            "label_column": label, "columns": columns,
+            "suggested_task": suggest_task(columns, label)}
+
+
+def suggest_task(columns: list[dict[str, Any]], label: str) -> str:
+    """정답 열을 보고 분류인지 회귀인지 짐작한다. 사용자가 화면에서 바꿀 수 있다.
+
+    수치이면서 고유값이 많으면 회귀다 - 집값이나 온도 열은 행마다 값이 다르다.
+    글자 열이나 고유값이 몇 개뿐인 수치 열(0/1, 1~3 등급)은 분류로 본다.
+    """
+    column = next((one for one in columns if one["name"] == label), None)
+    if column is None or column["kind"] != "numeric":
+        return "classification"
+    # distinct는 uniques가 잘려도 남는다 - 고유값이 많은 것이 곧 연속형의 신호다.
+    distinct = column.get("distinct", len(column["uniques"] or []))
+    return "regression" if distinct > CLASS_LIMIT else "classification"
 
 
 def _npy_header(stream) -> tuple[list[int], str]:
@@ -358,7 +383,9 @@ def recipe_defaults(spec: dict[str, Any]) -> dict[str, Any]:
     recipe: dict[str, Any] = {"val_fraction": VAL_FRACTION, "seed": 0, "classes": None, "limit": None}
     if spec["kind"] == "csv":
         recipe.update(label_column=spec["label_column"], features=None, missing="drop",
-                      onehot=True, normalize="standard")
+                      onehot=True, normalize="standard",
+                      task=spec.get("suggested_task", "classification"),
+                      target_normalize="standard")
     elif spec["kind"] == "image_folder":
         recipe.update(size=spec["shape"][1], channels=spec["shape"][0], normalize="standard")
     elif spec["kind"] == "arrays":
@@ -384,18 +411,36 @@ def resolve(spec: dict[str, Any], recipe: dict[str, Any] | None) -> dict[str, An
         label = full["label_column"] if full["label_column"] in columns else spec["label_column"]
         full["label_column"] = label
         uniques = columns[label]["uniques"]
-        if uniques is None:
-            out.update(classes=0, class_names=[], class_counts={}, count=spec["count"],
-                       shape=[0], problem=f"'{label}' 열은 고유값이 {MAX_UNIQUES}개를 넘어 정답 열로 쓸 수 없습니다")
-            return out
-        # 정답 열이 바뀌면 클래스별 개수는 미리보기가 다시 센다 - 여기서는 이름만 안다.
-        names = list(uniques)
-        counts = dict(spec["class_counts"]) if label == spec["label_column"] else None
         features = [name for name in (full["features"] or list(columns)) if name in columns and name != label]
         full["features"] = features
         width = sum(len(columns[name]["uniques"] or []) if columns[name]["kind"] == "text" and full["onehot"]
                     else 1 for name in features)
         out["shape"] = [width]
+
+        if full.get("task") == "regression":
+            # 회귀는 클래스가 없다. 정답 열이 수치이기만 하면 된다 - 고유값이 많은 것이
+            # 오히려 정상이다(예전에는 바로 그 이유로 막았다).
+            if columns[label]["kind"] != "numeric":
+                out["problem"] = f"'{label}' 열은 수치가 아니라 회귀 정답으로 쓸 수 없습니다"
+            total = spec["count"]
+            if full.get("limit"):
+                total = min(total, int(full["limit"]))
+            held = max(1, int(total * float(full["val_fraction"]))) if total > 1 else 0
+            out.update(classes=0, class_names=[], class_counts={}, count=total,
+                       split={"train": total - held, "val": held},
+                       target=_target_stats(spec, label))
+            if not features:
+                out["problem"] = "특징 열이 하나도 없습니다"
+            return out
+
+        if uniques is None:
+            out.update(classes=0, class_names=[], class_counts={}, count=spec["count"],
+                       shape=[0], problem=f"'{label}' 열은 고유값이 {MAX_UNIQUES}개를 넘습니다"
+                                          " - 회귀로 바꾸거나 다른 열을 정답으로 고르세요")
+            return out
+        # 정답 열이 바뀌면 클래스별 개수는 미리보기가 다시 센다 - 여기서는 이름만 안다.
+        names = list(uniques)
+        counts = dict(spec["class_counts"]) if label == spec["label_column"] else None
         if not features:
             out["problem"] = "특징 열이 하나도 없습니다"
     elif spec["kind"] == "image_folder":
@@ -414,6 +459,14 @@ def resolve(spec: dict[str, Any], recipe: dict[str, Any] | None) -> dict[str, An
     if len(names) < 2 and "problem" not in out:
         out["problem"] = "클래스가 둘 이상이어야 분류를 배웁니다"
     return out
+
+
+def _target_stats(spec: dict[str, Any], label: str) -> dict[str, Any] | None:
+    """회귀 정답 열의 범위. 화면이 "무엇을 맞히려는지"를 숫자로 보여 준다."""
+    column = next((one for one in spec["columns"] if one["name"] == label), None)
+    if column is None or "min" not in column:
+        return None
+    return {key: column[key] for key in ("min", "max", "mean", "distinct") if key in column}
 
 
 def preview(spec: dict[str, Any], base: str | Path, recipe: dict[str, Any] | None) -> dict[str, Any]:
@@ -526,9 +579,13 @@ def _thumbnails(samples: dict[str, list], tile: int = 40) -> dict:
 
 
 def load_any(name: str, base: str | Path, recipe: dict[str, Any] | None = None) -> dict[str, tuple]:
-    """내장이든 사용자 데이터든 ``{"train": (x, y), "test": (x, y)}``. 없으면 ValueError."""
+    """내장이든 사용자 데이터든 ``{"train": (x, y), "test": (x, y)}``. 없으면 ValueError.
+
+    회귀는 ``target_scale``이 함께 온다(``{"mean", "std"}`` 또는 ``None``) - 정답을
+    표준화했으므로 지표를 원래 단위로 되돌리려면 이 값이 필요하다.
+    """
     if name in CATALOGUE:
-        return load(name, base)
+        return {**load(name, base), "target_scale": None}
     folder = Path(base) / name
     spec = inspect(folder) if folder.is_dir() else None
     if spec is None:
@@ -540,7 +597,8 @@ def load_any(name: str, base: str | Path, recipe: dict[str, Any] | None = None) 
     x, y = loader(folder, spec, effective)
     x, y = _limit(x, y, effective["recipe"])
     splits = _split(x, y, effective["recipe"])
-    return _normalize(splits, effective)
+    splits, scale = _target_normalize(splits, effective)
+    return {**_normalize(splits, effective), "target_scale": scale}
 
 
 def _limit(x, y, recipe):
@@ -562,6 +620,24 @@ def _split(x, y, recipe) -> dict[str, tuple]:
     held = max(1, int(len(y) * float(recipe["val_fraction"]))) if len(y) > 1 else 0
     test, train = order[:held], order[held:]
     return {"train": (x[train], y[train]), "test": (x[test], y[test])}
+
+
+def _target_normalize(splits: dict[str, tuple], effective: dict[str, Any]):
+    """회귀 정답을 train 분할 통계로 표준화하고 되돌릴 값을 준다.
+
+    집값처럼 정답이 수백 단위면 MSE가 수만에서 시작해 기본 lr로는 사실상 학습되지
+    않는다. 그렇다고 표준화한 채로 RMSE를 보고하면 "0.3"이 얼마나 좋은지 아무도 모른다.
+    그래서 **배우는 것은 표준화한 값, 보고하는 것은 원래 단위**로 나눈다 - 되돌리는 데
+    필요한 (mean, std)를 함께 돌려준다.
+    """
+    recipe = effective["recipe"]
+    if recipe.get("task") != "regression" or recipe.get("target_normalize") != "standard":
+        return splits, None
+    train_y = splits["train"][1]
+    mean = float(train_y.mean())
+    std = max(float(train_y.std()), 1e-6)
+    return ({split: (x, (y - mean) / std) for split, (x, y) in splits.items()},
+            {"mean": mean, "std": std})
 
 
 def _normalize(splits: dict[str, tuple], effective: dict[str, Any]) -> dict[str, tuple]:
@@ -630,14 +706,23 @@ def _load_csv(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):
         number = _as_float(value)
         return [math.nan if number is None else number]
 
+    regression = recipe.get("task") == "regression"
     x_rows, labels = [], []
     for row in rows:
-        if row[label] not in index:
-            continue
+        if regression:
+            # 회귀는 정답이 수치 그대로다. 읽을 수 없는 칸은 그 행을 버린다 -
+            # 정답을 평균으로 채우면 모델이 채워 넣은 값을 배운다.
+            number = _as_float(row[label])
+            if number is None:
+                continue
+            labels.append(number)
+        else:
+            if row[label] not in index:
+                continue
+            labels.append(index[row[label]])
         x_rows.append([value for name in features for value in encode(name, row[header.index(name)])])
-        labels.append(index[row[label]])
     x = torch.tensor(x_rows, dtype=torch.float32)
-    y = torch.tensor(labels, dtype=torch.int64)
+    y = torch.tensor(labels, dtype=torch.float32 if regression else torch.int64)
     nan = torch.isnan(x)
     if nan.any():
         if recipe["missing"] == "mean":
