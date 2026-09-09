@@ -49,6 +49,7 @@ const commonRank = (block: Block) => {
 export function Palette() {
     const at = useStore((state) => state.paletteAt);
     const from = useStore((state) => state.paletteFrom);
+    const preset = useStore((state) => state.paletteQuery);
     const close = useStore((state) => state.closePalette);
     const graph = useStore((state) => state.graph);
     const scopes = useStore((state) => state.scopes);
@@ -74,11 +75,12 @@ export function Palette() {
     }, [at]);
     useEffect(() => {
         if (at) {
-            setQuery('');
+            // 왼쪽 독에서 카테고리를 눌러 열면 그 이름이 이미 들어가 있다.
+            setQuery(preset);
             setCursor(0);
             setError(null);
         }
-    }, [at]);
+    }, [at, preset]);
     useEffect(() => {
         input.current?.focus();
     }, [at]);

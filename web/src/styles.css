@@ -831,10 +831,56 @@ body {
 /* 곡선은 왼쪽부터 그려진다. 값이 갱신될 때는 다시 그리지 않는다(요소가 유지된다). */
 .curves__plot polyline { stroke-dasharray: 4000; stroke-dashoffset: 4000; animation: tf-draw 700ms var(--ease) forwards; }
 
+/* ── 블록 독 (Figma 06 Empty canvas의 Left dock 53:247) ──────────── */
+
+.dock {
+  width: 248px; flex-shrink: 0; overflow-y: auto; padding: 10px 0 14px;
+  background: var(--surface-panel);
+  border-right: 1px solid var(--border-subtle);
+}
+.dock__search {
+  display: flex; align-items: center; gap: 8px;
+  width: calc(100% - 20px); margin: 0 10px; padding: 6px 9px;
+  background: var(--surface-dock); border: 0; border-radius: 7px;
+  font: inherit; text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.dock__search:hover { background: var(--surface-active); }
+.dock__searchtext { flex: 1; font-size: 13px; color: var(--text-muted); }
+.dock__key {
+  padding: 1px 5px; border-radius: var(--radius-badge);
+  background: var(--surface-panel); border: 1px solid var(--border-subtle);
+  font-size: 10px; color: var(--text-muted);
+}
+.dock__title {
+  font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-muted); margin: 0; padding: 18px 14px 6px;
+}
+.dock__list { display: flex; flex-direction: column; }
+.dock__row {
+  display: flex; align-items: center; gap: 9px;
+  height: 28px; padding: 0 14px; border: 0; background: none;
+  font: inherit; text-align: left; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.dock__row:hover { background: var(--surface-dock); }
+.dock__bar { width: 2px; height: 11px; border-radius: 1px; flex-shrink: 0; }
+.dock__name {
+  flex: 1; min-width: 0; font-size: 13px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dock__count { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+.dock__mine {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dock__empty { font-size: 12px; margin: 0; padding: 2px 14px; }
+
 /* ── 모듈 트리 (Figma 02 Attach mode 왼쪽) ────────────────────────── */
 
 .layers {
-  width: 216px; flex-shrink: 0; overflow-y: auto; padding: 14px 0 14px 14px;
+  /* 블록 독과 같은 폭. 탭을 바꿀 때 캔버스가 좌우로 튀지 않아야 한다. */
+  width: 248px; flex-shrink: 0; overflow-y: auto; padding: 14px 0 14px 14px;
   background: var(--surface-panel);
   border-right: 1px solid var(--border-subtle);
 }

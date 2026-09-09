@@ -139,6 +139,8 @@ export function TopBar() {
       <nav className="tabs" aria-label="화면">
         <button className={`tabs__item${tab === "model" ? " tabs__item--on" : ""}`}
                 onClick={() => setTab("model")}>Model</button>
+        <button className={`tabs__item${tab === "layers" ? " tabs__item--on" : ""}`}
+                onClick={() => setTab("layers")}>Layers</button>
         <button className={`tabs__item${tab === "code" ? " tabs__item--on" : ""}`}
                 onClick={() => setTab("code")}>Code</button>
         <button className="tabs__item" disabled title="실험 비교 화면은 준비 중입니다">Experiment</button>

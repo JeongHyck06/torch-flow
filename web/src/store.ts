@@ -40,7 +40,7 @@ interface State {
   runPanel: boolean;
   runTab: RunTab;
   /** 상단 탭. Experiment와 Runs는 M7 전까지 비어 있다. */
-  tab: "model" | "code";
+  tab: "model" | "layers" | "code";
   /** 역 op 스택. 스택에 든 op를 그대로 보내면 되돌아간다(§8.2.3). */
   undoStack: Op[];
   redoStack: Op[];
@@ -49,6 +49,11 @@ interface State {
   paletteAt: { x: number; y: number } | null;
   /** 엣지 끝을 빈 곳에 떨어뜨려 열었으면 그 출발 엔드포인트. 고른 블록이 여기에 바로 이어진다. */
   paletteFrom: string | null;
+  /** 열면서 미리 넣어 둘 검색어. 왼쪽 독에서 카테고리를 고르면 그 이름으로 걸러 연다. */
+  paletteQuery: string;
+  /** 왼쪽 독이 남기는 "팔레트를 열어 달라"는 요청. 캔버스 좌표는 Canvas만 계산할 수
+   *  있으므로(screenToFlowPosition) 여는 것은 Canvas가 하고 독은 검색어만 남긴다. */
+  paletteWanted: string | null;
   /** 이 그래프가 배우는 데이터와 정제 설정. 그래프의 experiment.data가 정본이다. */
   dataset: string;
   recipe: Recipe | null;
@@ -101,7 +106,8 @@ interface State {
   pushRedo: (inverse: Op) => void;
   takeRedo: () => Op | undefined;
   setDirty: (dirty: boolean) => void;
-  openPalette: (at: { x: number; y: number }, from?: string | null) => void;
+  openPalette: (at: { x: number; y: number }, from?: string | null, query?: string) => void;
+  requestPalette: (query: string) => void;
   setData: (dataset: string, recipe: Recipe | null) => void;
   openData: () => void;
   closeData: () => void;
@@ -143,6 +149,8 @@ export const useStore = create<State>((set, get) => ({
   dirty: false,
   paletteAt: null,
   paletteFrom: null,
+  paletteQuery: "",
+  paletteWanted: null,
   dataset: "teacher",
   recipe: null,
   dataOpen: false,
@@ -175,7 +183,7 @@ export const useStore = create<State>((set, get) => ({
     // 거기서 비우면 매 편집마다 배지가 사라진다. 그래서 둘을 나눈다.
     set({ graph, seq, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: graph.graph.name || "Net", callPath: "" }],
-          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false, runs: [],
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null, paletteQuery: "", dataOpen: false, runs: [],
           startError: null, startFix: null,
           totals: { params: 0, band: null, batch: 64 },
           ...dataOf(graph) }),
@@ -190,7 +198,7 @@ export const useStore = create<State>((set, get) => ({
   closeGraph: () =>
     set({ graph: null, seq: 0, nodeStates: {}, selected: null, focused: null,
           scopes: [{ name: "$graph", label: "Net", callPath: "" }],
-          undoStack: [], redoStack: [], dirty: false, paletteAt: null, dataOpen: false, runs: [],
+          undoStack: [], redoStack: [], dirty: false, paletteAt: null, paletteQuery: "", dataOpen: false, runs: [],
           startError: null, startFix: null,
           totals: { params: 0, band: null, batch: 64 } }),
   applyNodeState: (state) =>
@@ -248,14 +256,16 @@ export const useStore = create<State>((set, get) => ({
     return stack[stack.length - 1];
   },
   setDirty: (dirty) => set({ dirty }),
-  openPalette: (paletteAt, paletteFrom = null) => set({ paletteAt, paletteFrom }),
+  openPalette: (paletteAt, paletteFrom = null, paletteQuery = "") =>
+    set({ paletteAt, paletteFrom, paletteQuery, paletteWanted: null }),
+  requestPalette: (paletteWanted) => set({ paletteWanted }),
   setData: (dataset, recipe) => set({ dataset, recipe }),
   openData: () => set({ dataOpen: true, paletteAt: null }),
   closeData: () => set({ dataOpen: false }),
   setRuns: (runs) => set({ runs }),
   setStartResult: (startError, startFix, startErrorRun = null) =>
     set({ startError, startFix, startErrorRun }),
-  closePalette: () => set({ paletteAt: null, paletteFrom: null }),
+  closePalette: () => set({ paletteAt: null, paletteFrom: null, paletteQuery: "" }),
   enterScope: (scope) =>
     set((prev) =>
       prev.scopes.some((existing) => existing.callPath === scope.callPath)

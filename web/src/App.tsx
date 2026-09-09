@@ -5,6 +5,7 @@ import { Canvas } from "./components/Canvas";
 import { CodeView } from "./components/CodeView";
 import { DataDialog } from "./components/DataDialog";
 import { Inspector } from "./components/Inspector";
+import { BlockDock } from "./components/BlockDock";
 import { LayerStrip } from "./components/LayerStrip";
 import { RunPanel } from "./components/RunPanel";
 import { StartScreen } from "./components/StartScreen";
@@ -75,7 +76,7 @@ export function App() {
       <main className="body">
         {tab === "code" ? <CodeView /> : (
           <>
-            <LayerStrip />
+            {tab === "layers" ? <LayerStrip /> : <BlockDock />}
             <div className="canvas">
               <ReactFlowProvider>
                 <Canvas />

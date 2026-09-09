@@ -51,6 +51,14 @@
   --category-attention: #366db5;
   --category-data: #515f70;
   --category-code-cell: #7c8898;
+  --category-conv: #1e3e66;
+  --category-activation: #2a558d;
+  --category-loss: #5287cb;
+  --category-optimizer: #5287cb;
+  --category-train-control: #5287cb;
+  --category-structure: #366db5;
+  /* Figma에 아직 스와치가 없는 카테고리(풀링/리샘플링, 순환/SSM)가 떨어지는 자리. */
+  --category-other: #515f70;
 
   /* dtype — 엣지 색 */
   --dtype-f32: #2061b6;

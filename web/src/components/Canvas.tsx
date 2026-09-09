@@ -237,6 +237,13 @@ export function Canvas() {
   }, [order, focused, selected, scopes, focus, select, enter, popToScope, fitReadable,
       openPalette, screenToFlowPosition, remove, edges, disconnect]);
 
+  // 왼쪽 독이 남긴 열기 요청. 독은 캔버스 밖이라 좌표를 모른다 - Tab과 같은 자리에 연다.
+  const wanted = useStore((state) => state.paletteWanted);
+  useEffect(() => {
+    if (wanted === null) return;
+    openPalette(screenToFlowPosition({ x: window.innerWidth / 2, y: 240 }), null, wanted);
+  }, [wanted, openPalette, screenToFlowPosition]);
+
   useEffect(() => {
     if (!focused || !followFocus.current) return;
     followFocus.current = false;
