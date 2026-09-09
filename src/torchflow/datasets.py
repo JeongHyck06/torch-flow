@@ -410,7 +410,8 @@ def recipe_defaults(spec: dict[str, Any]) -> dict[str, Any]:
                       task=spec.get("suggested_task", "classification"),
                       target_normalize="standard",
                       text_column=spec.get("suggested_text_column"),
-                      max_len=64, vocab_size=8000)
+                      max_len=64, vocab_size=8000,
+                      series_column=None, window=24, horizon=1, split_mode="random")
     elif spec["kind"] == "image_folder":
         recipe.update(size=spec["shape"][1], channels=spec["shape"][0], normalize="standard")
     elif spec["kind"] == "arrays":
@@ -436,6 +437,24 @@ def resolve(spec: dict[str, Any], recipe: dict[str, Any] | None) -> dict[str, An
         label = full["label_column"] if full["label_column"] in columns else spec["label_column"]
         full["label_column"] = label
         uniques = columns[label]["uniques"]
+        series_column = full.get("series_column")
+        if series_column and series_column in columns:
+            # 시계열은 과제가 회귀로 못박힌다. 창을 겹쳐 만들기 때문에 분할도 시간 순이다.
+            window, horizon = int(full.get("window") or 24), int(full.get("horizon") or 1)
+            full.update(task="regression", split_mode="time", features=[], text_column=None)
+            out["shape"] = [window]
+            usable = max(0, spec["count"] - window - horizon + 1)
+            if columns[series_column]["kind"] != "numeric":
+                out["problem"] = f"'{series_column}' 열은 수치가 아니라 시계열로 쓸 수 없습니다"
+            elif not usable:
+                out["problem"] = (f"창 {window} + 예측 {horizon}을 만들려면 값이 최소 "
+                                  f"{window + horizon}개 필요합니다 (지금 {spec['count']}개)")
+            held = max(1, int(usable * float(full["val_fraction"]))) if usable > 1 else 0
+            out.update(classes=0, class_names=[], class_counts={}, count=usable,
+                       split={"train": usable - held, "val": held},
+                       target=_target_stats(spec, series_column), horizon=horizon)
+            return out
+
         text_column = full.get("text_column")
         if text_column not in columns or text_column == label:
             text_column = full["text_column"] = None
@@ -632,7 +651,9 @@ def load_any(name: str, base: str | Path, recipe: dict[str, Any] | None = None) 
     if effective.get("problem"):
         raise ValueError(effective["problem"])
     loader = {"image_folder": _load_images, "csv": _load_csv, "arrays": _load_arrays}[spec["kind"]]
-    if spec["kind"] == "csv" and effective["recipe"].get("text_column"):
+    if spec["kind"] == "csv" and effective["recipe"].get("series_column"):
+        loader = _load_series
+    elif spec["kind"] == "csv" and effective["recipe"].get("text_column"):
         loader = _load_text
     x, y = loader(folder, spec, effective)
     x, y = _limit(x, y, effective["recipe"])
@@ -657,11 +678,18 @@ def split_indices(count: int, recipe: dict[str, Any]):
 
     텍스트 어휘를 train 분할에서만 만들려면 **적재 도중에** 어느 행이 train인지 알아야
     한다. 그때와 `_split`이 각자 섞으면 어휘가 검증 문장을 보게 된다 - 누수다.
+
+    ``split_mode``가 ``"time"``이면 섞지 않고 **뒤쪽**을 검증으로 뗀다. 시계열을
+    무작위로 나누면 검증 구간의 앞뒤 값이 학습에 들어가 미래를 보고 미래를 맞히는
+    셈이 된다 - 점수는 좋아지고 실제로는 아무 쓸모가 없다.
     """
     import torch
 
-    order = torch.randperm(count, generator=torch.Generator().manual_seed(int(recipe["seed"])))
     held = max(1, int(count * float(recipe["val_fraction"]))) if count > 1 else 0
+    if recipe.get("split_mode") == "time":
+        order = torch.arange(count)
+        return order[:count - held], order[count - held:]
+    order = torch.randperm(count, generator=torch.Generator().manual_seed(int(recipe["seed"])))
     return order[held:], order[:held]
 
 
@@ -853,6 +881,37 @@ def _load_text(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):
     x = torch.tensor([encode_text(text, vocab, max_len) for text in kept], dtype=torch.int64)
     y = torch.tensor(targets, dtype=torch.float32 if regression else torch.int64)
     return x, y
+
+
+def _load_series(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):
+    """한 열의 시간 순 값을 ``(과거 window, 다음 horizon)`` 쌍으로 자른다.
+
+    창은 한 칸씩 밀며 만든다. 창 i의 입력은 ``값[i : i+window]``이고 정답은
+    ``값[i+window : i+window+horizon]``이다. 창끼리 겹치므로 무작위로 나누면 검증 창의
+    값이 학습 창에도 들어간다 - 그래서 이 경로는 ``split_mode``를 ``"time"``으로 못박는다.
+    """
+    import torch
+
+    _, header, rows = _csv_table(folder)
+    recipe = effective["recipe"]
+    column = header.index(recipe["series_column"])
+    window = int(recipe.get("window") or 24)
+    horizon = int(recipe.get("horizon") or 1)
+
+    values = []
+    for row in rows:
+        number = _as_float(row[column])
+        if number is not None:
+            values.append(number)
+    if len(values) < window + horizon + 1:
+        raise ValueError(f"창 {window} + 예측 {horizon}을 만들려면 값이 최소 "
+                         f"{window + horizon + 1}개 필요합니다 (지금 {len(values)}개)")
+
+    series = torch.tensor(values, dtype=torch.float32)
+    count = len(series) - window - horizon + 1
+    x = torch.stack([series[i:i + window] for i in range(count)])
+    y = torch.stack([series[i + window:i + window + horizon] for i in range(count)])
+    return x, y.squeeze(1) if horizon == 1 else y
 
 
 def _load_arrays(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):

@@ -267,3 +267,52 @@ def test_the_vocabulary_never_sees_the_validation_split(tmp_path):
     splits = datasets.load_any("reviews", tmp_path, recipe)
     assert splits["train"][0].dtype == torch.int64
     assert splits["train"][0].shape[1] == 64
+
+
+def write_series(base, rows: int = 400):
+    """주기가 있는 값. 창을 자르면 배울 것이 있어야 한다."""
+    import math
+
+    target = base / "temps"
+    target.mkdir(parents=True, exist_ok=True)
+    lines = ["hour,temperature"]
+    for t in range(rows):
+        lines.append(f"{t},{20 + 8 * math.sin(2 * math.pi * t / 24):.3f}")
+    (target / "samples.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
+def test_a_series_column_becomes_overlapping_windows(tmp_path):
+    """시계열은 한 열을 (과거 window, 다음 horizon) 쌍으로 자른다."""
+    write_series(tmp_path)
+    spec = datasets.inspect(tmp_path / "temps")
+    effective = datasets.resolve(spec, {"series_column": "temperature", "window": 10, "horizon": 1})
+
+    assert effective["shape"] == [10]
+    assert effective["recipe"]["task"] == "regression"
+    assert effective["count"] == 400 - 10 - 1 + 1
+    assert effective.get("problem") is None
+
+    splits = datasets.load_any("temps", tmp_path, effective["recipe"])
+    x, y = splits["train"]
+    assert x.shape[1] == 10 and y.dim() == 1
+
+
+def test_a_series_split_is_time_ordered_not_shuffled(tmp_path):
+    """겹치는 창을 무작위로 나누면 검증 창의 값이 학습 창에 들어간다 - 미래를 보고 미래를 맞힌다."""
+    train, test = datasets.split_indices(100, {"seed": 0, "val_fraction": 0.2,
+                                               "split_mode": "time"})
+    assert int(train[-1]) < int(test[0]), "검증은 학습보다 뒤여야 한다"
+    assert list(range(len(train))) == [int(i) for i in train], "시간 순은 섞지 않는다"
+
+    # 기본(무작위)은 그대로여야 한다 - 표 데이터는 섞는 것이 맞다.
+    shuffled, _ = datasets.split_indices(100, {"seed": 0, "val_fraction": 0.2})
+    assert [int(i) for i in shuffled] != sorted(int(i) for i in shuffled)
+
+
+def test_a_series_too_short_for_the_window_says_so(tmp_path):
+    """창보다 값이 적으면 무엇이 모자란지 숫자로 말한다."""
+    write_series(tmp_path, rows=8)
+    spec = datasets.inspect(tmp_path / "temps")
+    effective = datasets.resolve(spec, {"series_column": "temperature", "window": 24, "horizon": 1})
+    assert "24" in effective["problem"] and "8" in effective["problem"]

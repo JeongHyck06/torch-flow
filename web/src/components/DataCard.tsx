@@ -38,6 +38,9 @@ export function DataCard({ name, recipe, onRecipe }: {
   const task = String(full.task ?? "classification");
   const target = spec.target;
   const summary = `Input [B, ${spec.shape.join(", ")}] · `
+    + (full.series_column
+        ? `과거 ${full.window}칸으로 다음 ${full.horizon}칸 · 시간 순 분할 · `
+        : "")
     + (task === "regression"
         ? (target ? `회귀 · ${target.min} ~ ${target.max}` : "회귀")
         : `${spec.classes} 클래스`)
@@ -53,6 +56,9 @@ export function DataCard({ name, recipe, onRecipe }: {
   const textColumns = columns
     .filter((column) => column.name !== label && column.kind === "text" && (column.words ?? 0) >= 3)
     .map((column) => column.name);
+  const numericColumns = columns
+    .filter((column) => column.kind === "numeric")
+    .map((column) => column.name);
   const counts = spec.class_counts ?? {};
   const peak = Math.max(1, ...Object.values(counts));
 
@@ -64,7 +70,7 @@ export function DataCard({ name, recipe, onRecipe }: {
           <p className="mono muted">내장 데이터는 정제 설정이 없습니다 · 검증은 test 분할</p>
         ) : (
         <dl className="rows">
-          {base.kind === "csv" && (
+          {base.kind === "csv" && !full.series_column && (
             <div><dt>정답 열</dt><dd>
               <select className="trainer__select mono" value={label}
                       onChange={(event) => set("label_column", event.target.value)}>
@@ -72,7 +78,7 @@ export function DataCard({ name, recipe, onRecipe }: {
               </select>
             </dd></div>
           )}
-          {base.kind === "csv" && (
+          {base.kind === "csv" && !full.series_column && (
             <div><dt>과제</dt><dd>
               {/* 정답 열에서 짐작한 값이 들어와 있다. 바꾸면 loss와 지표가 함께 바뀐다. */}
               <select className="trainer__select mono" value={task}
@@ -82,7 +88,31 @@ export function DataCard({ name, recipe, onRecipe }: {
               </select>
             </dd></div>
           )}
-          {base.kind === "csv" && textColumns.length > 0 && (
+          {base.kind === "csv" && numericColumns.length > 0 && (
+            <div><dt>시계열</dt><dd>
+              {/* 한 열의 시간 순 값을 창으로 자른다. 고르면 과제는 회귀로, 분할은 시간 순으로 못박힌다. */}
+              <select className="trainer__select mono" value={String(full.series_column ?? "")}
+                      onChange={(event) => set("series_column", event.target.value || null)}>
+                <option value="">아님 (행마다 독립)</option>
+                {numericColumns.map((column) => (
+                  <option key={column} value={column}>{column}로 다음 값 예측</option>
+                ))}
+              </select>
+            </dd></div>
+          )}
+          {base.kind === "csv" && full.series_column ? (
+            <>
+              <div><dt>과거 구간</dt><dd>
+                <input className="mono field" type="number" min={2} value={Number(full.window ?? 24)}
+                       onChange={(event) => set("window", Number(event.target.value))} />
+              </dd></div>
+              <div><dt>예측 구간</dt><dd>
+                <input className="mono field" type="number" min={1} value={Number(full.horizon ?? 1)}
+                       onChange={(event) => set("horizon", Number(event.target.value))} />
+              </dd></div>
+            </>
+          ) : null}
+          {base.kind === "csv" && !full.series_column && textColumns.length > 0 && (
             <div><dt>입력</dt><dd>
               <select className="trainer__select mono" value={String(full.text_column ?? "")}
                       onChange={(event) => set("text_column", event.target.value || null)}>
@@ -175,7 +205,7 @@ export function DataCard({ name, recipe, onRecipe }: {
         </dl>
         )}
 
-        {base.kind === "csv" && !full.text_column && (
+        {base.kind === "csv" && !full.text_column && !full.series_column && (
           <>
             <h3>특징 열</h3>
             <div className="datacard__checks mono">
