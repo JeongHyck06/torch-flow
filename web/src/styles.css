@@ -926,3 +926,12 @@ body {
 }
 .training-failure details { margin: 12px 0; }
 .training-failure summary { cursor: pointer; }
+
+/* 회귀 테스트: 예측 대 정답 산점도. 대각선이 "정확히 맞힘"이다. */
+.testpanel__scatter {
+  width: 100%; height: 220px; margin-bottom: 12px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-panel);
+  background: var(--surface-panel);
+}
+.testpanel__scatter circle { fill: var(--dtype-f32); fill-opacity: 0.55; }
+.testpanel__diagonal { stroke: var(--border-default); stroke-width: 0.4; stroke-dasharray: 2 2; }

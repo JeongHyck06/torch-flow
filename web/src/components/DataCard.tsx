@@ -35,7 +35,12 @@ export function DataCard({ name, recipe, onRecipe }: {
     set(key, checked ? all.filter((one) => one === item || current.includes(one))
       : current.filter((one) => one !== item));
   };
-  const summary = `Input [B, ${spec.shape.join(", ")}] · ${spec.classes} 클래스`
+  const task = String(full.task ?? "classification");
+  const target = spec.target;
+  const summary = `Input [B, ${spec.shape.join(", ")}] · `
+    + (task === "regression"
+        ? (target ? `회귀 · ${target.min} ~ ${target.max}` : "회귀")
+        : `${spec.classes} 클래스`)
     + (spec.split ? ` · train ${spec.split.train.toLocaleString()} / val ${spec.split.val.toLocaleString()}` : "");
 
   // 내장 데이터는 레시피가 없다 - 왼쪽은 한 줄, 오른쪽 미리보기는 같다.
@@ -44,6 +49,10 @@ export function DataCard({ name, recipe, onRecipe }: {
   const columns = base.columns ?? [];
   const label = String(full.label_column ?? "");
   const featureNames = columns.map((column) => column.name).filter((column) => column !== label);
+  // 낱말이 여럿 든 글자 열만 문장 후보다. "yes"/"no"는 범주라 여기 오지 않는다.
+  const textColumns = columns
+    .filter((column) => column.name !== label && column.kind === "text" && (column.words ?? 0) >= 3)
+    .map((column) => column.name);
   const counts = spec.class_counts ?? {};
   const peak = Math.max(1, ...Object.values(counts));
 
@@ -60,6 +69,27 @@ export function DataCard({ name, recipe, onRecipe }: {
               <select className="trainer__select mono" value={label}
                       onChange={(event) => set("label_column", event.target.value)}>
                 {columns.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
+              </select>
+            </dd></div>
+          )}
+          {base.kind === "csv" && (
+            <div><dt>과제</dt><dd>
+              {/* 정답 열에서 짐작한 값이 들어와 있다. 바꾸면 loss와 지표가 함께 바뀐다. */}
+              <select className="trainer__select mono" value={task}
+                      onChange={(event) => set("task", event.target.value)}>
+                <option value="classification">분류</option>
+                <option value="regression">회귀</option>
+              </select>
+            </dd></div>
+          )}
+          {base.kind === "csv" && textColumns.length > 0 && (
+            <div><dt>입력</dt><dd>
+              <select className="trainer__select mono" value={String(full.text_column ?? "")}
+                      onChange={(event) => set("text_column", event.target.value || null)}>
+                <option value="">표 특징 열</option>
+                {textColumns.map((column) => (
+                  <option key={column} value={column}>{column} (문장)</option>
+                ))}
               </select>
             </dd></div>
           )}
@@ -145,7 +175,7 @@ export function DataCard({ name, recipe, onRecipe }: {
         </dl>
         )}
 
-        {base.kind === "csv" && (
+        {base.kind === "csv" && !full.text_column && (
           <>
             <h3>특징 열</h3>
             <div className="datacard__checks mono">
@@ -161,7 +191,22 @@ export function DataCard({ name, recipe, onRecipe }: {
           </>
         )}
 
-        {classNames.length > 0 && (
+        {task === "regression" && target && (
+          <>
+            <h3>정답 범위</h3>
+            <dl className="rows mono">
+              <div><dt>최소</dt><dd>{target.min}</dd></div>
+              <div><dt>최대</dt><dd>{target.max}</dd></div>
+              <div><dt>평균</dt><dd>{Number(target.mean).toFixed(4)}</dd></div>
+              <div><dt>서로 다른 값</dt><dd>{target.distinct}</dd></div>
+            </dl>
+            <p className="muted">
+              학습할 때는 train 분할 통계로 표준화하고, 화면의 오차는 원래 단위로 되돌려 보여 줍니다.
+            </p>
+          </>
+        )}
+
+        {task !== "regression" && classNames.length > 0 && (
           <>
             <h3>클래스</h3>
             <div className="datacard__checks mono">

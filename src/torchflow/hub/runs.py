@@ -267,9 +267,17 @@ def test(handle: RunHandle, *, python: str | None = None, timeout: float = 600.0
 
 
 def remember_test(handle: RunHandle, result: dict[str, Any] | None) -> None:
-    """정확도 하나는 run 상태에 싣는다 - 단계 표시줄이 패널을 열지 않고도 본다."""
-    if result and result.get("ok"):
-        handle.extra["test_acc"] = result["acc"]
+    """대표 숫자 하나를 run 상태에 싣는다 - 단계 표시줄이 패널을 열지 않고도 본다.
+
+    분류는 정확도, 회귀는 RMSE다. 예전에는 ``result["acc"]``를 바로 읽어 회귀 결과에서
+    KeyError로 500이 났다.
+    """
+    if not (result and result.get("ok")):
+        return
+    if result.get("task") == "regression":
+        handle.extra["test_rmse"] = result.get("rmse")
+    else:
+        handle.extra["test_acc"] = result.get("acc")
 
 
 def last_test(handle: RunHandle) -> dict[str, Any] | None:

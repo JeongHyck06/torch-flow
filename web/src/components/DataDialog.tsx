@@ -235,7 +235,10 @@ export function DataDialog() {
                         {` · [${one.shape.join(", ")}]`}
                       </span>
                     </span>
-                    <span className="templates__metric mono">{one.classes} 클래스</span>
+                    <span className="templates__metric mono">
+                      {/* 회귀 CSV는 클래스가 없다. "0 클래스"는 고장처럼 읽힌다. */}
+                      {one.suggested_task === "regression" ? "회귀" : `${one.classes} 클래스`}
+                    </span>
                   </button>
                 </li>
               ))}

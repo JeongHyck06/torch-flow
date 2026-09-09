@@ -1,7 +1,7 @@
 // "지금 어느 단계인가"를 한 곳에서 센다. 단계 표시줄(Stages)과 Train 노드 배지가 같이 쓴다.
 
 import type { TrainRun } from "./api";
-import { SYNTHETIC } from "./store";
+import { SYNTHETIC, useStore } from "./store";
 import { formatCount } from "./theme";
 import type { ModuleGraph, Node, NodeState } from "./types.gen";
 
@@ -158,21 +158,34 @@ export function computeStages(input: {
                        + "아래 패널의 'CPU로 다시 실행'을 누르면 같은 설정으로 CPU에서 이어서 해 봅니다."
                      : "학습에 실패했습니다. 아래 패널에 무엇이 잘못됐는지와 오류 원문이 있습니다." };
   }
+  // 회귀는 "정확도"가 없다. 무엇을 재는지를 과제에 맞춰 말한다.
+  const regression = run?.test_rmse !== undefined
+    || (useStore.getState().recipe?.task as string | undefined) === "regression";
+  const measure = regression ? "오차" : "정확도";
   let testStage: Stage;
   if (!run || !FINISHED.has(run.state)) {
     testStage = { key: "test", name: "테스트", state: "pending", detail: "학습이 끝나면",
-                  hint: "학습이 끝나면 보지 않은 데이터로 정확도를 잽니다",
-                  guide: "학습이 끝나면 학습에 쓰지 않은 데이터로 정확도를 잽니다." };
-  } else if (run.test_acc === undefined) {
-    testStage = { key: "test", name: "테스트", state: "active", detail: "눌러서 정확도 재기",
+                  hint: `학습이 끝나면 보지 않은 데이터로 ${measure}를 잽니다`,
+                  guide: `학습이 끝나면 학습에 쓰지 않은 데이터로 ${measure}를 잽니다.` };
+  } else if (run.test_acc === undefined && run.test_rmse === undefined) {
+    testStage = { key: "test", name: "테스트", state: "active", detail: `눌러서 ${measure} 재기`,
                   hint: "체크포인트를 학습이 보지 않은 분할에 돌립니다",
-                  guide: "5 테스트를 누르면 체크포인트를 보지 않은 데이터에 돌려 정확도, 클래스별 정확도, "
-                    + "틀린 샘플을 보여 줍니다." };
+                  guide: regression
+                    ? "5 테스트를 누르면 체크포인트를 보지 않은 데이터에 돌려 RMSE와 MAE, "
+                      + "예측 대 정답 산점도, 가장 크게 틀린 행을 보여 줍니다."
+                    : "5 테스트를 누르면 체크포인트를 보지 않은 데이터에 돌려 정확도, 클래스별 정확도, "
+                      + "틀린 샘플을 보여 줍니다." };
+  } else if (run.test_rmse !== undefined) {
+    testStage = { key: "test", name: "테스트", state: "done",
+                  detail: `RMSE ${run.test_rmse.toFixed(4)}`,
+                  hint: "Run 패널의 테스트 탭에서 크게 틀린 행을 봅니다",
+                  guide: `RMSE ${run.test_rmse.toFixed(4)}입니다(정답과 같은 단위). 아래 테스트 탭에서 `
+                    + "산점도와 가장 크게 틀린 행을 보고, Code 탭에서 PyTorch 코드를 꺼내세요." };
   } else {
     testStage = { key: "test", name: "테스트", state: "done",
-                  detail: `정확도 ${(run.test_acc * 100).toFixed(1)} %`,
+                  detail: `정확도 ${(run.test_acc! * 100).toFixed(1)} %`,
                   hint: "Run 패널의 테스트 탭에서 틀린 샘플을 봅니다",
-                  guide: `정확도 ${(run.test_acc * 100).toFixed(1)} %입니다. 아래 테스트 탭에서 틀린 샘플을 보고, `
+                  guide: `정확도 ${(run.test_acc! * 100).toFixed(1)} %입니다. 아래 테스트 탭에서 틀린 샘플을 보고, `
                     + "Code 탭에서 PyTorch 코드를 꺼내거나 저장으로 그래프를 남기세요." };
   }
   return [data, model, trainStage, runStage, testStage];

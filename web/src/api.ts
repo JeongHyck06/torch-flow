@@ -279,6 +279,8 @@ export interface TrainRun {
   scheduler?: string | null; lr?: number; base_lr?: number;
   /** 마지막 테스트의 정확도. 테스트한 적 없으면 없다. */
   test_acc?: number;
+  /** 회귀 run의 대표 숫자. 정답과 같은 단위다. */
+  test_rmse?: number;
   restart_required?: string; message?: string; ok?: boolean;
 }
 
@@ -287,15 +289,27 @@ export interface DatasetInfo {
   /** builtin은 내려받는 것, user는 data/ 아래 폴더(이미지 폴더·CSV·npy). */
   source: "builtin" | "user"; kind: string; size_mb?: number; count?: number;
   class_names?: string[];
+  /** 정답 열을 보고 짐작한 과제. 사용자가 정제 화면에서 바꿀 수 있다. */
+  suggested_task?: "classification" | "regression";
+  suggested_text_column?: string | null;
 }
 
 /** 사람이 정제한 설정. 키는 datasets.recipe_defaults가 정한다. */
 export type Recipe = Record<string, unknown>;
 
-export interface DatasetColumn { name: string; kind: string; missing: number; uniques?: string[] | null }
+export interface DatasetColumn {
+  name: string; kind: string; missing: number; uniques?: string[] | null;
+  /** 수치 열의 범위. 회귀 정답 후보를 고르는 데 쓴다. */
+  min?: number; max?: number; mean?: number; distinct?: number;
+  /** 글자 열 한 칸의 평균 낱말 수. 범주("yes")와 문장을 가른다. */
+  words?: number;
+}
 export interface EffectiveSpec extends DatasetInfo {
   recipe: Recipe; split?: { train: number; val: number };
   class_counts?: Record<string, number>; problem?: string;
+  /** 회귀 정답 열의 범위. 분류면 없다. */
+  target?: { min: number; max: number; mean: number; distinct: number };
+  dtype?: string;
 }
 export interface DatasetPreview {
   base: DatasetInfo & { columns?: DatasetColumn[]; label_column?: string };
@@ -440,8 +454,15 @@ export interface TestResult {
   ok: boolean; error?: string; log?: string;
   run_id?: string; dataset?: string; split?: string; count?: number; loss?: number; acc?: number;
   step?: number; device?: string; classes?: string[];
+  /** 과제. 없으면 분류다 - 예전 test.json에는 이 칸이 없었다. */
+  task?: "classification" | "regression";
   per_class?: { name: string; count: number; correct: number }[];
   confusion?: number[][]; samples?: TestSample[];
+  /** 회귀 지표. 전부 정답의 원래 단위다. */
+  mae?: number; rmse?: number; r2?: number;
+  /** [정답, 예측] 쌍. 산점도용이라 최대 2,000개만 온다. */
+  scatter?: [number, number][];
+  worst?: { index: number; truth: number; pred: number; error: number }[];
 }
 
 /** 체크포인트를 학습이 보지 않은 분할에 돌린다. 끝날 때까지 기다린다(로컬에서 몇 초). */

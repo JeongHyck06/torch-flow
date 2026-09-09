@@ -1137,11 +1137,13 @@ def create_app(
         if entry is not None and entry.ports_out and request.get("apply_input", True):
             port = entry.ports_out[0]
             wanted = ["B", *effective["shape"]]
-            if list(port.shape or []) != wanted:
+            # 텍스트는 토큰 번호라 정수여야 한다 - float32로 두면 Embedding이 그 자리에서 죽는다.
+            dtype = effective.get("dtype") or port.dtype or "float32"
+            if list(port.shape or []) != wanted or (port.dtype or "float32") != dtype:
                 op = {"client_id": "hub", "tmp_seq": 0, "kind": "set_ports",
                       "payload": {"node": entry.id,
                                   "ports_out": [{"name": port.name, "type": port.type,
-                                                 "shape": wanted, "dtype": port.dtype or "float32"}]}}
+                                                 "shape": wanted, "dtype": dtype}]}}
                 seq = hub.apply_op(op)
                 states = hub.run_l0()
                 await hub.broadcast(proto.OpBroadcast(seq=seq, op=op))
@@ -1287,6 +1289,22 @@ def create_app(
             spec = datasets.resolve(spec, recipe)
             if spec.get("problem"):
                 return JSONResponse({"error": f"{spec['label']}: {spec['problem']}"}, status_code=400)
+        # 데이터가 정한 과제가 정본이다. Train 블록이 다른 것을 들고 있으면 **막는다** -
+        # 회귀 데이터에 cross_entropy를 물리면 torch가 알 수 없는 말로 죽거나, 더 나쁘게는
+        # 정답을 클래스 인덱스로 읽어 조용히 엉뚱한 것을 배운다.
+        from_data = ((spec or {}).get("recipe") or {}).get("task")
+        task = options.get("task") or from_data or "classification"
+        if from_data and task != from_data and trainer is not None:
+            return JSONResponse(
+                {"error": f"데이터는 {tasks.spec(from_data)['label']}인데 Train 블록은 "
+                          f"{tasks.spec(task)['label']}로 설정돼 있습니다. "
+                          f"Train 블록의 과제를 {tasks.spec(from_data)['label']}로 바꾸세요",
+                 "fix": {"node": trainer.id, "kind": "set_param",
+                         "args": {"task": from_data,
+                                  "loss": tasks.default_loss(from_data)}}},
+                status_code=400)
+
+        if spec is not None:
             given = list(entry.ports_out[0].shape or [])
             wanted = ", ".join(str(dim) for dim in ["B", *spec["shape"]])
             if given[1:] != spec["shape"]:
@@ -1302,9 +1320,15 @@ def create_app(
                                     status_code=400)
             sink = next((node for node in graph.nodes if node.type == "torchflow.Output"), None)
             logits = ((hub.node_states.get(sink.id) or {}).get("spec") or {}).get("shape") if sink else None
-            if logits and logits[-1] != spec["classes"]:
-                return JSONResponse({"error": f"{spec['label']}는 {spec['classes']}개 클래스입니다. "
-                                              f"출력이 [B, {spec['classes']}]여야 합니다 (지금 {logits})"},
+            # 출력 폭이 몇이어야 하는지는 과제가 정한다. 분류는 클래스 수, 회귀는 1이다 -
+            # 예전에는 클래스 수만 봤고, 회귀는 classes가 0이라 "[B, 0]이어야 합니다"로 막혔다.
+            wanted_width = spec["classes"] if tasks.spec(task)["needs_classes"] else 1
+            if logits and wanted_width and logits[-1] != wanted_width:
+                why = (f"{spec['label']}는 {spec['classes']}개 클래스입니다"
+                       if tasks.spec(task)["needs_classes"]
+                       else f"{spec['label']}는 값 하나를 맞히는 회귀입니다")
+                return JSONResponse({"error": f"{why}. 출력이 [B, {wanted_width}]여야 합니다 "
+                                              f"(지금 {logits})"},
                                     status_code=400)
             if not spec["available"]:
                 return JSONResponse({"error": f"{spec['label']} 파일이 없습니다. 먼저 내려받으세요",
@@ -1338,8 +1362,6 @@ def create_app(
                 status_code=400)
         model_args["seed"] = int(options.get("seed", 0))
 
-        task = options.get("task") or ((spec or {}).get("recipe") or {}).get("task") \
-            or "classification"
         job = {
             "class_name": _class_name(graph.name),
             "model_args": model_args,

@@ -124,7 +124,8 @@ export function Trainer({ onChange }: { onChange: () => void }) {
           <span className="muted trainer__note">
             {chosen
               ? `${chosen.label}${chosen.count ? ` ${chosen.count.toLocaleString()}개` : ""}`
-                + ` · Input 규격 [B, ${chosen.shape.join(", ")}] · 출력 ${chosen.classes} 클래스`
+                + ` · Input 규격 [B, ${chosen.shape.join(", ")}] · 출력 `
+                + (chosen.classes ? `${chosen.classes} 클래스` : "값 하나 (회귀)")
                 + (chosen.source === "user" ? " · 8:2로 나눠 검증" : " · 검증은 test 분할")
               : "합성 과제 · 무작위 입력에 고정 teacher 라벨"}
             {" · 시작은 단계 표시줄의 4 학습"}

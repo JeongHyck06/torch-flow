@@ -22,6 +22,9 @@ const GLYPH: Record<Stage["state"], string> = { done: "✓", active: "●", pend
 // 반복이면 초당 30번) 응답이 오기 전에 같은 클릭이 되풀이돼 Train이 그 수만큼 생겼다.
 let addingTrain = false;
 
+// 과제별 기본 목적 함수. 정본은 서버의 `tasks.TASKS`이고 여기는 새 Train 블록의 첫 값일 뿐이다.
+const DEFAULT_LOSS: Record<string, string> = { classification: "cross_entropy", regression: "mse" };
+
 /** 안내문의 행동 버튼 이름. 없으면 버튼도 없다. */
 function actionOf(stage: Stage): string | null {
   switch (stage.key) {
@@ -97,6 +100,13 @@ export function Stages() {
       const { op: add, nodeId } = addBlockOp(latest.graph, block, null);
       const failed = await applyEdit(add);
       if (failed) { setNotice(failed); return; }
+      // 붙여 둔 데이터가 정한 과제를 물려받는다. 안 그러면 회귀 데이터에 분류 기본값이
+      // 남아 학습을 누르는 순간 hub가 막는다 - 막히기 전에 맞는 값이 들어 있는 편이 낫다.
+      const task = useStore.getState().recipe?.task as string | undefined;
+      if (task && task !== "classification") {
+        await applyEdit(op("set_param", { node: nodeId, path: "task", value: task }));
+        await applyEdit(op("set_param", { node: nodeId, path: "loss", value: DEFAULT_LOSS[task] }));
+      }
       const output = current.find((node) => kindOf(node) === "torchflow.Output");
       if (output) {
         await applyEdit(op("connect", { src: `${output.id}.output`, dst: `${nodeId}.input` }));

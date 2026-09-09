@@ -69,7 +69,10 @@ export function TestPanel() {
         </label>
         {result?.ok && (
           <span className="mono trainer__progress">
-            정확도 {((result.acc ?? 0) * 100).toFixed(1)} % · loss {(result.loss ?? 0).toFixed(4)}
+            {result.task === "regression"
+              ? `RMSE ${(result.rmse ?? 0).toFixed(4)} · MAE ${(result.mae ?? 0).toFixed(4)}`
+                + (result.r2 === undefined ? "" : ` · R² ${result.r2.toFixed(4)}`)
+              : `정확도 ${((result.acc ?? 0) * 100).toFixed(1)} % · loss ${(result.loss ?? 0).toFixed(4)}`}
             {" · "}{result.split} {(result.count ?? 0).toLocaleString()}개
             {" · "}step {(result.step ?? 0).toLocaleString()}{result.device ? ` · ${result.device}` : ""}
           </span>
@@ -79,12 +82,64 @@ export function TestPanel() {
         </span>
         {error && <span className="warn mono">{error}</span>}
       </div>
-      {result?.ok ? <Report result={result} /> : (
+      {result?.ok ? (result.task === "regression"
+                      ? <RegressionReport result={result} /> : <Report result={result} />) : (
         !busy && !error && <p className="mono muted">테스트 실행을 누르면 결과가 여기에 보입니다</p>
       )}
     </>
   );
 }
+
+function RegressionReport({ result }: { result: TestResult }) {
+  const scatter = result.scatter ?? [];
+  const worst = result.worst ?? [];
+  // 산점도 축은 정답과 예측을 같은 범위에 둔다 - 그래야 대각선이 "정확히 맞힘"이 된다.
+  const values = scatter.flat();
+  const low = Math.min(...values, 0);
+  const high = Math.max(...values, 1);
+  const at = (value: number) => ((value - low) / (high - low || 1)) * 100;
+
+  return (
+    <div className="testpanel">
+      <div>
+        <h3>예측 대 정답<span className="muted">대각선 위에 있을수록 정확</span></h3>
+        {scatter.length ? (
+          <svg className="testpanel__scatter" viewBox="0 0 100 100" preserveAspectRatio="none"
+               role="img" aria-label={`예측 대 정답 산점도, ${scatter.length}개`}>
+            <line x1="0" y1="100" x2="100" y2="0" className="testpanel__diagonal" />
+            {scatter.map(([truth, pred], index) => (
+              <circle key={index} cx={at(truth)} cy={100 - at(pred)} r="0.9" />
+            ))}
+          </svg>
+        ) : <p className="mono muted">산점도를 그릴 예측이 없습니다</p>}
+        <dl className="rows mono">
+          <div><dt>RMSE</dt><dd>{(result.rmse ?? 0).toFixed(4)}</dd></div>
+          <div><dt>MAE</dt><dd>{(result.mae ?? 0).toFixed(4)}</dd></div>
+          {result.r2 !== undefined && <div><dt>R²</dt><dd>{result.r2.toFixed(4)}</dd></div>}
+        </dl>
+      </div>
+      <div>
+        <h3>가장 크게 틀린 행<span className="muted">정답 · 예측 · 오차</span></h3>
+        <div className="datacard__table">
+          <table className="testpanel__matrix">
+            <thead><tr><th>행</th><th>정답</th><th>예측</th><th>오차</th></tr></thead>
+            <tbody>
+              {worst.map((one) => (
+                <tr key={one.index}>
+                  <th>{one.index}</th>
+                  <td>{one.truth}</td>
+                  <td>{one.pred}</td>
+                  <td className="testpanel__miss">{one.error > 0 ? `+${one.error}` : one.error}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function Report({ result }: { result: TestResult }) {
   const classes = result.classes ?? [];
