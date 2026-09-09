@@ -125,7 +125,7 @@ export interface Op {
   type?: "Op";
   client_id: string;
   tmp_seq: number;
-  kind: "add_node" | "remove_node" | "set_param" | "set_ports" | "rename" | "connect" | "disconnect" | "move" | "group" | "set_code" | "set_switch_active" | "promote_hp" | "save_variant" | "add_probe" | "remove_probe" | "batch";
+  kind: "add_node" | "remove_node" | "set_param" | "set_ports" | "rename" | "connect" | "disconnect" | "move" | "set_code" | "set_switch_active" | "promote_hp" | "save_variant" | "add_probe" | "remove_probe" | "batch";
   payload?: Record<string, unknown>;
   inverse_of?: number;
   ops?: Record<string, unknown>[];

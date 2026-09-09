@@ -20,7 +20,7 @@ import { Stages } from "./Stages";
 import { SYNTHETIC, currentScope, useStore } from "../store";
 import { saveLayout } from "../api";
 import { applyEdit, redo, undo } from "../edit";
-import { groupOp, op, removeNodeOp } from "../graph/ops";
+import { op, removeNodeOp } from "../graph/ops";
 import { enterableComposite, lodOf, toFlow } from "../graph/toFlow";
 import { runLabel } from "../stages";
 import { topologicalIds } from "../graph/layout";
@@ -122,30 +122,6 @@ export function Canvas() {
     void applyEdit(op("disconnect", { ...(composite ? { composite } : {}), src, dst }));
   }, [composite]);
 
-  // Cmd+G: 고른 블록들을 묶음 블록 하나로. 되돌리기는 batch 역 op 하나로 통째로 돌아온다.
-  const group = useCallback(async () => {
-    const live = currentScope(useStore.getState());
-    if (!live) return;
-    const ids = nodes.filter((node) => node.selected).map((node) => node.id);
-    const result = groupOp(live, ids, composite,
-                           Object.keys(useStore.getState().graph?.composites ?? {}));
-    if ("error" in result) return useStore.getState().setNotice(result.error);
-    const failed = await applyEdit(result.op);
-    if (failed) return useStore.getState().setNotice(failed);
-    // 새 블록은 묶인 것들의 한가운데에 놓는다 - 자동 배치가 화면 밖에 두면 찾을 수 없다.
-    const picked = nodes.filter((node) => ids.includes(node.id));
-    const spot = {
-      x: picked.reduce((sum, node) => sum + node.position.x, 0) / picked.length,
-      y: picked.reduce((sum, node) => sum + node.position.y, 0) / picked.length,
-    };
-    const key = callPath ? `${callPath}/${result.nodeId}` : result.nodeId;
-    setPosition(key, spot);
-    void saveLayout(key, spot);
-    select(result.nodeId);
-    focus(result.nodeId);
-    useStore.getState().setNotice(`${picked.length}개를 묶음 블록 ${result.name}으로 만들었습니다`);
-  }, [nodes, composite, callPath, setPosition, select, focus]);
-
   const order = useMemo(
     () => (scope ? topologicalIds(scope.nodes ?? [], (scope.edges ?? []) as [string, string][]) : []),
     [scope],
@@ -207,17 +183,12 @@ export function Canvas() {
       if (!order.length && event.key !== "Tab") return;
       const index = focused ? order.indexOf(focused) : -1;
 
-      // Space는 포커스한 블록을 선택에 넣고 뺀다. 마우스 없이도 Cmd+G까지 갈 수 있어야 한다(§2.2).
+      // Space는 포커스한 블록을 선택에 넣고 뺀다. 여러 개를 마우스 없이 옮기려면 필요하다(§2.2).
       if (event.key === " " && focused
           && (target === document.body || target.closest(".react-flow__node, .react-flow__pane"))) {
         setNodes((current) => current.map((one) =>
           one.id === focused ? { ...one, selected: !one.selected } : one));
         event.preventDefault();
-        return;
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
-        event.preventDefault();
-        void group();
         return;
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
@@ -264,7 +235,7 @@ export function Canvas() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [order, focused, selected, scopes, focus, select, enter, popToScope, fitReadable,
-      openPalette, screenToFlowPosition, remove, edges, disconnect, group]);
+      openPalette, screenToFlowPosition, remove, edges, disconnect]);
 
   useEffect(() => {
     if (!focused || !followFocus.current) return;

@@ -5,7 +5,7 @@ hub가 그래프의 정본을 가진다. 클라이언트는 낙관적으로 먼�
 재시작 시 재생된다.
 
 적용되는 op는 ``add_node``·``remove_node``·``set_param``·``set_switch_active``·
-``connect``·``disconnect``다. 나머지 kind(``group``·``promote_hp``·``save_variant``
+``connect``·``disconnect``다. 나머지 kind(``promote_hp``·``save_variant``
 등)는 journal에 기록되지만 그래프에는 적용되지 않는다.
 
 실행 취소는 서버 히스토리를 되감지 않는다(§8.2.3). 클라이언트가 **역 op를 새 op로**

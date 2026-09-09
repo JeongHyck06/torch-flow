@@ -1364,6 +1364,10 @@ def create_app(
         }
 
         kind = options.get("kind", "exploratory")
+        # 아직 돌거나 멈춰 있는 run은 재개하려고 ckpt를 세워 둔 것이다 - 건드리지 않는다.
+        l2.prune_checkpoints(hub.runs_dir,
+                             protect={rid for rid, h in hub.l2.items()
+                                      if h.alive or h.state == "paused"})
         handle = l2.start(run_id=run_id, root=hub.runs_dir, job=job, code=code)
         handle.extra.update({"kind": kind, "smoke": smoke, "graph_id": hub.graph_id})
         hub.l2[run_id] = handle

@@ -107,6 +107,9 @@ export function removeNodeOp(nodeId: string, composite: string | null): Op {
   return op("remove_node", { ...(composite ? { composite } : {}), node: nodeId });
 }
 
+/** 그래프 경계와 학습 설정. 갈아 끼우면 그래프가 입력도 출력도 잃는다. */
+const NOT_REPLACEABLE = new Set(["torchflow.Input", "torchflow.Output", "torchflow.Train"]);
+
 /**
  * 고른 블록을 다른 블록으로 갈아 끼운다(팔레트 Replace, §4.2). 배선은 그대로 남는다.
  *
@@ -118,7 +121,7 @@ export function replaceOp(
 ): { op: Op; nodeId: string } | { error: string } {
   const old = (scope.nodes ?? []).find((node) => node.id === nodeId);
   if (!old) return { error: "바꿀 블록이 없습니다" };
-  if (NOT_GROUPABLE.has((old.type ?? "").split("@")[0])) {
+  if (NOT_REPLACEABLE.has((old.type ?? "").split("@")[0])) {
     return { error: `${old.label} 블록은 바꿀 수 없습니다` };
   }
   const edges = (scope.edges ?? []) as [string, string][];
@@ -145,95 +148,6 @@ export function replaceOp(
     op("remove_node", { ...scoped, node: nodeId }),
   ];
   return { op: op("batch", {}, inner), nodeId: fresh };
-}
-
-/** 그래프 경계와 학습 설정. 안으로 넣으면 그래프가 입력도 출력도 잃는다. */
-const NOT_GROUPABLE = new Set(["torchflow.Input", "torchflow.Output", "torchflow.Train"]);
-
-/**
- * 고른 블록들을 묶음 블록 하나로 승격한다(`Cmd+G`, 기획서 §4.4.3).
- *
- * 안쪽으로 들어가는 선은 `$in.x`가 되고 밖으로 나가는 선은 `$out.output`이 된다 -
- * 컴포지트의 입출력 포트는 그렇게 **원래 있던 선에서** 정해진다. 사람이 포트를
- * 설계하지 않아도 되고, 묶기 전후로 바깥에서 본 배선이 같다.
- *
- * 한 덩어리 batch로 보낸다. 실행 취소가 통째로 한 번에 되돌려야 하기 때문이다.
- */
-export function groupOp(
-  scope: Graph | Composite, ids: string[], composite: string | null, definedNames: string[],
-): { op: Op; nodeId: string; name: string } | { error: string } {
-  const inside = new Set(ids);
-  const chosen = (scope.nodes ?? []).filter((node) => inside.has(node.id));
-  if (chosen.length < 2) {
-    return { error: "블록 두 개 이상을 고르세요 - Cmd 를 누른 채 클릭하거나 Shift 로 끕니다" };
-  }
-  const blocked = chosen.find((node) => NOT_GROUPABLE.has((node.type ?? "").split("@")[0]));
-  if (blocked) return { error: `${blocked.label} 블록은 묶음 안에 넣을 수 없습니다` };
-
-  const internal: [string, string][] = [];
-  const inbound: [string, string][] = [];
-  const outbound: [string, string][] = [];
-  for (const edge of (scope.edges ?? []) as [string, string][]) {
-    const from = inside.has(endpointNode(edge[0]));
-    const to = inside.has(endpointNode(edge[1]));
-    if (from && to) internal.push(edge);
-    else if (to) inbound.push(edge);
-    else if (from) outbound.push(edge);
-  }
-
-  // 같은 곳에서 오는 선은 포트 하나를 나눠 쓴다 - 스킵 연결이 입력을 둘로 늘리지 않는다.
-  const inPort = new Map<string, string>();
-  for (const [src] of inbound) if (!inPort.has(src)) inPort.set(src, portName("x", inPort.size));
-  const outPort = new Map<string, string>();
-  for (const [src] of outbound) {
-    if (!outPort.has(src)) outPort.set(src, portName("output", outPort.size));
-  }
-
-  const body = {
-    ports: {
-      in: [...inPort.values()].map((name) => ({ name, type: "Tensor" })),
-      out: [...outPort.values()].map((name) => ({ name, type: "Tensor" })),
-    },
-    instances: Object.fromEntries(
-      chosen.filter((node) => node.call)
-        .map((node) => [node.call as string, strip(scope.instances![node.call as string])])),
-    nodes: chosen.map(strip),
-    edges: [
-      ...internal,
-      ...inbound.map(([src, dst]) => [`$in.${inPort.get(src)}`, dst]),
-      ...outbound.map(([src]) => [src, `$out.${outPort.get(src)}`]),
-    ],
-  };
-
-  const name = uniqueName(definedNames);
-  const nodeId = newId();
-  const label = uniqueLabel(scope, name);
-  const scoped = composite ? { composite } : {};
-  const inner: Op[] = [
-    op("define_composite", { name, body }),
-    ...chosen.map((node) => op("remove_node", { ...scoped, node: node.id })),
-    op("add_node", {
-      ...scoped,
-      instance: { id: newId(), label, type: `composite:${name}`, args: {} },
-      node: { id: nodeId, label, method: "forward",
-              ports_out: [...outPort.values()].map((port) => ({ name: port, type: "Tensor" })) },
-    }),
-    // 바깥 배선을 새 노드에 다시 잇는다. 안쪽으로 가던 선은 remove_node가 이미 지웠다.
-    ...inbound.map(([src]) => op("connect", { ...scoped, src, dst: `${nodeId}.${inPort.get(src)}` })),
-    ...outbound.map(([src, dst]) =>
-      op("connect", { ...scoped, src: `${nodeId}.${outPort.get(src)}`, dst })),
-  ];
-  return { op: op("batch", {}, inner), nodeId, name };
-}
-
-function portName(base: string, index: number): string {
-  return index === 0 ? base : `${base}${index + 1}`;
-}
-
-function uniqueName(taken: string[]): string {
-  const names = new Set(taken);
-  if (!names.has("Group")) return "Group";
-  for (let index = 2; ; index += 1) if (!names.has(`Group${index}`)) return `Group${index}`;
 }
 
 /**
@@ -334,7 +248,7 @@ export function inverseOf(scope: Graph | Composite, current: Op): Op | null {
     case "remove_composite":
       return payload.body === undefined
         ? null : op("define_composite", { name: payload.name, body: payload.body });
-    // 묶음 하나를 통째로 되돌린다. 안쪽 역 op는 전부 **묶기 직전** 그래프에서 계산하고
+    // batch를 통째로 되돌린다. 안쪽 역 op는 전부 **편집 직전** 그래프에서 계산하고
     // 순서만 뒤집는다 - 마지막에 넣은 것부터 빼야 서버의 참조 검사(컴포지트를 부르는
     // 노드가 남아 있으면 지울 수 없다)를 통과한다.
     case "batch": {

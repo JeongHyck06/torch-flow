@@ -218,60 +218,6 @@ def test_define_and_remove_composite(minivit):
     assert "Twice" not in store.ir.composites
 
 
-def test_grouping_batch_moves_nodes_into_a_composite(minivit):
-    """`Cmd+G`가 보내는 묶기 batch. 클라이언트가 만드는 op 순서 그대로 서버에서 통과해야 한다.
-
-    묶은 뒤에도 바깥에서 본 배선은 같다: Input이 새 블록으로, 새 블록이 Output으로.
-    """
-    from torchflow import codegen
-    from torchflow.ir import ModuleGraph, validate
-
-    ir = ModuleGraph.model_validate({
-        "graph": {
-            "name": "Net",
-            "instances": {"i-conv": {"label": "conv", "type": "torch.nn.Conv2d",
-                                     "args": {"in_channels": 3, "out_channels": 8,
-                                              "kernel_size": 3, "padding": 1}},
-                          "i-relu": {"label": "act", "type": "torch.nn.ReLU", "args": {}}},
-            "nodes": [
-                {"id": "IN", "label": "input", "type": "torchflow.Input",
-                 "ports_out": [{"name": "x", "shape": ["B", 3, 32, 32]}]},
-                {"id": "C", "label": "conv", "call": "i-conv", "method": "forward"},
-                {"id": "R", "label": "act", "call": "i-relu", "method": "forward"},
-                {"id": "OUT", "label": "out", "type": "torchflow.Output"},
-            ],
-            "edges": [["IN.x", "C.input"], ["C.output", "R.input"], ["R.output", "OUT.input"]],
-        },
-    })
-    store = GraphStore(ir)
-    body = {"ports": {"in": [{"name": "x"}], "out": [{"name": "output"}]},
-            "instances": {"i-conv": ir.graph.instances["i-conv"].model_dump(exclude_none=True),
-                          "i-relu": ir.graph.instances["i-relu"].model_dump(exclude_none=True)},
-            "nodes": [{"id": "C", "label": "conv", "call": "i-conv", "method": "forward"},
-                      {"id": "R", "label": "act", "call": "i-relu", "method": "forward"}],
-            "edges": [["C.output", "R.input"], ["$in.x", "C.input"], ["R.output", "$out.output"]]}
-    store.apply({"client_id": "c-1", "tmp_seq": 1, "kind": "batch", "payload": {}, "ops": [
-        op("define_composite", name="Group", body=body),
-        op("remove_node", node="C"),
-        op("remove_node", node="R"),
-        op("add_node",
-           instance={"id": "i-group", "label": "group", "type": "composite:Group", "args": {}},
-           node={"id": "G", "label": "group", "method": "forward",
-                 "ports_out": [{"name": "output"}]}),
-        op("connect", src="IN.x", dst="G.x"),
-        op("connect", src="G.output", dst="OUT.input"),
-    ]})
-
-    assert [node.id for node in store.ir.graph.nodes] == ["IN", "OUT", "G"]
-    assert sorted(store.ir.graph.edges) == [("G.output", "OUT.input"), ("IN.x", "G.x")]
-    assert "i-conv" not in store.ir.graph.instances, "묶인 인스턴스는 컴포지트로 옮겨간다"
-    assert validate(store.ir) == []
-
-    code = codegen.generate(store.ir)
-    assert "class Group(nn.Module):" in code
-    assert "self.group(x)" in code
-
-
 def test_promote_and_demote_a_hyperparameter(minivit):
     """값 하나를 상단으로 올리고 다시 내린다(§4.3). 둘은 서로의 역이다."""
     store = GraphStore(minivit)
