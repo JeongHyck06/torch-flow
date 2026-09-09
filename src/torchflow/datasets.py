@@ -23,6 +23,7 @@ import io
 import math
 import struct
 import pickle
+import re
 import tarfile
 import urllib.request
 import zipfile
@@ -268,6 +269,10 @@ def _column_profile(header: list[str], rows: list[list[str]]) -> list[dict[str, 
             numbers = [_as_float(value) for value in present]
             entry.update(min=min(numbers), max=max(numbers),
                          mean=sum(numbers) / len(numbers), distinct=len(uniques))
+        elif present:
+            # 자유 텍스트인지 범주인지 가른다. "positive"/"negative"는 범주고, 리뷰 문장은 텍스트다.
+            entry.update(distinct=len(uniques),
+                         words=sum(len(value.split()) for value in present) / len(present))
         profile.append(entry)
     return profile
 
@@ -287,6 +292,9 @@ def _default_label(header: list[str]) -> str:
 # 수치 정답 열의 고유값이 이보다 많으면 회귀로 짐작한다. 등급(1~5)까지는 분류다.
 CLASS_LIMIT = 20
 
+# 한 칸의 평균 낱말 수가 이보다 많으면 범주가 아니라 문장으로 본다.
+MIN_TEXT_WORDS = 3.0
+
 
 def _inspect_csv(folder: Path) -> dict[str, Any] | None:
     table = _csv_table(folder)
@@ -304,7 +312,22 @@ def _inspect_csv(folder: Path) -> dict[str, Any] | None:
     return {"kind": "csv", "shape": [len(header) - 1], "classes": len(uniques), "class_names": uniques,
             "class_counts": counts, "count": len(rows), "file": path.name,
             "label_column": label, "columns": columns,
-            "suggested_task": suggest_task(columns, label)}
+            "suggested_task": suggest_task(columns, label),
+            "suggested_text_column": suggest_text_column(columns, label)}
+
+
+def suggest_text_column(columns: list[dict[str, Any]], label: str) -> str | None:
+    """자유 텍스트 열 하나. 있으면 그 열이 곧 입력이 된다(특징 열 대신).
+
+    "positive"/"negative" 같은 범주 열과 갈라야 한다 - 둘 다 kind가 text다. 기준은
+    **낱말 수**다. 한 칸에 두 낱말 넘게 들어 있으면 문장으로 본다.
+    """
+    for column in columns:
+        if column["name"] == label or column["kind"] != "text":
+            continue
+        if column.get("words", 0) >= MIN_TEXT_WORDS:
+            return column["name"]
+    return None
 
 
 def suggest_task(columns: list[dict[str, Any]], label: str) -> str:
@@ -385,7 +408,9 @@ def recipe_defaults(spec: dict[str, Any]) -> dict[str, Any]:
         recipe.update(label_column=spec["label_column"], features=None, missing="drop",
                       onehot=True, normalize="standard",
                       task=spec.get("suggested_task", "classification"),
-                      target_normalize="standard")
+                      target_normalize="standard",
+                      text_column=spec.get("suggested_text_column"),
+                      max_len=64, vocab_size=8000)
     elif spec["kind"] == "image_folder":
         recipe.update(size=spec["shape"][1], channels=spec["shape"][0], normalize="standard")
     elif spec["kind"] == "arrays":
@@ -411,11 +436,24 @@ def resolve(spec: dict[str, Any], recipe: dict[str, Any] | None) -> dict[str, An
         label = full["label_column"] if full["label_column"] in columns else spec["label_column"]
         full["label_column"] = label
         uniques = columns[label]["uniques"]
-        features = [name for name in (full["features"] or list(columns)) if name in columns and name != label]
-        full["features"] = features
-        width = sum(len(columns[name]["uniques"] or []) if columns[name]["kind"] == "text" and full["onehot"]
-                    else 1 for name in features)
-        out["shape"] = [width]
+        text_column = full.get("text_column")
+        if text_column not in columns or text_column == label:
+            text_column = full["text_column"] = None
+        if text_column:
+            # 텍스트는 그 열 하나가 곧 입력이다. 특징 열 조합은 쓰지 않는다.
+            full["features"] = []
+            out["shape"] = [int(full.get("max_len") or 64)]
+            out["dtype"] = "int64"
+            # 토큰 번호에 표준화를 걸면 Embedding에 넣을 정수가 아니게 된다.
+            full["normalize"] = "none"
+            features = []
+        else:
+            features = [name for name in (full["features"] or list(columns))
+                        if name in columns and name != label]
+            full["features"] = features
+            width = sum(len(columns[name]["uniques"] or []) if columns[name]["kind"] == "text" and full["onehot"]
+                        else 1 for name in features)
+            out["shape"] = [width]
 
         if full.get("task") == "regression":
             # 회귀는 클래스가 없다. 정답 열이 수치이기만 하면 된다 - 고유값이 많은 것이
@@ -429,7 +467,7 @@ def resolve(spec: dict[str, Any], recipe: dict[str, Any] | None) -> dict[str, An
             out.update(classes=0, class_names=[], class_counts={}, count=total,
                        split={"train": total - held, "val": held},
                        target=_target_stats(spec, label))
-            if not features:
+            if not features and not text_column:
                 out["problem"] = "특징 열이 하나도 없습니다"
             return out
 
@@ -441,7 +479,7 @@ def resolve(spec: dict[str, Any], recipe: dict[str, Any] | None) -> dict[str, An
         # 정답 열이 바뀌면 클래스별 개수는 미리보기가 다시 센다 - 여기서는 이름만 안다.
         names = list(uniques)
         counts = dict(spec["class_counts"]) if label == spec["label_column"] else None
-        if not features:
+        if not features and not text_column:
             out["problem"] = "특징 열이 하나도 없습니다"
     elif spec["kind"] == "image_folder":
         out["shape"] = [int(full["channels"]), int(full["size"]), int(full["size"])]
@@ -594,6 +632,8 @@ def load_any(name: str, base: str | Path, recipe: dict[str, Any] | None = None) 
     if effective.get("problem"):
         raise ValueError(effective["problem"])
     loader = {"image_folder": _load_images, "csv": _load_csv, "arrays": _load_arrays}[spec["kind"]]
+    if spec["kind"] == "csv" and effective["recipe"].get("text_column"):
+        loader = _load_text
     x, y = loader(folder, spec, effective)
     x, y = _limit(x, y, effective["recipe"])
     splits = _split(x, y, effective["recipe"])
@@ -612,13 +652,22 @@ def _limit(x, y, recipe):
     return x, y
 
 
-def _split(x, y, recipe) -> dict[str, tuple]:
-    """시드로 섞어 val 비율만큼 떼어 둔다. 같은 레시피면 언제나 같은 분할이다."""
+def split_indices(count: int, recipe: dict[str, Any]):
+    """``(train, test)`` 인덱스. 분할을 정하는 곳은 여기 하나다.
+
+    텍스트 어휘를 train 분할에서만 만들려면 **적재 도중에** 어느 행이 train인지 알아야
+    한다. 그때와 `_split`이 각자 섞으면 어휘가 검증 문장을 보게 된다 - 누수다.
+    """
     import torch
 
-    order = torch.randperm(len(y), generator=torch.Generator().manual_seed(int(recipe["seed"])))
-    held = max(1, int(len(y) * float(recipe["val_fraction"]))) if len(y) > 1 else 0
-    test, train = order[:held], order[held:]
+    order = torch.randperm(count, generator=torch.Generator().manual_seed(int(recipe["seed"])))
+    held = max(1, int(count * float(recipe["val_fraction"]))) if count > 1 else 0
+    return order[held:], order[:held]
+
+
+def _split(x, y, recipe) -> dict[str, tuple]:
+    """시드로 섞어 val 비율만큼 떼어 둔다. 같은 레시피면 언제나 같은 분할이다."""
+    train, test = split_indices(len(y), recipe)
     return {"train": (x[train], y[train]), "test": (x[test], y[test])}
 
 
@@ -646,6 +695,10 @@ def _normalize(splits: dict[str, tuple], effective: dict[str, Any]) -> dict[str,
 
     how = effective["recipe"].get("normalize", "none")
     train_x = splits["train"][0]
+    # 토큰 번호는 크기에 뜻이 없다(어휘 500번이 250번의 두 배가 아니다). 표준화하면
+    # Embedding에 넣을 정수가 아니게 되고 그 자리에서 죽는다.
+    if not train_x.is_floating_point():
+        return splits
     if how == "standard":
         dims = [0] + list(range(2, train_x.dim()))
         mean = train_x.mean(dim=dims, keepdim=True)
@@ -731,6 +784,74 @@ def _load_csv(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):
         else:   # drop: 결측이 하나라도 있는 행을 버린다
             keep = ~nan.any(dim=1)
             x, y = x[keep], y[keep]
+    return x, y
+
+
+TOKEN = re.compile(r"[0-9a-z가-힣]+")
+PAD, UNK = 0, 1
+
+
+def tokenize(text: str) -> list[str]:
+    """소문자 낱말. 형태소 분석기 없이 공백·문장부호로만 자른다.
+
+    ponytail: 영어와 한글 어절 수준. 한국어를 제대로 하려면 형태소 분석기가 필요한데,
+    그건 무거운 의존성이라 사용자 코드(Code Cell)로 붙이는 편이 낫다.
+    """
+    return TOKEN.findall(text.lower())
+
+
+def build_vocab(texts: list[str], limit: int) -> dict[str, int]:
+    """자주 나온 낱말부터 어휘에. 0은 padding, 1은 모르는 낱말로 비워 둔다.
+
+    **train 분할의 문장만** 넣어야 한다. 검증 문장의 낱말이 어휘에 있으면 모델이
+    그 낱말을 이미 아는 상태로 평가된다.
+    """
+    counts: dict[str, int] = {}
+    for text in texts:
+        for word in tokenize(text):
+            counts[word] = counts.get(word, 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {word: index for index, (word, _) in enumerate(ordered[:max(0, limit - 2)], start=2)}
+
+
+def encode_text(text: str, vocab: dict[str, int], max_len: int) -> list[int]:
+    """낱말을 번호로. 짧으면 0으로 채우고 길면 자른다."""
+    ids = [vocab.get(word, UNK) for word in tokenize(text)][:max_len]
+    return ids + [PAD] * (max_len - len(ids))
+
+
+def _load_text(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):
+    """텍스트 열 하나를 토큰 번호 행렬로. ``x``는 ``[N, max_len]`` int64다."""
+    import torch
+
+    _, header, rows = _csv_table(folder)
+    recipe = effective["recipe"]
+    column = header.index(recipe["text_column"])
+    label = header.index(recipe["label_column"])
+    index = _class_index(effective)
+    regression = recipe.get("task") == "regression"
+
+    kept, targets = [], []
+    for row in rows:
+        text = row[column]
+        if _is_missing(text):
+            continue
+        if regression:
+            number = _as_float(row[label])
+            if number is None:
+                continue
+            targets.append(number)
+        else:
+            if row[label] not in index:
+                continue
+            targets.append(index[row[label]])
+        kept.append(text)
+
+    max_len = int(recipe.get("max_len") or 64)
+    train, _ = split_indices(len(kept), recipe)
+    vocab = build_vocab([kept[int(i)] for i in train], int(recipe.get("vocab_size") or 8000))
+    x = torch.tensor([encode_text(text, vocab, max_len) for text in kept], dtype=torch.int64)
+    y = torch.tensor(targets, dtype=torch.float32 if regression else torch.int64)
     return x, y
 
 

@@ -197,3 +197,73 @@ def test_progress_counts_finished_files_and_the_partial_one(tmp_path):
     assert got["bytes"] == 130
     assert got["total"] == 11 * 1024 * 1024
     assert datasets.progress("mnist", tmp_path / "nowhere")["bytes"] == 0
+
+
+def write_reviews(base, rows: int = 200):
+    """감정 낱말이 뚜렷한 리뷰. 파이프라인이 도는지 보는 용도이지 어려운 과제가 아니다."""
+    import random
+
+    rng = random.Random(7)
+    target = base / "reviews"
+    target.mkdir(parents=True, exist_ok=True)
+    good, bad = ["great", "love", "best"], ["awful", "worst", "hate"]
+    filler = ["the", "a", "this", "movie", "was", "really"]
+    lines = ["review,sentiment"]
+    for _ in range(rows):
+        positive = rng.random() < 0.5
+        words = rng.choices(good if positive else bad, k=3) + rng.choices(filler, k=5)
+        rng.shuffle(words)
+        lines.append(f"{' '.join(words)},{'positive' if positive else 'negative'}")
+    (target / "samples.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
+
+
+def test_a_free_text_column_becomes_the_input(tmp_path):
+    """문장 열은 범주 열과 다르게 다뤄야 한다 - 원핫이 아니라 토큰 번호가 된다."""
+    write_reviews(tmp_path)
+    spec = datasets.inspect(tmp_path / "reviews")
+
+    assert spec["suggested_text_column"] == "review"
+    assert spec["label_column"] == "sentiment"
+
+    effective = datasets.resolve(spec, None)
+    assert effective["shape"] == [64] and effective["dtype"] == "int64"
+    # 토큰 번호에 표준화를 걸면 Embedding에 넣을 정수가 아니게 된다.
+    assert effective["recipe"]["normalize"] == "none"
+    assert effective.get("problem") is None
+
+
+def test_a_short_category_column_is_not_mistaken_for_text(tmp_path):
+    """'positive'/'negative'도 kind가 text다. 낱말 수로 갈라야 한다."""
+    target = tmp_path / "flags"
+    target.mkdir()
+    (target / "samples.csv").write_text(
+        "size,colour,label\n1,red,yes\n2,blue,no\n3,red,yes\n4,blue,no\n", encoding="utf-8")
+    spec = datasets.inspect(target)
+    assert spec["suggested_text_column"] is None
+
+
+def test_the_vocabulary_never_sees_the_validation_split(tmp_path):
+    """어휘를 전체에서 만들면 검증 문장의 낱말을 모델이 이미 아는 상태가 된다 - 누수다."""
+    import torch
+
+    write_reviews(tmp_path)
+    spec = datasets.inspect(tmp_path / "reviews")
+    effective = datasets.resolve(spec, None)
+    recipe = effective["recipe"]
+
+    _, header, rows = datasets._csv_table(tmp_path / "reviews")
+    column = header.index("review")
+    train_index, test_index = datasets.split_indices(len(rows), recipe)
+    vocab = datasets.build_vocab([rows[int(i)][column] for i in train_index],
+                                 int(recipe["vocab_size"]))
+
+    # 검증 분할에만 있는 낱말을 하나 심고, 그것이 어휘에 없어야 한다.
+    only_in_val = {word for i in test_index for word in datasets.tokenize(rows[int(i)][column])}
+    only_in_train = {word for i in train_index for word in datasets.tokenize(rows[int(i)][column])}
+    for word in only_in_val - only_in_train:
+        assert word not in vocab, f"'{word}'는 검증 분할에만 있는데 어휘에 들어왔다"
+
+    splits = datasets.load_any("reviews", tmp_path, recipe)
+    assert splits["train"][0].dtype == torch.int64
+    assert splits["train"][0].shape[1] == 64
