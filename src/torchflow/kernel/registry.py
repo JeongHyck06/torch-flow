@@ -39,7 +39,7 @@ BUILTIN_BLOCKS: list[dict[str, Any]] = [
      # task가 loss를 고르는 목록을 정한다(tasks.TASKS). 데이터에서 짐작한 값이 기본으로
      # 들어오고, 여기서 바꾸면 그것이 이긴다.
      "params": {"task": {"type": "str", "default": "classification",
-                         "choices": ["classification", "regression"]},
+                         "choices": ["classification", "regression", "language_modeling"]},
                 "loss": {"type": "str", "default": "cross_entropy",
                          "choices": ["cross_entropy", "bce_with_logits", "mse", "l1", "huber"]},
                 "optimizer": {"type": "str", "default": "adamw", "choices": ["adamw", "sgd"]},

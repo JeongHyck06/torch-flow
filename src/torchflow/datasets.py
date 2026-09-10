@@ -437,6 +437,26 @@ def resolve(spec: dict[str, Any], recipe: dict[str, Any] | None) -> dict[str, An
         label = full["label_column"] if full["label_column"] in columns else spec["label_column"]
         full["label_column"] = label
         uniques = columns[label]["uniques"]
+        if full.get("task") == "language_modeling":
+            # 다음 토큰을 맞히므로 라벨 열이 필요 없다. 글은 시간 순이라 분할도 앞뒤로 나눈다.
+            text_column = full.get("text_column") or spec.get("suggested_text_column")
+            length = int(full.get("max_len") or 64)
+            full.update(text_column=text_column, features=[], normalize="none",
+                        split_mode="time", series_column=None)
+            out["shape"] = [length]
+            out["dtype"] = "int64"
+            if not text_column:
+                out["problem"] = "언어 모델은 문장이 든 열이 있어야 합니다"
+            # 표본은 행이 아니라 **토큰 창**이다. 정확한 토큰 수는 열을 다시 읽어야 알지만
+            # resolve는 spec만 본다 - 평균 낱말 수로 어림한다. 실제 창은 _load_lm이 센다.
+            tokens = int(spec["count"] * ((columns.get(text_column) or {}).get("words") or 0))
+            usable = max(0, tokens - length - 1)
+            held = max(1, int(usable * float(full["val_fraction"]))) if usable > 1 else 0
+            out.update(classes=int(full.get("vocab_size") or 8000), class_names=[],
+                       class_counts={}, count=usable,
+                       split={"train": usable - held, "val": held})
+            return out
+
         series_column = full.get("series_column")
         if series_column and series_column in columns:
             # 시계열은 과제가 회귀로 못박힌다. 창을 겹쳐 만들기 때문에 분할도 시간 순이다.
@@ -651,7 +671,9 @@ def load_any(name: str, base: str | Path, recipe: dict[str, Any] | None = None) 
     if effective.get("problem"):
         raise ValueError(effective["problem"])
     loader = {"image_folder": _load_images, "csv": _load_csv, "arrays": _load_arrays}[spec["kind"]]
-    if spec["kind"] == "csv" and effective["recipe"].get("series_column"):
+    if spec["kind"] == "csv" and effective["recipe"].get("task") == "language_modeling":
+        loader = _load_lm
+    elif spec["kind"] == "csv" and effective["recipe"].get("series_column"):
         loader = _load_series
     elif spec["kind"] == "csv" and effective["recipe"].get("text_column"):
         loader = _load_text
@@ -912,6 +934,40 @@ def _load_series(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):
     x = torch.stack([series[i:i + window] for i in range(count)])
     y = torch.stack([series[i + window:i + window + horizon] for i in range(count)])
     return x, y.squeeze(1) if horizon == 1 else y
+
+
+def _load_lm(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):
+    """텍스트 열 전체를 토큰 한 줄로 이어 붙이고 ``(x, 한 칸 민 x)`` 창으로 자른다.
+
+    라벨 열이 필요 없다 - 정답이 입력 안에 있다. 어휘는 시계열과 같은 이유로 **앞쪽**
+    (train 구간)에서만 만든다. 뒤쪽 글의 낱말이 어휘에 있으면 모델이 그 낱말을 이미
+    아는 상태로 평가된다.
+    """
+    import torch
+
+    _, header, rows = _csv_table(folder)
+    recipe = effective["recipe"]
+    column = header.index(recipe["text_column"])
+    length = int(recipe.get("max_len") or 64)
+
+    words: list[str] = []
+    for row in rows:
+        if not _is_missing(row[column]):
+            words.extend(tokenize(row[column]))
+    # 어휘 경계는 글 개수가 아니라 **토큰 위치**로 잡는다. 글 길이가 제각각이면
+    # 글 수로 자른 경계가 실제 학습 구간과 어긋나 뒤쪽 낱말이 어휘에 샌다.
+    cut = max(1, int(len(words) * (1 - float(recipe["val_fraction"]))))
+    vocab = build_vocab([" ".join(words[:cut])], int(recipe.get("vocab_size") or 8000))
+    stream = [vocab.get(word, UNK) for word in words]
+    if len(stream) < length + 2:
+        raise ValueError(f"길이 {length} 창을 만들려면 토큰이 최소 {length + 2}개 필요합니다 "
+                         f"(지금 {len(stream)}개)")
+
+    tokens = torch.tensor(stream, dtype=torch.int64)
+    count = len(tokens) - length - 1
+    x = torch.stack([tokens[i:i + length] for i in range(count)])
+    y = torch.stack([tokens[i + 1:i + length + 1] for i in range(count)])
+    return x, y
 
 
 def _load_arrays(folder: Path, spec: dict[str, Any], effective: dict[str, Any]):

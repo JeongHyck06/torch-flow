@@ -20,6 +20,7 @@ UI에 보내야 하는데, hub는 torch를 import하지 않는다(`test_hub_neve
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # 과제 종류. `label`은 화면에 나가는 이름이고, `losses`의 첫 항목이 기본값이다.
@@ -40,6 +41,17 @@ TASKS: dict[str, dict[str, Any]] = {
         "target_dtype": "float32",
         "metrics": ["mae", "rmse", "r2"],
         "needs_classes": False,
+    },
+    "language_modeling": {
+        "label": "언어 모델",
+        "hint": "다음 토큰을 맞힌다. 정답은 입력을 한 칸 민 것이라 따로 라벨이 필요 없다.",
+        "losses": ["cross_entropy"],
+        "target_dtype": "int64",
+        # perplexity는 loss에서 나온다(exp). 따로 세지 않고 result()에서 붙인다.
+        "metrics": ["ppl"],
+        "needs_classes": True,
+        # 출력이 [B, L, V]라 자리마다 분류를 하는 셈이다. 지표를 세기 전에 편다.
+        "sequence": True,
     },
 }
 
@@ -100,6 +112,9 @@ def align(task: str | None, output, target):
     `[B, B]`로 브로드캐스트해 완전히 다른 값을 배운다. 조용히 틀리는 종류라
     여기서 한 번에 막는다. 분류는 `[B, C]` × `[B]`가 정상이므로 건드리지 않는다.
     """
+    if spec(task).get("sequence"):
+        # [B, L, V] × [B, L] -> [B*L, V] × [B*L]. CrossEntropyLoss는 자리 축을 모른다.
+        return output.reshape(-1, output.shape[-1]), target.reshape(-1)
     if spec(task)["needs_classes"]:
         return output, target
     if output.dim() == 2 and output.shape[1] == 1:
@@ -111,6 +126,8 @@ def align(task: str | None, output, target):
 
 def predict(task: str | None, output):
     """모델 출력에서 사람이 읽는 답. 분류는 고른 클래스, 회귀는 값 그대로."""
+    if spec(task).get("sequence"):
+        return output.argmax(dim=-1)      # 자리마다 고른 토큰
     if spec(task)["needs_classes"]:
         return output.argmax(dim=1)
     return output.squeeze(1) if output.dim() == 2 and output.shape[1] == 1 else output
@@ -138,6 +155,13 @@ class Accumulator:
         self.y_sq_sum = 0.0
 
     def add(self, output, target, loss_value: float) -> None:
+        if spec(self.task).get("sequence"):
+            # 표본은 자리 하나다 - 배치 수로 세면 길이가 다른 배치에서 평균이 틀어진다.
+            flat_out, flat_target = align(self.task, output, target)
+            self.n += len(flat_target)
+            self.loss_sum += loss_value * len(flat_target)
+            self.correct += float((flat_out.argmax(dim=-1) == flat_target).sum())
+            return
         count = len(target)
         self.n += count
         self.loss_sum += loss_value * count
@@ -158,6 +182,12 @@ class Accumulator:
         if not self.n:
             return {}
         out = {f"{prefix}loss": self.loss_sum / self.n}
+        if spec(self.task).get("sequence"):
+            mean_loss = self.loss_sum / self.n
+            out[f"{prefix}acc"] = self.correct / self.n
+            # perplexity = exp(평균 CE). 무한대는 JSON으로 나가지 못하므로 자른다.
+            out[f"{prefix}ppl"] = math.exp(mean_loss) if mean_loss < 20 else float("inf")
+            return out
         if self.needs_classes:
             out[f"{prefix}acc"] = self.correct / self.n
             return out
@@ -173,6 +203,9 @@ class Accumulator:
 
 def headline(task: str | None, metrics: dict[str, float], prefix: str = "val_") -> str:
     """터미널 한 줄과 화면 요약에 쓰는 대표 숫자."""
+    if spec(task).get("sequence"):
+        value = metrics.get(f"{prefix}ppl")
+        return f"perplexity {value:.3f}" if value is not None else ""
     if spec(task)["needs_classes"]:
         value = metrics.get(f"{prefix}acc")
         return f"정확도 {value:.4f}" if value is not None else ""

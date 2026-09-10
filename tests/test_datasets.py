@@ -316,3 +316,27 @@ def test_a_series_too_short_for_the_window_says_so(tmp_path):
     spec = datasets.inspect(tmp_path / "temps")
     effective = datasets.resolve(spec, {"series_column": "temperature", "window": 24, "horizon": 1})
     assert "24" in effective["problem"] and "8" in effective["problem"]
+
+
+def test_language_modeling_shifts_the_input_and_keeps_the_vocabulary_in_the_past(tmp_path):
+    """정답은 입력을 한 칸 민 것이다 - 라벨 열이 없다. 어휘는 앞쪽 토큰에서만 만든다."""
+    target = tmp_path / "corpus"
+    target.mkdir()
+    lines = ["sentence"] + ["alpha beta gamma delta"] * 40 + ["zulu yankee xray whiskey"] * 10
+    (target / "samples.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    spec = datasets.inspect(target)
+    effective = datasets.resolve(spec, {"task": "language_modeling",
+                                        "text_column": "sentence", "max_len": 8})
+    assert effective["shape"] == [8] and effective["dtype"] == "int64"
+    assert effective["recipe"]["split_mode"] == "time"
+    assert effective.get("problem") is None
+
+    splits = datasets.load_any("corpus", tmp_path, effective["recipe"])
+    x, y = splits["train"]
+    assert x.shape[1] == 8 and y.shape == x.shape
+    assert (x[0][1:] == y[0][:-1]).all(), "y는 x를 한 칸 민 것이어야 한다"
+    # 표본은 행이 아니라 토큰 창이다 - 화면에 나가는 수가 실제 창 수와 같아야 한다.
+    assert effective["count"] == len(x) + len(splits["test"][0])
+    # 뒤쪽에만 나오는 'zulu'는 어휘에 없다. 그 구간 창은 UNK로 읽힌다.
+    assert (splits["test"][0] == datasets.UNK).any(), "검증 구간 낱말이 어휘에 샜다"
